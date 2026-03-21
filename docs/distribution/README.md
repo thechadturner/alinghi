@@ -1,6 +1,8 @@
-# Distribution and Deployment Documentation
+# Distribution and Deployment Documentation · RaceSight – Alinghi
 
-This directory contains all documentation related to distributing and deploying the RaceSight application.
+This directory documents how to distribute and deploy **RaceSight – Alinghi** (this repository). Deployment paths and scripts are aligned with the **Alinghi** internal enterprise setup; adjust `deploy.config.local` if your server still uses legacy layout.
+
+For repository context, see the [root README](../../README.md) and the [documentation index](../README.md).
 
 ## Documentation Structure
 

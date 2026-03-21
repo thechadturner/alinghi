@@ -1,6 +1,6 @@
-# Streaming Service Documentation
+# Streaming Service Documentation · RaceSight – Alinghi
 
-This directory contains comprehensive documentation for the RaceSight streaming service (`server_stream`).
+This directory documents the streaming service (`server_stream`) as used in the **RaceSight – Alinghi** repository. See the [documentation index](../README.md) for full project context.
 
 ## Documentation Index
 

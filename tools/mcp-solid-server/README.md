@@ -1,6 +1,6 @@
-# RaceSight Solid.js MCP Server
+# RaceSight Solid.js MCP Server · RaceSight – Alinghi
 
-MCP server that exposes Solid.js and TypeScript conventions to Cursor. It provides resources, prompts, and a tool so the AI gets consistent guidance when editing frontend code.
+MCP server used in the **RaceSight – Alinghi** monorepo. It exposes Solid.js and TypeScript conventions to Cursor (resources, prompts, and a tool) so the AI gets consistent guidance when editing this repository’s frontend code.
 
 ## Build
 
@@ -11,7 +11,7 @@ npm install
 npm run build
 ```
 
-From the repo root (RaceSight):
+From the repo root (RaceSight – Alinghi):
 
 ```bash
 cd tools/mcp-solid-server && npm install && npm run build

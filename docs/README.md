@@ -1,6 +1,8 @@
-# RaceSight Documentation
+# RaceSight – Alinghi · Documentation
 
-Welcome to the RaceSight documentation. This directory contains comprehensive documentation organized by category to help you understand and work with the RaceSight application.
+**You are reading documentation for the RaceSight – Alinghi repository** — a **unique Git repository** built and adapted **for Alinghi**, for **internal use under an enterprise license**. It is not the same tree as a generic public RaceSight product repo; paths, env names, and deploy defaults here match **this** codebase.
+
+Welcome. This directory contains documentation organized by category to help you understand and work with the RaceSight application as configured in **RaceSight – Alinghi**.
 
 ## 📋 Project & IP
 

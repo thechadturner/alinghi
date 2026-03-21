@@ -1,6 +1,6 @@
-# Cursor configuration for RaceSight
+# Cursor configuration for RaceSight – Alinghi
 
-This folder configures Cursor for the RaceSight project (Solid.js + TypeScript), including MCP servers, rules, and pointers to workspace settings.
+This folder configures Cursor for the **RaceSight – Alinghi** workspace (this repository): Solid.js + TypeScript, MCP servers, rules, and pointers to workspace settings. Rules and prompts here target the Alinghi internal codebase, not a generic upstream repo.
 
 ## MCP
 

@@ -1,6 +1,6 @@
-# Performance Optimization Documentation
+# Performance Optimization Documentation · RaceSight – Alinghi
 
-This directory contains documentation for the performance optimization work completed in Steps 1-4.
+This directory contains performance optimization documentation for the **RaceSight – Alinghi** codebase (Steps 1–4 and related notes). See the [documentation index](../README.md) for repository context.
 
 ## Documentation Files
 

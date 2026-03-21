@@ -1,6 +1,6 @@
-# Docker Configuration
+# Docker Configuration · RaceSight – Alinghi
 
-This directory contains all Docker-related configuration and scripts for the RaceSight application.
+This directory contains Docker-related configuration and scripts for **RaceSight – Alinghi** (this Git repository). Compose service names, networks, and image tags follow this repo’s conventions; see the [root README](../README.md) for edition context.
 
 ## Structure
 
