@@ -24,7 +24,7 @@ router.get(
 
 /**
  * @route GET /api/pages
- * @desc Get pages by page_type. Uses dataset_pages when page_type contains "dataset" (and dataset_id provided), day_pages when "day" (date required), else project_pages.
+ * @desc Get pages by page_type. dataset/explore and day/explore use user_pages (or project_pages if no user_id). dataset/reports uses dataset_pages when dataset_id provided. Other day/* (e.g. day/reports) uses day_pages (date required). Else project_pages.
  */
 
 router.get(

@@ -356,9 +356,9 @@ export default function Window() {
             let useUserEndpoint = false;
             
             if (isDayContext) {
-                // Day (fleet) mode - mirror Sidebar MODE 2: use day/explore via /pages/all
+                // Day (fleet) mode - day/explore via user_pages when user_id present (same as dataset/explore)
                 pageType = 'day/explore';
-                useUserEndpoint = false;
+                useUserEndpoint = true;
             } else if (isDatasetContext) {
                 // Dataset mode - mirror Sidebar MODE 1: use dataset/explore via user-specific endpoint
                 pageType = 'dataset/explore';
@@ -374,9 +374,17 @@ export default function Window() {
             let endpoint;
             
             if (useUserEndpoint) {
-                // For datasets, use the user-specific endpoint that includes user_id
-                const userId = user()?.user_id || 1; // Fallback to 1 if user not loaded yet
-                endpoint = `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&user_id=${encodeURIComponent(userId)}&page_type=${encodeURIComponent(pageType)}`;
+                if (isDayContext) {
+                    const uid = user()?.user_id;
+                    if (uid) {
+                        endpoint = `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&user_id=${encodeURIComponent(uid)}&page_type=${encodeURIComponent(pageType)}`;
+                    } else {
+                        endpoint = `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&page_type=${encodeURIComponent(pageType)}`;
+                    }
+                } else {
+                    const userId = user()?.user_id || 1; // Fallback to 1 if user not loaded yet (dataset)
+                    endpoint = `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&user_id=${encodeURIComponent(userId)}&page_type=${encodeURIComponent(pageType)}`;
+                }
             } else {
                 // For project-level, use the all pages endpoint
                 endpoint = `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&page_type=${encodeURIComponent(pageType)}`;

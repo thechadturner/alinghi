@@ -5,10 +5,11 @@ const { sendResponse } = require('../middleware/helpers');
 
 /**
  * Build params and SQL for querying day_pages by project_id and date.
+ * Used for date-gated day content (e.g. day/reports after pipelines upsert day_pages). Not used for day/explore (user_pages).
  * @param {string} class_name - Schema/class name
  * @param {number} project_id - Project id
  * @param {string} dateNorm - Date in YYYYMMDD
- * @param {string|null} [page_type] - If provided, filter by a.page_type (e.g. 'day/explore', 'day/reports'); otherwise return all pages for the date
+ * @param {string|null} [page_type] - If provided, filter by a.page_type (e.g. 'day/reports'); otherwise return all pages for the date
  * @returns {{ params: any[], sql: string }}
  */
 function buildDayPagesQuery(class_name, project_id, dateNorm, page_type) {
@@ -112,10 +113,19 @@ exports.getPages = async (req, res) => {
                         sql = `select page_name, description, CONCAT('${class_name}','/',page_type,'/',path_name) "file_path", icon, is_multiple, has_builder from ${class_name}.pages a inner join ${class_name}.project_pages b on a.page_id = b.page_id and b.is_visible = 1 where b.project_id = $1 and page_type = $2 order by sort_id`;
                     }
                 }
+            } else if (page_type.indexOf('day') > -1 && page_type.indexOf('explore') > -1) {
+                // day/explore: user-chosen widgets (user_pages), same pattern as dataset/explore; not scoped by day_pages/date
+                if (user_id != null && String(user_id).trim() !== '') {
+                    params = [user_id, page_type];
+                    sql = `select page_name, description, CONCAT('${class_name}','/',page_type,'/',path_name) "file_path", icon, is_multiple, has_builder from ${class_name}.pages a inner join ${class_name}.user_pages b on a.page_id = b.page_id where user_id = $1 and page_type = $2 order by sort_id`;
+                } else {
+                    params = [project_id, page_type];
+                    sql = `select page_name, description, CONCAT('${class_name}','/',page_type,'/',path_name) "file_path", icon, is_multiple, has_builder from ${class_name}.pages a inner join ${class_name}.project_pages b on a.page_id = b.page_id and b.is_visible = 1 where b.project_id = $1 and page_type = $2 order by sort_id`;
+                }
             } else if (page_type.indexOf('day') > -1) {
                 const dateNorm = normalizeDateParam(date);
                 if (!dateNorm || dateNorm.length !== 8) {
-                    return sendResponse(res, info, 400, false, 'date is required (YYYY-MM-DD or YYYYMMDD) when page_type contains "day"', null);
+                    return sendResponse(res, info, 400, false, 'date is required (YYYY-MM-DD or YYYYMMDD) for day page types that use day_pages (e.g. day/reports)', null);
                 }
                 const dayQuery = buildDayPagesQuery(class_name, project_id, dateNorm, page_type);
                 params = dayQuery.params;

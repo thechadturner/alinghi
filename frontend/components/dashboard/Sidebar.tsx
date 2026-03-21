@@ -2029,10 +2029,11 @@ const Sidebar = (props: SidebarProps) => {
           try {
             const controller = new AbortController();
             const page_type = 'day/explore';
-            const dateNorm = dateNormForRaces(date);
-            const dayExploreUrl = dateNorm.length === 8
-              ? `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&page_type=${encodeURIComponent(page_type)}&date=${encodeURIComponent(dateNorm)}`
-              : `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&page_type=${encodeURIComponent(page_type)}`;
+            const currentUserDayExplore = user();
+            let dayExploreUrl = `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&page_type=${encodeURIComponent(page_type)}`;
+            if (currentUserDayExplore?.user_id) {
+              dayExploreUrl += `&user_id=${encodeURIComponent(currentUserDayExplore.user_id)}`;
+            }
             response = await getData(dayExploreUrl, controller.signal)
 
             // Only log full response in very verbose mode
@@ -2548,10 +2549,11 @@ const Sidebar = (props: SidebarProps) => {
         try {
           const controller = new AbortController();
           const page_type = 'day/explore';
-          const dateNorm = dateNormForRaces(selectedDate());
-          const dayExploreUrl = dateNorm.length === 8
-            ? `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&page_type=${encodeURIComponent(page_type)}&date=${encodeURIComponent(dateNorm)}`
-            : `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&page_type=${encodeURIComponent(page_type)}`;
+          const currentUserDayExplore2 = user();
+          let dayExploreUrl = `${apiEndpoints.app.pages}?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&page_type=${encodeURIComponent(page_type)}`;
+          if (currentUserDayExplore2?.user_id) {
+            dayExploreUrl += `&user_id=${encodeURIComponent(currentUserDayExplore2.user_id)}`;
+          }
           response = await getData(dayExploreUrl, controller.signal)
 
           // Only log full response in very verbose mode
