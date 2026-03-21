@@ -1,7 +1,7 @@
-import { createSignal, onMount, onCleanup, Show } from "solid-js";
+import { createSignal, onMount, onCleanup, Show, createEffect } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { logPageLoad } from "../utils/logging";
-import { error as logError } from "../utils/console";
+import { error as logError, log } from "../utils/console";
 import Loading from "../components/utilities/Loading";
 import BackButton from "../components/buttons/BackButton";
 import ColorPicker from "../components/utilities/ColorPicker";
@@ -10,7 +10,10 @@ import { postData, putData, getData, deleteData } from "../utils/global";
 import { user } from "../store/userStore";
 import { persistantStore } from "../store/persistantStore";
 import { apiEndpoints } from "@config/env";
-import { Source } from "../utils/colorScale";
+import { toastStore } from "../store/toastStore";
+import { sourcesStore } from "../store/sourcesStore";
+import { themeStore } from "../store/themeStore";
+import { Source, getSourceFallbackColor } from "../utils/colorScale";
 const { selectedProjectId, setSelectedProjectId, projects, setProjects, setProjectHeader: setProjectHeaderStore } = persistantStore;
 
 interface PendingUser {
@@ -33,6 +36,31 @@ export default function ProjectInfo() {
   const [selectedColor, setSelectedColor] = createSignal<string | null>(null);
   const [sourceId, setSourceId] = createSignal<number | null>(null);
   const [editingPermission, setEditingPermission] = createSignal<string | null>(null); // Track which user's permission is being edited
+  const [newSourceName, setNewSourceName] = createSignal("");
+  const [addingSource, setAddingSource] = createSignal(false);
+  const [showAddSourceModal, setShowAddSourceModal] = createSignal(false);
+
+  const openAddSourceModal = () => {
+    setNewSourceName("");
+    setShowAddSourceModal(true);
+  };
+
+  const closeAddSourceModal = () => {
+    setShowAddSourceModal(false);
+    setNewSourceName("");
+  };
+
+  createEffect(() => {
+    if (!showAddSourceModal()) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !addingSource()) {
+        e.preventDefault();
+        closeAddSourceModal();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => document.removeEventListener("keydown", onKey));
+  });
 
   const colors = [
     "#FF0000", "#0000FF", "#008000", "#FFA500", "#800080",  // Red, Blue, Green, Orange, Purple
@@ -182,8 +210,8 @@ export default function ProjectInfo() {
 
       if (response.success) {
         const data = response.data;
-        setSources(() => data);
-      } 
+        setSources(() => (Array.isArray(data) ? data : []));
+      }
     } catch (error: any) {
       if (error.name === 'AbortError') {
         // Request was aborted
@@ -193,6 +221,71 @@ export default function ProjectInfo() {
     } finally {
       // Remove controller from tracking when request completes
       setAbortControllers(prev => prev.filter(c => c !== controller));
+    }
+  };
+
+  const handleAddSource = async () => {
+    const trimmed = newSourceName().trim();
+    if (!trimmed) {
+      toastStore.showToast("error", "Validation", "Please enter a source name");
+      return;
+    }
+    const projectId = selectedProjectId();
+    const className = selectedClassName();
+    if (projectId == null || projectId === 0 || !className) {
+      toastStore.showToast("error", "Error", "Project is not fully loaded yet");
+      return;
+    }
+
+    const controller = new AbortController();
+    setAbortControllers((prev) => [...prev, controller]);
+    setAddingSource(true);
+    try {
+      const color = getSourceFallbackColor(trimmed);
+      const response = await postData(
+        `${apiEndpoints.app.sources}`,
+        {
+          class_name: className,
+          project_id: typeof projectId === "number" ? projectId : Number(projectId),
+          source_name: trimmed,
+          color,
+        },
+        controller.signal
+      );
+
+      if (!response.success) {
+        const msg = typeof response.message === "string" ? response.message : "Failed to add source";
+        logError("[ProjectInfo] addSource failed:", msg);
+        toastStore.showToast("error", "Could not add source", msg);
+        return;
+      }
+
+      log("[ProjectInfo] Source added or matched:", response.data);
+      closeAddSourceModal();
+      await fetchSources();
+      try {
+        await sourcesStore.refresh(true);
+      } catch (storeErr) {
+        logError("[ProjectInfo] sourcesStore.refresh after add:", storeErr);
+      }
+      const alreadyExisted = response.message === "Source found";
+      toastStore.showToast(
+        "success",
+        alreadyExisted ? "Source already registered" : "Source added",
+        alreadyExisted
+          ? `"${trimmed}" was already in this project.`
+          : `"${trimmed}" is now available for this project.`
+      );
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === "AbortError") {
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      logError("[ProjectInfo] addSource error:", message);
+      toastStore.showToast("error", "Could not add source", message);
+    } finally {
+      setAddingSource(false);
+      setAbortControllers((prev) => prev.filter((c) => c !== controller));
     }
   };
 
@@ -409,13 +502,26 @@ export default function ProjectInfo() {
       }, controller.signal);
     
       if (!response.success) {
-        throw new Error("Delete failed!");
+        const msg = typeof response.message === "string" ? response.message : "Delete failed";
+        logError("[ProjectInfo] removeSource failed:", msg);
+        toastStore.showToast("error", "Could not remove source", msg);
+        return;
       }
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-      } else {
-        throw error;
+
+      await fetchSources();
+      try {
+        await sourcesStore.refresh(true);
+      } catch (storeErr) {
+        logError("[ProjectInfo] sourcesStore.refresh after remove:", storeErr);
       }
+      log("[ProjectInfo] Source removed:", source_id);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === "AbortError") {
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Unexpected error";
+      logError("[ProjectInfo] removeSource error:", message);
+      toastStore.showToast("error", "Could not remove source", message);
     }
   };
 
@@ -767,9 +873,8 @@ export default function ProjectInfo() {
                 </form>
               </div>
 
-              {/* Data Sources Section */}
-              <Show when={sources().length > 0}>
-                <div style="
+              {/* Data Sources Section — always show card; table or empty-state add form */}
+              <div style="
                   background: var(--color-bg-card); 
                   border-radius: 12px; 
                   padding: 24px; 
@@ -780,6 +885,25 @@ export default function ProjectInfo() {
                 <h3 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: var(--color-text-primary); transition: color 0.3s ease;">
                   Data Sources
                 </h3>
+                <Show
+                  when={sources().length > 0}
+                  fallback={
+                    <div class="project-info-sources-empty">
+                      <p class="project-info-sources-empty-text">
+                        No data sources are defined for this project yet. Use the button below to register a source (for example matching a boat or unit name used in your data). You can set color, fleet grouping, and visibility once it appears in the table.
+                      </p>
+                      <div class="project-info-sources-add-actions">
+                        <button
+                          type="button"
+                          class="builder-form-button-secondary project-info-sources-add-btn"
+                          onClick={openAddSourceModal}
+                        >
+                          + Add Source
+                        </button>
+                      </div>
+                    </div>
+                  }
+                >
                   <div style="overflow-x: auto;">
                     <table style="
                       width: 100%; 
@@ -938,8 +1062,17 @@ export default function ProjectInfo() {
                     <p style="margin: 0 0 4px 0;"><strong>Fleet:</strong> Will be grouped into fleet data summary reports and not shown individually.</p>
                     <p style="margin: 0;"><strong>Visible:</strong> Individual and fleet summaries will only include visible data sources.</p>
                   </div>
-                </div>
-              </Show>
+                  <div class="project-info-sources-add-more-wrap">
+                    <button
+                      type="button"
+                      class="builder-form-button-secondary project-info-sources-add-btn"
+                      onClick={openAddSourceModal}
+                    >
+                      + Add Source
+                    </button>
+                  </div>
+                </Show>
+              </div>
             </div>
 
             {/* Right Column - User Management */}
@@ -1237,6 +1370,85 @@ export default function ProjectInfo() {
 
         <Show when={showModal()}>
           <ColorPicker colors={colors} onSelect={handleColorSelect} />
+        </Show>
+
+        <Show when={showAddSourceModal()}>
+          <div
+            class={`modal ${themeStore.isDark() ? "dark" : "light"}`}
+            role="presentation"
+            onClick={() => {
+              if (!addingSource()) closeAddSourceModal();
+            }}
+          >
+            <div
+              class="modal-dialog project-info-add-source-modal-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="add-source-modal-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div class="modal-content">
+                <div class="modal-header">
+                  <h2 class="modal-title" id="add-source-modal-title">
+                    Add data source
+                  </h2>
+                  <button
+                    type="button"
+                    class="close"
+                    aria-label="Close"
+                    disabled={addingSource()}
+                    onClick={() => closeAddSourceModal()}
+                  >
+                    ×
+                  </button>
+                </div>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void handleAddSource();
+                  }}
+                >
+                  <div class="modal-body project-info-add-source-modal-body">
+                    <div class="form-group">
+                      <label for="add-source-modal-input" class="form-label">
+                        Source name
+                      </label>
+                      <input
+                        id="add-source-modal-input"
+                        type="text"
+                        class="form-input"
+                        placeholder="e.g. Boat name or device id"
+                        value={newSourceName()}
+                        disabled={addingSource()}
+                        onInput={(e) => setNewSourceName((e.target as HTMLInputElement).value)}
+                        autocomplete="off"
+                        autofocus
+                      />
+                    </div>
+                  </div>
+                  <div class="modal-footer">
+                    <button
+                      type="button"
+                      class="builder-form-button-secondary px-4 py-2"
+                      disabled={addingSource()}
+                      onClick={() => {
+                        if (!addingSource()) closeAddSourceModal();
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      class="builder-form-button-success px-4 py-2"
+                      disabled={addingSource()}
+                    >
+                      {addingSource() ? "Adding…" : "Add"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
         </Show>
       </Show>
 

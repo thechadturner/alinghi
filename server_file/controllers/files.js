@@ -718,7 +718,7 @@ exports.getChannelValues = async (req, res) => {
   }
 
   // Unified path: split channels into in-file vs not-in-file, backfill missing from Influx, then serve all from DuckDB
-  // Align with UploadDatasets_Influx: use dataset timezone for Influx so local date range matches normalization.
+  // Align with upload datasets UI (Influx path): use dataset timezone for Influx so local date range matches normalization.
   if (isUnified) {
     try {
       // Date must be YYYYMMDD (dataset local date) for folder path. We convert to UTC only for Influx.

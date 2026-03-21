@@ -5,7 +5,6 @@ import { useNavigate } from "@solidjs/router";
 import Header from "../components/app/Header";
 import SelectionBanner from "../components/app/SelectionBanner";
 import Sidebar from "../components/dashboard/Sidebar";
-import Project from "./Project";
 
 import { setUser } from "../store/userStore";
 import { getData, notifySplitPanelResize } from "../utils/global";
@@ -33,7 +32,12 @@ export const unregisterActiveComponent = (componentType: string) => {
     return newSet;
   });
 };
-const { projects, setProjects, selectedDatasetId, selectedProjectId, selectedClassName, setSelectedProjectId, selectedMenu } = persistantStore;
+const { projects, setProjects, selectedDatasetId, selectedProjectId, selectedClassName, setSelectedProjectId, setSelectedClassName, selectedMenu } = persistantStore;
+
+function projectIdInList(list: { project_id?: unknown }[] | undefined, projectId: number): boolean {
+  if (!Array.isArray(list) || !Number.isFinite(projectId) || projectId <= 0) return false;
+  return list.some((p) => Number(p?.project_id) === projectId);
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -44,6 +48,7 @@ export default function Dashboard() {
   // Initialize to true so sidebar shows immediately on first render
   // onMount will handle data fetching in background
   const [initialCheckComplete, setInitialCheckComplete] = createSignal(true);
+  const [projectsFetchComplete, setProjectsFetchComplete] = createSignal(false);
   
   // Split view state management - proper SolidJS approach
   const [isSplitView, setIsSplitView] = createSignal(false);
@@ -82,32 +87,43 @@ export default function Dashboard() {
 
   const fetchProjects = async () => {
     const controller = new AbortController();
-    
-    try {
-      const response = await getData(`${apiEndpoints.app.projects}/type?type=user`, controller.signal)
 
-      if (response.success) {
-        const data = response.data;
-        setProjects(data);
-      } else {
-        setProjects([]);
+    try {
+      const response = await getData(`${apiEndpoints.app.projects}/type?type=user`, controller.signal);
+      const raw = response.success ? response.data : [];
+      const data = Array.isArray(raw) ? raw : [];
+      setProjects(data);
+
+      const currentId = Number(selectedProjectId());
+      if (data.length === 0) {
+        setSelectedProjectId(0);
+        setSelectedClassName("");
+      } else if (!projectIdInList(data, currentId)) {
+        setSelectedProjectId(0);
+        setSelectedClassName("");
       }
     } catch (error: any) {
       if (error.name === 'AbortError') {
       } else {
         logError('Error fetching projects:', error);
         setProjects([]);
+        setSelectedProjectId(0);
+        setSelectedClassName("");
       }
+    } finally {
+      setProjectsFetchComplete(true);
     }
   };
-  
-  // Check if projects are loaded and available, or if a project is selected (even if projects array hasn't loaded yet)
-  const hasProjects = () => {
-    const projectsData = projects();
-    const currentProjectId = selectedProjectId();
-    const hasProjectsResult = (Array.isArray(projectsData) && projectsData.length > 0) || (currentProjectId && currentProjectId > 0);
-    log(`[Dashboard] hasProjects check: projectsData=`, projectsData, `projectsData type=`, typeof projectsData, `isArray=`, Array.isArray(projectsData), `length=`, projectsData?.length, `selectedProjectId=`, currentProjectId, `result=`, hasProjectsResult);
-    return hasProjectsResult;
+
+  const hasProjectInList = () => {
+    const list = projects();
+    return Array.isArray(list) && list.length > 0;
+  };
+
+  const hasValidSelectedProject = () => {
+    const list = projects();
+    const pid = Number(selectedProjectId());
+    return projectIdInList(list, pid);
   };
 
   // Events are now loaded automatically when mapdata is loaded
@@ -259,8 +275,8 @@ export default function Dashboard() {
       <Header />
       <div id="dashboard" onContextMenu={(e) => e.preventDefault()}>
         {/* Show sidebar only when projects exist */}
-        {log(`[Dashboard] Render check: initialCheckComplete=${initialCheckComplete()}, hasProjects=${hasProjects()}, projects=`, projects())}
-        <Show when={initialCheckComplete() && hasProjects()}>
+        {log(`[Dashboard] Render check: initialCheckComplete=${initialCheckComplete()}, projectsFetchComplete=${projectsFetchComplete()}, projects=`, projects())}
+        <Show when={initialCheckComplete() && projectsFetchComplete()}>
           <div id="sidebar">
             {log(`[Dashboard] Rendering Sidebar component`)}
             <Sidebar 
@@ -279,15 +295,16 @@ export default function Dashboard() {
         </Show>
 
         <div id="main-content">
-          {/* Show Project page when no projects exist */}
-          {log(`[Dashboard] Rendering main-content, initialCheckComplete=${initialCheckComplete()}, hasProjects=${hasProjects()}, projects=`, projects())}
-          <Show when={initialCheckComplete() && !hasProjects()}>
-            {log(`[Dashboard] Showing Project component`)}
-            <Project />
+          {log(`[Dashboard] Rendering main-content, projectsFetchComplete=${projectsFetchComplete()}, hasValidSelectedProject=${hasValidSelectedProject()}, projects=`, projects())}
+          <Show when={projectsFetchComplete() && !hasValidSelectedProject()}>
+            <div class="dashboard-project-prompt">
+              <Show when={!hasProjectInList()} fallback={<p>Select a project in the sidebar to continue.</p>}>
+                <p>You do not have any projects yet. Use the project menu in the sidebar to add one.</p>
+              </Show>
+            </div>
           </Show>
-          
-          {/* Show normal dashboard content when projects exist */}
-          <Show when={hasProjects()}>
+
+          <Show when={hasValidSelectedProject()}>
             {/* In split view always show banner when there is selection (e.g. map timeseries brush); otherwise hide when map is active with all-sources or single-date mode. Include selectedRange/selectedRanges so banner stays visible when only time-range is set (avoids flash-disappear from sync/effect races). */}
             <Show when={(hasSelection() || isCut() || selectedFilters().length > 0 || selectedEvents().length > 0 || (selectedRange()?.length ?? 0) > 0 || (selectedRanges()?.length ?? 0) > 0) 
               && (isSplitView() || !(activeComponents().has('map') && (persistantStore.selectedSourceId && persistantStore.selectedSourceId() === 0)))

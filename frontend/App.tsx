@@ -1,7 +1,7 @@
 import "@styles/Styles.css";
 import { Router, Route, useSearchParams, useParams } from "@solidjs/router";
 import { lazy, createSignal, onMount, Show } from "solid-js";
-import { debug, error as logError } from "./utils/console";
+import { error as logError } from "./utils/console";
 
 import Layout from "@components/app/Layout";
 import Index from "@pages/Index";
@@ -37,6 +37,7 @@ const VideoSyncPage = lazy(() => import("@pages/VideoSync"));
 const UploadTargets = lazy(() => import("@pages/UploadTargets"));
 const UploadMedia = lazy(() => import("@pages/UploadMedia"));
 const UploadRaceCourse = lazy(() => import("@pages/UploadRaceCourse"));
+const UploadDatasetsRoute = lazy(() => import("@pages/UploadDatasetsRoute"));
 const Window = lazy(() => import("@pages/Window"));
 const Dashboard = lazy(() => import("@pages/Dashboard"));
 
@@ -67,18 +68,20 @@ function ProbabilityBuilderWrapper(props: Record<string, any>) {
   return <ProbabilityBuilder {...props} isFleet={isFleet} type={isFleet ? 'fleet' : undefined} />;
 }
 
+/** Default boat/class for report chunks when URL omits :className */
+const DEFAULT_REPORT_CLASS = 'ac40';
+
 // Static mapping for DatasetInfo components - allows Vite to analyze imports at build time
 // These imports must be static (not template literals) so Vite can create chunks in production
 const datasetInfoMap: Record<string, () => Promise<any>> = {
-  'gp50': () => import('./reports/gp50/DatasetInfo'),
+  ac40: () => import('./reports/ac40/DatasetInfo'),
 };
 
 // Wrapper component for DatasetInfo to dynamically load based on class_name
 function DatasetInfoWrapper() {
   const [Component, setComponent] = createSignal<any>(null);
   const params = useParams();
-  // Normalize className to lowercase and default to gp50
-  const className = (params.className || 'gp50').toLowerCase();
+  const className = (params.className || DEFAULT_REPORT_CLASS).toLowerCase();
   
   onMount(async () => {
     // Set className in store from URL params
@@ -88,14 +91,13 @@ function DatasetInfoWrapper() {
     
     try {
       // Use static mapping so Vite can analyze imports at build time
-      const loader = datasetInfoMap[className] || datasetInfoMap['gp50'];
+      const loader = datasetInfoMap[className] || datasetInfoMap[DEFAULT_REPORT_CLASS];
       const module = await loader();
       setComponent(() => module.default);
     } catch (error) {
       logError(`Failed to load DatasetInfo for class ${className}:`, error);
-      // Fallback to gp50
       try {
-        const module = await datasetInfoMap['gp50']();
+        const module = await datasetInfoMap[DEFAULT_REPORT_CLASS]();
         setComponent(() => module.default);
       } catch (fallbackError) {
         logError('Failed to load fallback DatasetInfo:', fallbackError);
@@ -108,27 +110,27 @@ function DatasetInfoWrapper() {
 
 // Static mapping for DayInfo components (fleet/day edit - admin/publisher/super only)
 const dayInfoMap: Record<string, () => Promise<any>> = {
-  'gp50': () => import('./reports/gp50/DayInfo'),
+  ac40: () => import('./reports/ac40/DayInfo'),
 };
 
 // Wrapper component for DayInfo to dynamically load based on class_name
 function DayInfoWrapper() {
   const [Component, setComponent] = createSignal<any>(null);
   const params = useParams();
-  const className = (params.className || 'gp50').toLowerCase();
+  const className = (params.className || DEFAULT_REPORT_CLASS).toLowerCase();
   
   onMount(async () => {
     if (className && className !== persistantStore.selectedClassName()) {
       persistantStore.setSelectedClassName(className);
     }
     try {
-      const loader = dayInfoMap[className] || dayInfoMap['gp50'];
+      const loader = dayInfoMap[className] || dayInfoMap[DEFAULT_REPORT_CLASS];
       const module = await loader();
       setComponent(() => module.default);
     } catch (error) {
       logError(`Failed to load DayInfo for class ${className}:`, error);
       try {
-        const module = await dayInfoMap['gp50']();
+        const module = await dayInfoMap[DEFAULT_REPORT_CLASS]();
         setComponent(() => module.default);
       } catch (fallbackError) {
         logError('Failed to load fallback DayInfo:', fallbackError);
@@ -138,66 +140,10 @@ function DayInfoWrapper() {
   return <Show when={Component()}>{Component()}</Show>;
 }
 
-// Static mapping for UploadDatasets components - allows Vite to analyze imports at build time
-// These imports must be static (not template literals) so Vite can create chunks in production
-const uploadDatasetsMap: Record<string, () => Promise<any>> = {
-  'gp50': () => import('./reports/gp50/UploadDatasets_Influx'),
-};
-
-// Wrapper component for UploadDatasets to dynamically load based on class_name
-function UploadDatasetsWrapper() {
-  const [Component, setComponent] = createSignal<any>(null);
-  const params = useParams();
-  // Normalize className to lowercase and default to gp50
-  const className = (params.className || 'gp50').toLowerCase();
-  
-  debug('[UploadDatasetsWrapper] className from URL params:', params.className, 'final className:', className);
-  
-  onMount(async () => {
-    // Set className in store from URL params
-    if (className && className !== persistantStore.selectedClassName()) {
-      persistantStore.setSelectedClassName(className);
-    }
-    
-    debug('[UploadDatasetsWrapper] onMount: Loading component for className:', className);
-    
-    try {
-      // Use static mapping so Vite can analyze imports at build time
-      const loader = uploadDatasetsMap[className] || uploadDatasetsMap['gp50'];
-      const module = await loader();
-      debug('[UploadDatasetsWrapper] Successfully loaded component for:', className);
-      setComponent(() => module.default);
-    } catch (error) {
-      logError(`[UploadDatasetsWrapper] Failed to load UploadDatasets for class ${className}:`, error);
-      // Fallback: try the original UploadDatasets for gp50 if UploadDatasets_Influx fails
-      if (className === 'gp50') {
-        try {
-          debug('[UploadDatasetsWrapper] Attempting fallback to original UploadDatasets for gp50');
-          const fallbackModule = await import('./reports/gp50/UploadDatasets');
-          setComponent(() => fallbackModule.default);
-        } catch (fallbackError) {
-          logError('[UploadDatasetsWrapper] Failed to load fallback UploadDatasets:', fallbackError);
-        }
-      } else {
-        // For other classes, try gp50 as fallback
-        try {
-          debug('[UploadDatasetsWrapper] Attempting fallback to gp50');
-          const module = await uploadDatasetsMap['gp50']();
-          setComponent(() => module.default);
-        } catch (fallbackError) {
-          logError('[UploadDatasetsWrapper] Failed to load fallback UploadDatasets:', fallbackError);
-        }
-      }
-    }
-  });
-  
-  return <Show when={Component()}>{Component()}</Show>;
-}
-
 // Static mapping for Events components - allows Vite to analyze imports at build time
 // These imports must be static (not template literals) so Vite can create chunks in production
 const eventsMap: Record<string, () => Promise<any>> = {
-  'gp50': () => import('./reports/gp50/Events'),
+  ac40: () => import('./reports/ac40/Events'),
 };
 
 // Wrapper component for Events to dynamically load based on class_name
@@ -205,8 +151,7 @@ function EventsWrapper() {
   const [Component, setComponent] = createSignal<any>(null);
   const params = useParams();
   const [searchParams] = useSearchParams();
-  // Normalize className to lowercase and default to gp50
-  const className = (params.className || 'gp50').toLowerCase();
+  const className = (params.className || DEFAULT_REPORT_CLASS).toLowerCase();
 
   onMount(() => {
     // Restore project/dataset/date from URL so reload keeps context
@@ -251,14 +196,13 @@ function EventsWrapper() {
 
     try {
       // Use static mapping so Vite can analyze imports at build time
-      const loader = eventsMap[className] || eventsMap['gp50'];
+      const loader = eventsMap[className] || eventsMap[DEFAULT_REPORT_CLASS];
       const module = await loader();
       setComponent(() => module.default);
     } catch (error) {
       logError(`Failed to load Events for class ${className}:`, error);
-      // Fallback to gp50
       try {
-        const module = await eventsMap['gp50']();
+        const module = await eventsMap[DEFAULT_REPORT_CLASS]();
         setComponent(() => module.default);
       } catch (fallbackError) {
         logError('Failed to load fallback Events:', fallbackError);
@@ -316,7 +260,7 @@ function App() {
         <Route path="/table-builder" component={TableBuilder} />
         <Route path="/video-builder" component={VideoBuilder} />
         <Route path="/video-sync" component={VideoSyncPage} />
-        <Route path="/upload-datasets/:className?" component={UploadDatasetsWrapper} />
+        <Route path="/upload-datasets/:className?" component={UploadDatasetsRoute} />
         <Route path="/upload-targets" component={UploadTargets} />
         <Route path="/upload-race-course" component={UploadRaceCourse} />
         <Route path="/upload-video" component={UploadMedia} />

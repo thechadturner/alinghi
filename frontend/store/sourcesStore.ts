@@ -20,8 +20,8 @@ interface SourcesStore {
   isReady: Accessor<boolean>;
   /** Manually set sources (for live streaming mode) */
   setSources: (sources: Source[]) => void;
-  /** Refresh sources from API (can be called manually if sources are missing) */
-  refresh: () => Promise<void>;
+  /** Refresh sources from API (can be called manually if sources are missing). Pass true to always refetch (e.g. after add/remove on settings). */
+  refresh: (forceRefresh?: boolean) => Promise<void>;
   /** Get source_id from source_name */
   getSourceId: (sourceName: string) => number | null;
   /** Get source_name from source_id */
@@ -45,7 +45,7 @@ export const sourcesStore = createRoot<SourcesStore>(() => {
    * Fetch sources from API for the current project
    * First checks meta.sources cache, then falls back to API
    */
-  const initializeSources = async (): Promise<void> => {
+  const initializeSources = async (forceRefresh = false): Promise<void> => {
     const className = persistantStore.selectedClassName();
     const projectId = persistantStore.selectedProjectId();
 
@@ -61,7 +61,7 @@ export const sourcesStore = createRoot<SourcesStore>(() => {
     
     // If we already have sources for this project, don't refetch
     // But ensure they're stored in hunidb if they weren't before
-    if (currentProjectKey === projectKey && sources().length > 0) {
+    if (!forceRefresh && currentProjectKey === projectKey && sources().length > 0) {
       logDebug('SourcesStore: Sources already loaded for this project');
       // If sources weren't stored in hunidb yet, try to store them now
       if (!sourcesStoredInHuniDB && sources().length > 0) {
@@ -129,7 +129,7 @@ export const sourcesStore = createRoot<SourcesStore>(() => {
       // The cache might only contain sources that have been tracked (have data),
       // so we need to fetch from API to get all sources including new ones
       logDebug('SourcesStore: Fetching sources from API', { className, projectId, loggedIn });
-      const fetchedSources = await fetchSources(className, projectId);
+      const fetchedSources = await fetchSources(className, projectId, forceRefresh);
       
       // Also check cache for any additional metadata (though API should be authoritative)
       const cachedSources = await huniDBStore.getSourcesFromCache(className, String(projectId));
@@ -199,14 +199,16 @@ export const sourcesStore = createRoot<SourcesStore>(() => {
   /**
    * Refresh sources (called when project changes)
    */
-  const refresh = async (): Promise<void> => {
+  const refresh = async (forceRefresh = false): Promise<void> => {
     // If there's already an initialization in progress, wait for it
     if (initializationPromise) {
       await initializationPromise;
-      return;
+      if (!forceRefresh) {
+        return;
+      }
     }
 
-    initializationPromise = initializeSources();
+    initializationPromise = initializeSources(forceRefresh);
     try {
       await initializationPromise;
     } finally {

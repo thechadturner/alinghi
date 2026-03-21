@@ -134,7 +134,6 @@ const Sidebar = (props: SidebarProps) => {
   const navigate = useNavigate();
   const location = useLocation();
   
-  const [showProjects, setShowProjects] = createSignal(false);
   const [dynamicMenuItems1, setDynamicMenuItems1] = createSignal<any[]>([]);
   const [dynamicMenuItems2, setDynamicMenuItems2] = createSignal<any[]>([]);
   // Tools menus (project-related tools)
@@ -144,6 +143,7 @@ const Sidebar = (props: SidebarProps) => {
   const [dividerLabel2, setDividerLabel2] = createSignal("");
   const [menuFound, setMenuFound] = createSignal(false);
   const [showModal, setShowModal] = createSignal(false);
+  const [showProjects, setShowProjects] = createSignal(false);
   const [updateMenus, setUpdateMenus] = createSignal(false);
   const [isProjectMenuActive, setIsProjectMenuActive] = createSignal(false);
   const [childWindows, setChildWindows] = createSignal<Map<string, Window>>(new Map());
@@ -3304,7 +3304,10 @@ const Sidebar = (props: SidebarProps) => {
     }
     
     if (!projects() || projects().length === 0) {
-      debug('[Sidebar] No projects available yet, waiting...');
+      debug('[Sidebar] No projects available');
+      setSelectedProjectId(0);
+      setIsInitialized(true);
+      setSidebarInitialized(true);
       return;
     }
 
@@ -3314,24 +3317,32 @@ const Sidebar = (props: SidebarProps) => {
       selectedClassName: selectedClassName()
     });
 
-    // Set initialized flag BEFORE calling setSelectedProjectId to prevent infinite loop
     setIsInitialized(true);
-    
-    // Always ensure we have a valid project ID if projects are available
-    const currentProjectId = selectedProjectId();
-    debug('[Sidebar] Current project ID:', currentProjectId);
-    
-    if (currentProjectId && currentProjectId > 0) {
-      // Project already selected, keep it
-      debug('[Sidebar] Keeping existing project selection:', currentProjectId);
-      setSelectedProjectId(currentProjectId);
-    } else {
-      // No project selected or invalid project ID, choose the first one
-      const firstProject = ensureInteger(projects()[0].project_id);
-      debug('[Sidebar] No valid project selected, choosing first project:', firstProject);
-      if (firstProject !== null) {
-        setSelectedProjectId(firstProject);
+
+    const list = projects();
+    const currentProjectId = ensureInteger(selectedProjectId());
+    const inList =
+      currentProjectId !== null &&
+      currentProjectId > 0 &&
+      list.some((p) => ensureInteger(p.project_id) === currentProjectId);
+
+    if (!inList) {
+      if (list.length === 1) {
+        const only = ensureInteger(list[0].project_id);
+        debug('[Sidebar] Single project available, selecting it:', only);
+        if (only !== null) {
+          setSelectedProjectId(only);
+        }
+      } else {
+        debug('[Sidebar] No valid project in list for current selection; clearing selection');
+        setSelectedProjectId(0);
       }
+    }
+
+    if (!selectedProjectId() || selectedProjectId() <= 0) {
+      debug('[Sidebar] No project selected after reconcile; skipping dataset/menu init');
+      setSidebarInitialized(true);
+      return;
     }
 
     // Load persistent settings FIRST (API is source of truth)
@@ -4083,11 +4094,22 @@ const Sidebar = (props: SidebarProps) => {
     }
   });
 
+  const hasValidSelectedProject = () => {
+    const list = projects();
+    const pid = ensureInteger(selectedProjectId());
+    if (pid === null || pid <= 0 || !list?.length) return false;
+    return list.some((p) => ensureInteger(p.project_id) === pid);
+  };
+
   const projectLabel = () => {
     const project_id = ensureInteger(selectedProjectId());
-    const selected = projects()?.find(project => ensureInteger(project.project_id) === project_id);
+    const selected = projects()?.find((project) => ensureInteger(project.project_id) === project_id);
     return selected ? selected.description : "Select Project";
   };
+
+  const isUserAdministrator = () =>
+    !!user() &&
+    (Array.isArray(user()?.permissions) ? user()?.permissions?.[0] : user()?.permissions) === "administrator";
 
   const handleAddDataset = async () => {
     debug('[Sidebar] handleAddDataset: Starting, selectedProjectId:', selectedProjectId(), 'selectedClassName:', selectedClassName());
@@ -4334,7 +4356,7 @@ const Sidebar = (props: SidebarProps) => {
       setSidebarState('project');
     }
     setShowProjects(false);
-    
+
     // Clear any existing component to prevent FleetPerformance or other components from loading
     setComponent(null);
     
@@ -4923,58 +4945,76 @@ const Sidebar = (props: SidebarProps) => {
         {/* Main Content Area */}
         <div class="sidebar-main-content">
           <div class="sidebar-label">
-            <span class="divider-label">Available Projects</span>
+            <span class="divider-label">Select Project</span>
           </div>
-      <div class="menu-container">
-        <Show when={projects() && projects().length === 0 && user() && (Array.isArray(user()?.permissions) ? user()?.permissions?.[0] : user()?.permissions) === "administrator"} fallback={
-          <button
-            class={`menu-item ${isProjectMenuActive() && selectedMenu() == 'Dataset' ? "active" : ""}`} // Highlight only if the project menu is explicitly active
-            onClick={() => handleProjectClick(true)}
-            title={isCollapsed() && !isMobile() ? (projectLabel() || "") : ""}
-          >
-            <FiFolder size={20} /> 
-            <Show when={!isCollapsed() || isMobile()}>
-              <span>{projectLabel()}</span>
+          <div class="menu-container">
+            <Show
+              when={projects() && projects().length === 0 && isUserAdministrator()}
+              fallback={
+                <Show
+                  when={projects() && projects().length === 0}
+                  fallback={
+                    <>
+                      <button
+                        class={`menu-item ${isProjectMenuActive() && selectedMenu() == "Dataset" ? "active" : ""}`}
+                        onClick={() => handleProjectClick(true)}
+                        title={isCollapsed() && !isMobile() ? projectLabel() || "" : ""}
+                      >
+                        <FiFolder size={20} />
+                        <Show when={!isCollapsed() || isMobile()}>
+                          <span>{projectLabel()}</span>
+                        </Show>
+                      </button>
+                      <Show when={isUserAdministrator() && projects() && projects().length > 0 && (!isCollapsed() || isMobile())}>
+                        <button
+                          class="dropdown-toggle"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowProjects(!showProjects());
+                          }}
+                        >
+                          <FiChevronDown
+                            class={`transition-transform duration-200 ${showProjects() ? "rotate-180" : ""}`}
+                            size={16}
+                          />
+                        </button>
+                      </Show>
+                    </>
+                  }
+                >
+                  <button type="button" class="menu-item" disabled title="No projects available">
+                    <FiFolder size={20} />
+                    <Show when={!isCollapsed() || isMobile()}>
+                      <span>Select Project</span>
+                    </Show>
+                  </button>
+                </Show>
+              }
+            >
+              <button type="button" class="menu-item" onClick={() => handleAddProject()}>
+                <FiPlus size={20} />
+                <Show when={!isCollapsed() || isMobile()}>
+                  <span>Add New Project</span>
+                </Show>
+              </button>
             </Show>
-          </button>
-        }>
-          <button class="menu-item" onClick={() => handleAddProject()}>
-            <FiPlus size={20} /> Add New Project
-          </button>
-        </Show>
+          </div>
 
-        <Show when={user() && (Array.isArray(user()?.permissions) ? user()?.permissions?.[0] : user()?.permissions) === "administrator" && projects() && projects().length > 0 && (!isCollapsed() || isMobile())}>
-        <button class="dropdown-toggle" onClick={(e) => {
-            e.stopPropagation();
-            setShowProjects(!showProjects()); 
-          }}>
-          <FiChevronDown 
-            class={`transition-transform duration-200 ${showProjects() ? 'rotate-180' : ''}`}
-            size={16} 
-          />
-        </button>
-        </Show>
-      </div>
-
-      <Show when={showModal()}>
-        <Pages setUpdateMenus={setUpdateMenus} setShowModal={setShowModal} />
-      </Show>
-
-      {showProjects() && (
+      {showProjects() && (projects()?.length ?? 0) > 0 && (
         <div class="submenu">
           {projects()
             ?.filter((project) => ensureInteger(project.project_id) !== selectedProjectId())
             .map((project) => (
-              <button 
-                class="submenu-item" 
+              <button
+                type="button"
+                class="submenu-item"
                 onClick={(e) => {
                   const isCtrlPressed = e?.ctrlKey || e?.metaKey;
-                  
+
                   if (isCtrlPressed) {
-                    // Ctrl+click - open project in new window
-                    const date = selectedDate?.() ?? '';
+                    const date = selectedDate?.() ?? "";
                     const datasetId = selectedDatasetId?.() ?? 0;
-                    const hasValidDate = !!date && date !== '0';
+                    const hasValidDate = !!date && date !== "0";
 
                     let path = `/window?project_id=${encodeURIComponent(project.project_id)}&page_name=Dashboard&class_name=${encodeURIComponent(selectedClassName())}`;
 
@@ -4985,30 +5025,35 @@ const Sidebar = (props: SidebarProps) => {
                     }
 
                     let fullUrl = path;
-                    if (typeof window !== 'undefined') {
+                    if (typeof window !== "undefined") {
                       const host = window.location.host;
                       fullUrl = `https://${host}${path}`;
                     }
-                    const windowFeatures = 'width=1200,height=800,scrollbars=yes,resizable=yes';
+                    const windowFeatures = "width=1200,height=800,scrollbars=yes,resizable=yes";
                     const windowName = `project_${project.project_id}_${Date.now()}`;
                     window.open(fullUrl, windowName, windowFeatures);
                   } else {
-                    // Normal click - switch project in current window
-                    handleProjectMenuClick(project);
+                    void handleProjectMenuClick(project);
                   }
                 }}
               >
                 <FiFile size={18} /> {project.description}
               </button>
             ))}
-          <Show when={user() && (Array.isArray(user()?.permissions) ? user()?.permissions?.[0] : user()?.permissions) === "administrator" && projects() && projects().length > 0}>
+          <Show when={isUserAdministrator()}>
             {projects() && projects().length > 1 && <div class="divider"></div>}
-            <button class="submenu-item add-project" onClick={() => handleAddProject()}>
+            <button type="button" class="submenu-item add-project" onClick={() => handleAddProject()}>
               <FiPlus size={18} /> Add Project
             </button>
           </Show>
         </div>
       )}
+
+      <Show when={showModal()}>
+        <Pages setUpdateMenus={setUpdateMenus} setShowModal={setShowModal} />
+      </Show>
+
+      <Show when={hasValidSelectedProject()}>
 
       <Show when={menuFound() && dividerLabel2() && reportMenuItemsDisplay().length > 0 && datasetCount() > 0}>
             <div class="sidebar-label">
@@ -5612,6 +5657,8 @@ const Sidebar = (props: SidebarProps) => {
             
             <div class="spacer"></div>
           </Show>
+
+      </Show>
 
           {/* Settings menu in mobile mode - positioned after menus */}
           <Show when={isMobile() && settingsMenuItems().length > 0}>

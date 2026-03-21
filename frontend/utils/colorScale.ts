@@ -208,11 +208,13 @@ const CACHE_TTL = 60000; // 1 minute cache TTL
  * 
  * @param className - Optional class name (if not provided, uses persistantStore)
  * @param projectId - Optional project ID (if not provided, uses persistantStore)
+ * @param bypassCache - When true, skip the in-memory TTL cache (use after project settings add/remove source)
  * @returns Promise resolving to array of sources
  */
 export async function fetchSources(
   className?: string,
-  projectId?: number
+  projectId?: number,
+  bypassCache = false
 ): Promise<Source[]> {
   // Check if user is logged in before making API requests
   // Use dynamic import to avoid circular dependencies
@@ -243,10 +245,15 @@ export async function fetchSources(
     return [];
   }
 
-  // Check cache first
+  // Check cache first (skip when callers need a fresh list, e.g. sourcesStore.refresh(true))
   const cacheKey = `${finalClassName}:${finalProjectId}`;
   const now = Date.now();
-  if (sourcesCache && sourcesCache.key === cacheKey && (now - sourcesCache.timestamp) < CACHE_TTL) {
+  if (
+    !bypassCache &&
+    sourcesCache &&
+    sourcesCache.key === cacheKey &&
+    now - sourcesCache.timestamp < CACHE_TTL
+  ) {
     debug('fetchSources: Using cached sources', {
       count: sourcesCache.sources.length,
       age: now - sourcesCache.timestamp

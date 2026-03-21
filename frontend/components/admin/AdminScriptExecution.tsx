@@ -415,7 +415,7 @@ export default function AdminScriptExecution() {
         const sourceName = source?.source_name || "";
 
         // Build parameters to match the flow that works for each script.
-        // For 1_normalization_influx.py: match UploadDatasets_Influx exactly (no start_time/end_time; backend uses full-day from date + timezone).
+        // For 1_normalization_influx.py: match Upload Datasets page (reports/ac40/UploadDatasets.tsx) exactly (no start_time/end_time; backend uses full-day from date + timezone).
         // For other scripts (e.g. 3_execute.py): include start_time/end_time (null) and batch so script can derive range from data if needed.
         const isNormalizeInflux = scriptName === '1_normalization_influx.py';
         const parameters: Record<string, string | number | boolean | null> = isNormalizeInflux
@@ -1846,7 +1846,7 @@ export default function AdminScriptExecution() {
         const source = sources().find(s => s.source_id === dataset.source_id);
         const sourceName = source?.source_name || "";
 
-        // Match UploadDatasets_Influx for 1_normalization_influx.py; otherwise include dataset_id, batch, verbose, and start_time/end_time for 3_execute
+        // Match Upload Datasets page for 1_normalization_influx.py; otherwise include dataset_id, batch, verbose, and start_time/end_time for 3_execute
         const isNormalizeInfluxRetry = status.script_name === '1_normalization_influx.py';
         const parameters: Record<string, string | number | boolean | null> = isNormalizeInfluxRetry
           ? {
