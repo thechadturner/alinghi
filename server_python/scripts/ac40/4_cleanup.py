@@ -82,13 +82,13 @@ def _safe_race_number_row(r):
 
 def summary_page_from_races_response(races_resp):
     """
-    Align with getRaces + day cleanup: API lists races from LEG events (Leg_number > 0), not RACE-only shells.
-    Training-hour payloads include HOUR on every row; racing days return Race_number > 0 without HOUR.
+    Align with getRaces + day cleanup: LEG rows with Leg_number > 1 and Race_number > -1.
+    Training-hour payloads include HOUR on every row; racing days return rows without that shape.
     """
     data = races_resp.get("data") or []
     has_data = races_resp.get("success") and len(data) > 0
     has_training_only = has_data and all(r.get("HOUR") is not None for r in data)
-    has_actual_races = has_data and not has_training_only and any(_safe_race_number_row(r) > 0 for r in data)
+    has_actual_races = has_data and not has_training_only and any(_safe_race_number_row(r) > -1 for r in data)
     return "RACE SUMMARY" if has_actual_races else "TRAINING SUMMARY"
 
 

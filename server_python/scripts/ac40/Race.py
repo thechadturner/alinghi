@@ -617,8 +617,8 @@ def _upsert_day_summary_page(api_token, class_name, project_id, date):
     """
     Upsert day_page for (project_id, date) to TRAINING SUMMARY or RACE SUMMARY
     so the day sidebar shows the correct report. Uses same logic as 4_cleanup:
-    GET date/races (races = LEG events with Leg_number > 0, not track-only RACE rows);
-    if any Race_number > 0 without training HOUR shape, RACE SUMMARY else TRAINING SUMMARY.
+    GET date/races (LEG with Leg_number > 1, Race_number > -1);
+    if any Race_number > -1 without training HOUR shape, RACE SUMMARY else TRAINING SUMMARY.
     Does not raise; logs success/failure only.
     """
     try:

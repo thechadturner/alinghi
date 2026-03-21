@@ -8,7 +8,7 @@ const { handleValidation } = require('../../shared/middleware/validation');
 
 /**
  * @route GET /api/datasets/date/races
- * @desc Distinct race numbers for a date from LEG events (Leg_number > 0), plus training-hour fallback
+ * @desc Distinct race numbers for a date from LEG events (Leg_number > 1, Race_number > -1), plus training-hour fallback
  */
 
 router.get(

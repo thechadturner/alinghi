@@ -26,9 +26,8 @@ exports.getRaces = async (req, res) => {
       const dsFilter = hasDatasetFilter ? ' AND b.dataset_id = $3' : '';
       let params = hasDatasetFilter ? [project_id, date, datasetIdParsed] : [project_id, date];
 
-      // Race numbers from LEG events with Leg_number > 0 only. RACE-only rows are often created from
-      // track noise on training days (Race_number > 0 in parquet); real regattas have scored legs.
-      // Optional dataset_id scopes to one dataset for per-dataset summary pages.
+      // Race numbers from LEG events: Leg_number > 1 (exclude prestart/leg 0 and leg 1 per product rules),
+      // Race_number > -1 (exclude training marker -1). Optional dataset_id scopes per-dataset summaries.
       let sql = `SELECT "Race_number" from (
         SELECT 
           CASE 
@@ -36,7 +35,7 @@ exports.getRaces = async (req, res) => {
               CASE 
                 WHEN (a.tags ->> 'Race_number')::text ~ '^-?[0-9]+$' THEN
                   CASE 
-                    WHEN CAST(a.tags ->> 'Race_number' AS FLOAT) <= 0 THEN NULL
+                    WHEN CAST(a.tags ->> 'Race_number' AS FLOAT) <= -1 THEN NULL
                     ELSE CAST(CAST(a.tags ->> 'Race_number' AS FLOAT) AS INT)
                   END
                 ELSE NULL
@@ -50,18 +49,18 @@ exports.getRaces = async (req, res) => {
           AND LOWER(TRIM(a.event_type)) = 'leg'
           AND (a.tags ->> 'Leg_number') IS NOT NULL AND TRIM(a.tags ->> 'Leg_number') != ''
           AND (a.tags ->> 'Leg_number')::text ~ '^[0-9]+$'
-          AND CAST((a.tags ->> 'Leg_number') AS INT) > 0
+          AND CAST((a.tags ->> 'Leg_number') AS INT) > 1
           AND (a.tags ->> 'Race_number') IS NOT NULL AND TRIM(a.tags ->> 'Race_number') != ''
         ) 
-        WHERE "Race_number" IS NOT NULL AND "Race_number" > 0
+        WHERE "Race_number" IS NOT NULL AND "Race_number" > -1
         GROUP BY "Race_number"
         ORDER BY "Race_number" ASC`
 
       let rows = await db.GetRows(sql, params);
 
-      const hasPositiveRace = Array.isArray(rows) && rows.some((r) => {
+      const hasPositiveRace = Array.isArray(rows) && rows.length > 0 && rows.some((r) => {
         const n = r.Race_number;
-        return n != null && Number(n) > 0;
+        return n != null && Number(n) > -1;
       });
       if (hasPositiveRace) {
         return sendResponse(res, info, 200, true, rows.length + ' rows returned...', rows, false);
