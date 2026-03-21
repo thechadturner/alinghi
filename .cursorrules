@@ -1,0 +1,47 @@
+# TeamShare Cursor Rules
+
+## Data Field Case Sensitivity
+- **CRITICAL**: All data fields from the API are stored in lowercase (e.g., "twa", "bsp", "twd", "tws")
+- When accessing data fields in chart components, ALWAYS convert configuration field names to lowercase:
+  ```javascript
+  const xAxisName = config.series?.[0]?.xaxis?.name?.toLowerCase();
+  const yAxisName = config.series?.[0]?.yaxis?.name?.toLowerCase();
+  ```
+- For display purposes (tooltips, labels), use the original case from configuration:
+  ```javascript
+  const displayXAxisName = config?.series?.[0]?.xaxis?.name || 'Default';
+  ```
+
+## Chart Configuration Standards
+- Chart configurations should use descriptive, user-friendly field names (e.g., "Twa", "Bsp", "Twd", "Tws")
+- Never hardcode data field names in chart components - always use dynamic field names from configuration
+- Default configurations should use common field names that exist in the data
+
+## Navigation and Routing
+- When navigating from builders back to explore pages, set the correct menu type:
+  - PolarRose builder → `setSelectedMenu("POLAR ROSE")`
+  - TimeSeries builder → `setSelectedMenu("TIME SERIES")`
+  - etc.
+- Sidebar `loadExploreComponent` function handles both "polarrose" and "polar rose" cases
+
+## Variable Naming Conventions
+- Use generic terms instead of domain-specific ones:
+  - "speed" instead of "windspeed" 
+  - "angle" instead of "twd"
+  - "speedBins" instead of "windSpeedBins"
+- This makes components more reusable across different data types
+
+## Error Handling
+- Always validate that required axis names exist before processing data
+- Provide meaningful error messages when configuration is missing
+- Use fallback values for optional configuration properties
+
+## Component Structure
+- Chart components should fetch their own configuration rather than receiving it as props
+- Use SolidJS signals for reactive state management
+- Implement proper cleanup in `onCleanup` for D3 selections
+
+## API Integration
+- Use the unified data store for data fetching
+- Handle loading states and errors gracefully
+- Implement proper caching and data compression where appropriate

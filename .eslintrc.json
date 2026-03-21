@@ -1,0 +1,205 @@
+{
+  "root": true,
+  "env": {
+    "browser": true,
+    "es2021": true,
+    "node": true
+  },
+  "extends": [
+    "eslint:recommended"
+  ],
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": "latest",
+    "sourceType": "module",
+    "ecmaFeatures": {
+      "jsx": true
+    },
+    "project": "./tsconfig.json"
+  },
+  "plugins": [
+    "@typescript-eslint",
+    "solid",
+    "jsx-a11y"
+  ],
+  "settings": {
+    "solid/typescript": true
+  },
+  "rules": {
+    // Base ESLint rules - Pragmatic approach
+    "no-console": ["warn", { 
+      "allow": ["warn", "error"] 
+    }],
+    "no-debugger": "error",
+    "no-unused-vars": "off", // Use TypeScript version instead
+    "no-undef": "off", // TypeScript handles this
+    "prefer-const": "warn",
+    "no-var": "error",
+    "eqeqeq": ["warn", "always", { "null": "ignore" }],
+    "curly": ["warn", "all"],
+    "no-throw-literal": "error",
+    
+    // TypeScript rules
+    "@typescript-eslint/no-unused-vars": [
+      "warn",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
+    "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/explicit-module-boundary-types": "off",
+    "@typescript-eslint/no-non-null-assertion": "warn",
+    "@typescript-eslint/prefer-as-const": "warn",
+    "@typescript-eslint/no-empty-function": "warn",
+    "@typescript-eslint/ban-ts-comment": [
+      "warn",
+      {
+        "ts-expect-error": "allow-with-description",
+        "ts-ignore": "allow-with-description",
+        "ts-nocheck": "allow-with-description",
+        "ts-check": false
+      }
+    ],
+    
+    // SolidJS rules - Enhanced
+    "solid/jsx-no-script-url": "error",
+    "solid/jsx-no-undef": "error",
+    "solid/no-array-handlers": "warn",
+    "solid/no-destructure": "warn",
+    "solid/no-react-specific-props": "error",
+    "solid/no-react-deps": "error",
+    "solid/reactivity": "warn",
+    "solid/self-closing-comp": "warn",
+    "solid/style-prop": "warn",
+    "solid/prefer-for": "warn",
+    "solid/no-innerhtml": "warn",
+    "solid/jsx-no-duplicate-props": "error",
+    
+    // Accessibility rules (moderate strictness)
+    "jsx-a11y/alt-text": "warn",
+    "jsx-a11y/anchor-has-content": "warn",
+    "jsx-a11y/anchor-is-valid": "warn",
+    "jsx-a11y/aria-props": "warn",
+    "jsx-a11y/aria-proptypes": "warn",
+    "jsx-a11y/aria-unsupported-elements": "warn",
+    "jsx-a11y/role-has-required-aria-props": "warn",
+    "jsx-a11y/role-supports-aria-props": "warn",
+    "jsx-a11y/click-events-have-key-events": "warn",
+    "jsx-a11y/no-noninteractive-element-interactions": "warn",
+    "jsx-a11y/no-static-element-interactions": "warn"
+  },
+  "overrides": [
+    {
+      // Frontend SolidJS/TypeScript files
+      "files": ["frontend/**/*.{js,jsx,ts,tsx}"],
+      "parserOptions": {
+        "ecmaVersion": "latest",
+        "sourceType": "module",
+        "project": "./tsconfig.json"
+      },
+      "env": {
+        "browser": true,
+        "es2021": true
+      },
+      "rules": {
+        // Enforce console.ts usage in frontend (but allow console.ts itself)
+        "no-console": "error",
+        "@typescript-eslint/no-explicit-any": "warn"
+      }
+    },
+    {
+      // Allow console usage in console.ts utility (it wraps console)
+      "files": ["frontend/utils/console.ts", "shared/utils/console.js"],
+      "rules": {
+        "no-console": "off"
+      }
+    },
+    {
+      // Backend Node.js files (CommonJS)
+      "files": ["server_*/**/*.js", "shared/**/*.js"],
+      "env": {
+        "node": true,
+        "es2021": true
+      },
+      "parserOptions": {
+        "ecmaVersion": "latest",
+        "sourceType": "script"
+      },
+      "rules": {
+        // Backend can use console (uses shared/utils/console.js)
+        "no-console": "off",
+        "@typescript-eslint/no-var-requires": "off"
+      }
+    },
+    {
+      // Test files - more relaxed
+      "files": ["**/*.{test,spec}.{js,ts,jsx,tsx}", "**/__tests__/**/*"],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "off",
+        "@typescript-eslint/no-non-null-assertion": "off",
+        "no-console": "off"
+      }
+    },
+    {
+      // Worker files - more relaxed for performance code
+      "files": ["frontend/workers/**/*", "frontend/**/*worker*"],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "warn",
+        "no-console": "warn" // Workers might need console for debugging
+      }
+    },
+    {
+      // Cursor/dev files - very relaxed
+      "files": ["**/cursor_files/**/*"],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "off",
+        "no-console": "off",
+        "@typescript-eslint/ban-ts-comment": "off"
+      }
+    },
+    {
+      // TypeScript-only files - stricter
+      "files": ["**/*.ts", "**/*.tsx"],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "warn"
+      }
+    },
+    {
+      // Legacy JavaScript files - more permissive
+      "files": ["**/*.js", "**/*.jsx"],
+      "rules": {
+        "@typescript-eslint/no-var-requires": "off",
+        "@typescript-eslint/explicit-module-boundary-types": "off"
+      }
+    },
+    {
+      // Configuration files
+      "files": ["*.config.{js,mjs,ts}", "vite.config.*", "tailwind.config.*", "postcss.config.*"],
+      "env": {
+        "node": true
+      },
+      "rules": {
+        "@typescript-eslint/no-var-requires": "off",
+        "no-console": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "node_modules/",
+    "dist/",
+    "build/",
+    "coverage/",
+    "*.min.js",
+    "*.bundle.js",
+    ".vite/",
+    "database/",
+    "logs/",
+    "uploads/",
+    "media/",
+    "server_*/node_modules/",
+    "shared/node_modules/"
+  ]
+}
+

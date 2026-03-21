@@ -1,0 +1,39 @@
+{
+    "compilerOptions": {
+        "strict": true,
+        "module": "ESNext",
+        "moduleResolution": "Node",
+        "target": "ESNext",
+        "jsx": "preserve",
+        "jsxImportSource": "solid-js",
+        "allowJs": true,
+        "checkJs": true,
+        "noEmit": true,
+        "typeRoots": ["./node_modules/@types", "./frontend/types"],
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "baseUrl": ".",
+        "paths": {
+            "@/*": ["frontend/*"],
+            "@components/*": ["frontend/components/*"],
+            "@pages/*": ["frontend/pages/*"],
+            "@store/*": ["frontend/store/*"],
+            "@utils/*": ["frontend/utils/*"],
+            "@styles/*": ["frontend/styles/*"],
+            "@config/*": ["frontend/config/*"]
+        },
+        "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "strictBindCallApply": true,
+        "strictPropertyInitialization": true,
+        "noImplicitThis": true,
+        "alwaysStrict": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true
+    },
+    "include": ["frontend"],
+    "exclude": ["node_modules", "dist"]
+}

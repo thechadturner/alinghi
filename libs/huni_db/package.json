@@ -1,0 +1,76 @@
+{
+  "name": "@hunico/hunidb",
+  "version": "0.1.0",
+  "description": "High-performance SQL-powered client-side database using SQLite/WASM with OPFS storage",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && tsc --emitDeclarationOnly",
+    "build:types": "tsc --emitDeclarationOnly",
+    "test": "vitest",
+    "test:unit": "vitest run __tests__/unit",
+    "test:integration": "vitest run __tests__/integration",
+    "test:page": "node scripts/test-page.js",
+    "test:functionality": "node scripts/test-functionality.js",
+    "test:comprehensive": "node scripts/test-comprehensive.js",
+    "test:validate": "node scripts/validate-code.js",
+    "test:all": "npm run test:unit && npm run test:page && npm run test:functionality && npm run test:comprehensive && npm run test:validate",
+    "test:browser": "playwright test",
+    "test:browser:ui": "playwright test --ui",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "sqlite",
+    "wasm",
+    "database",
+    "client-side",
+    "opfs",
+    "indexeddb",
+    "sql",
+    "json",
+    "local-first"
+  ],
+  "author": "Chad Turner <thechadturner@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "^3.46.1-build1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.1",
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.10.0",
+    "@typescript-eslint/parser": "^6.10.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "eslint": "^8.53.0",
+    "typescript": "^5.2.2",
+    "vite": "^7.1.9",
+    "vitest": "^3.2.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hunico/hunidb"
+  },
+  "bugs": {
+    "url": "https://github.com/hunico/hunidb/issues"
+  },
+  "homepage": "https://github.com/hunico/hunidb#readme"
+}
+

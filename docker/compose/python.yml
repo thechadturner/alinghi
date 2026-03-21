@@ -1,0 +1,65 @@
+name: container-python
+
+services:
+  python:
+    build:
+      context: ../..  # Build from workspace root to access both server_python and libs/utilities
+      dockerfile: docker/dockerfiles/Dockerfile.python
+    container_name: python
+    ports:
+      - "${PYTHON_PORT:-8049}:8049"
+    environment:
+      - TZ=${TZ:-UTC}
+      - NODE_ENV=${NODE_ENV:-development}
+      - PYTHON_PORT=${PYTHON_PORT:-8049}
+      - APP_PORT=${APP_PORT:-8069}
+      # API_HOST: Use 'host.docker.internal' on Windows/Mac Docker Desktop to access host machine
+      # On Linux, use the host's IP address or '172.17.0.1' (Docker bridge gateway)
+      - API_HOST=${API_HOST:-host.docker.internal}
+      # JWT_SECRET, SYSTEM_KEY, PAT_TOKEN loaded from env_file (.env.local)
+      # Only set defaults for non-secret values
+      - JWT_ISSUER=${JWT_ISSUER:-teamshare-auth}
+      - JWT_AUDIENCE=${JWT_AUDIENCE:-teamshare-servers}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - VITE_VERBOSE=${VITE_VERBOSE:-false}
+      # Enable external user validation (set to "true" in .env if you have a user service)
+      - VALIDATE_WITH_EXTERNAL_SERVICE=${VALIDATE_WITH_EXTERNAL_SERVICE:-false}
+      # Utilities package environment variables
+      # FILE_API_URL is automatically constructed from API_HOST, FILE_PORT, and /api
+      # APP_API_URL is automatically constructed from API_HOST and APP_PORT
+      # Both can be overridden by setting them directly in .env
+      - FILE_PORT=${FILE_PORT:-8069}
+      # File storage directories (use container paths)
+      # Inside container, DATA_DIRECTORY is /data (the mounted volume path)
+      - DATA_DIRECTORY=/data
+    env_file:
+      - .env  # Load from .env file (copied to compose directory by batch scripts)
+      - .env.local  # Load from .env.local file (secrets, gitignored, copied by batch scripts)
+    volumes:
+      # Mount scripts directory for development (optional - remove in production)
+      - ../../server_python/scripts:/app/server_python/scripts
+      # Mount Windows data directory to container
+      # The Windows path comes from your .env file's DATA_DIRECTORY
+      # Format: Windows_Path:Container_Path
+      - ${DATA_DIRECTORY:-C:/MyApps/Hunico/Uploads/Data}:/data
+    networks:
+      - hunico-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8049/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    cpus: '2.5'
+    # Increased memory limit to handle large CSV files (up to 2GB)
+    # For 2GB CSV files, we need ~6-8GB total (file + DataFrame + processing overhead)
+    # With 16GB RAM available, increased limit to 10GB for better performance
+    mem_limit: 10g
+    mem_reservation: 3g
+
+networks:
+  hunico-network:
+    name: hunico-network
+    external: true
+

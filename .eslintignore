@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+coverage/
+*.min.js
+*.bundle.js
+.vite/
+database/
+logs/
+uploads/
+media/
+server_*/node_modules/
+shared/node_modules/
+*.config.js
+*.config.mjs
+*.config.ts
+

@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HuniDB - Performance Testing</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .content {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 0;
+            min-height: 700px;
+        }
+
+        .sidebar {
+            background: #f8f9fa;
+            padding: 20px;
+            border-right: 1px solid #e0e0e0;
+            overflow-y: auto;
+        }
+
+        .main {
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .section {
+            margin-bottom: 25px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border-left: 4px solid #f5576c;
+        }
+
+        .section h3 {
+            color: #f5576c;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        button {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            background: #f5576c;
+            color: white;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+
+        button:hover:not(:disabled) {
+            background: #e04a5f;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(245, 87, 108, 0.4);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+
+        .status.ready {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .status.not-ready {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .metric-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .metric-card h4 {
+            color: #666;
+            font-size: 0.85em;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .metric-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #f5576c;
+        }
+
+        .metric-label {
+            font-size: 0.9em;
+            color: #999;
+            margin-top: 4px;
+        }
+
+        .output {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            line-height: 1.6;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .output .log {
+            margin-bottom: 6px;
+        }
+
+        .output .log.info { color: #4fc3f7; }
+        .output .log.success { color: #81c784; }
+        .output .log.error { color: #e57373; }
+        .output .log.warn { color: #ffb74d; }
+
+        .chart-container {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: #f5576c;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚡ HuniDB Performance Testing</h1>
+            <p>Batch Operations, Caching, FTS5, and Metrics</p>
+        </div>
+
+        <div class="content">
+            <div class="sidebar">
+                <div class="status not-ready" id="status">
+                    ⚠️ Database not initialized
+                </div>
+
+                <div class="section">
+                    <h3>1. Initialize</h3>
+                    <button id="btnInit">Initialize Database</button>
+                </div>
+
+                <div class="section">
+                    <h3>2. Create Table</h3>
+                    <p style="font-size: 0.85em; color: #666; margin-bottom: 8px;">Required before FTS indexing</p>
+                    <button id="btnCreateTable" disabled>Create JSON Table</button>
+                </div>
+
+                <div class="section">
+                    <h3>3. Batch Writes</h3>
+                    <div class="button-group">
+                        <button id="btnBatch100" disabled>Batch Write 100 Docs</button>
+                        <button id="btnBatch1000" disabled>Batch Write 1000 Docs</button>
+                        <button id="btnFlushBatch" disabled>Flush Batch</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>4. Cache Testing</h3>
+                    <div class="button-group">
+                        <button id="btnCacheWarm" disabled>Warm Cache (100 reads)</button>
+                        <button id="btnCacheTest" disabled>Test Cache (1000 reads)</button>
+                        <button id="btnCacheClear" disabled>Clear Cache</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>5. FTS5 Search</h3>
+                    <div class="button-group">
+                        <button id="btnCreateFTS" disabled>Create FTS Index</button>
+                        <button id="btnSearchFTS" disabled>Search "developer"</button>
+                        <button id="btnSearchFTS2" disabled>Search "javascript OR python"</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>6. Performance Metrics</h3>
+                    <div class="button-group">
+                        <button id="btnShowMetrics" disabled>Show Metrics</button>
+                        <button id="btnResetMetrics" disabled>Reset Metrics</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>7. Cleanup</h3>
+                    <button id="btnClose" disabled>Close Database</button>
+                </div>
+            </div>
+
+            <div class="main">
+                <h2>Performance Metrics</h2>
+                <div class="metrics-grid" id="metricsGrid">
+                    <!-- Metrics will be populated here -->
+                </div>
+
+                <div class="chart-container">
+                    <h3>Output</h3>
+                    <div class="output" id="output"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { connect, LogLevel } from '@hunico/hunidb';
+
+        let db = null;
+        const TABLE_NAME = 'perf_docs';
+        let metricsInterval = null;
+
+        const output = document.getElementById('output');
+        const status = document.getElementById('status');
+        const metricsGrid = document.getElementById('metricsGrid');
+
+        function log(message, type = 'info') {
+            const logEl = document.createElement('div');
+            logEl.className = `log ${type}`;
+            logEl.textContent = message;
+            output.appendChild(logEl);
+            output.scrollTop = output.scrollHeight;
+            console.log(`[${type.toUpperCase()}]`, message);
+        }
+
+        function updateStatus(ready) {
+            if (ready) {
+                status.className = 'status ready';
+                status.textContent = '✅ Database ready';
+                document.querySelectorAll('button:not(#btnInit)').forEach(btn => btn.disabled = false);
+            } else {
+                status.className = 'status not-ready';
+                status.textContent = '⚠️ Database not initialized';
+                document.querySelectorAll('button:not(#btnInit)').forEach(btn => btn.disabled = true);
+            }
+        }
+
+        function updateMetrics() {
+            if (!db) {
+                // Show placeholder when not connected
+                metricsGrid.innerHTML = `
+                    <div class="metric-card">
+                        <h4>Query Count</h4>
+                        <div class="metric-value">0</div>
+                        <div class="metric-label">Connect database to see metrics</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Avg Query Time</h4>
+                        <div class="metric-value">0.00ms</div>
+                        <div class="metric-label">P50: 0.00ms | P95: 0.00ms</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Write Throughput</h4>
+                        <div class="metric-value">0.0</div>
+                        <div class="metric-label">ops/sec (0 total)</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Avg Batch Size</h4>
+                        <div class="metric-value">0.0</div>
+                        <div class="metric-label">0 batches</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Cache Hit Rate</h4>
+                        <div class="metric-value">0.0%</div>
+                        <div class="metric-label">0 hits / 0 misses</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Cache Size</h4>
+                        <div class="metric-value">0</div>
+                        <div class="metric-label">0 max | 0 evictions</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Index Rebuilds</h4>
+                        <div class="metric-value">0</div>
+                        <div class="metric-label">Avg: 0.00ms</div>
+                    </div>
+                `;
+                return;
+            }
+
+            try {
+                const metrics = db.getMetrics();
+                
+                // Ensure metrics object has expected structure
+                if (!metrics) {
+                    log('Warning: getMetrics() returned undefined', 'warn');
+                    return;
+                }
+                
+                // Ensure cache is initialized for accurate stats
+                const cache = db.cache;
+                const cacheStats = cache?.getStats() || {
+                    size: 0,
+                    maxSize: 0,
+                    hits: 0,
+                    misses: 0,
+                    hitRate: 0,
+                    evictions: 0
+                };
+                
+                // Safely extract values with defaults
+                const queries = metrics.queries || {};
+                const writes = metrics.writes || {};
+                const indexes = metrics.indexes || {};
+                
+                metricsGrid.innerHTML = `
+                    <div class="metric-card">
+                        <h4>Query Count</h4>
+                        <div class="metric-value">${queries.count || 0}</div>
+                        <div class="metric-label">Total queries executed</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Avg Query Time</h4>
+                        <div class="metric-value">${((queries.avgLatency ?? 0)).toFixed(2)}ms</div>
+                        <div class="metric-label">P50: ${((queries.p50 ?? 0)).toFixed(2)}ms | P95: ${((queries.p95 ?? 0)).toFixed(2)}ms</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Write Throughput</h4>
+                        <div class="metric-value">${((writes.throughput ?? 0)).toFixed(1)}</div>
+                        <div class="metric-label">ops/sec (${writes.count || 0} total)</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Avg Batch Size</h4>
+                        <div class="metric-value">${((writes.avgBatchSize ?? 0)).toFixed(1)}</div>
+                        <div class="metric-label">${writes.totalBatches || 0} batches</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Cache Hit Rate</h4>
+                        <div class="metric-value">${((cacheStats.hitRate ?? 0)).toFixed(1)}%</div>
+                        <div class="metric-label">${cacheStats.hits || 0} hits / ${cacheStats.misses || 0} misses</div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${Math.min(cacheStats.hitRate ?? 0, 100)}%"></div>
+                        </div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Cache Size</h4>
+                        <div class="metric-value">${cacheStats.size || 0}</div>
+                        <div class="metric-label">${cacheStats.maxSize || 0} max | ${cacheStats.evictions || 0} evictions</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Index Rebuilds</h4>
+                        <div class="metric-value">${indexes.rebuildCount || 0}</div>
+                        <div class="metric-label">Avg: ${((indexes.avgRebuildTime ?? 0)).toFixed(2)}ms</div>
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Error updating metrics:', error);
+                log(`Error updating metrics: ${error.message}`, 'error');
+                // Show error state in metrics grid
+                metricsGrid.innerHTML = `
+                    <div class="metric-card" style="grid-column: 1 / -1;">
+                        <h4>Error Loading Metrics</h4>
+                        <div class="metric-value" style="color: #ef4444;">${error.message}</div>
+                    </div>
+                `;
+            }
+        }
+
+        // Step 1: Initialize
+        document.getElementById('btnInit').addEventListener('click', async () => {
+            if (db) {
+                log('Database already initialized', 'warn');
+                return;
+            }
+            try {
+                log('Connecting to database...', 'info');
+                db = await connect({
+                    name: 'hunidb-performance-test',
+                    storage: 'indexeddb',
+                    verbose: true
+                });
+                const storageInfo = db.getStorageInfo();
+                log('✓ Database connected successfully!', 'success');
+                log(`Storage type: ${storageInfo.type} (${storageInfo.type === 'memory' ? '⚠️ WARNING: Data will be lost on page refresh!' : '✓ Persistent storage'})`, 'info');
+                updateStatus(true);
+                
+                // Start metrics update interval
+                metricsInterval = setInterval(updateMetrics, 1000);
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 2: Create Table
+        document.getElementById('btnCreateTable').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Creating JSON table...', 'info');
+                await db.json.createTable(TABLE_NAME);
+                log('✓ JSON table created successfully!', 'success');
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 3: Batch Writes
+        document.getElementById('btnBatch100').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                // Check if table exists
+                const tableExists = await db.queryValue(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, [TABLE_NAME]);
+                if (!tableExists || tableExists === 0) {
+                    log('✗ Error: JSON table does not exist. Please click "Create JSON Table" first (Step 2).', 'error');
+                    return;
+                }
+                
+                const startTime = performance.now();
+                log('Batch writing 100 documents...', 'info');
+                
+                for (let i = 1; i <= 100; i++) {
+                    await db.batch.add({
+                        type: 'insert',
+                        table: TABLE_NAME,
+                        sql: `INSERT OR REPLACE INTO "${TABLE_NAME}" (id, doc, ts) VALUES (?, ?, ?)`,
+                        params: [`batch-${i}`, JSON.stringify({
+                            id: `batch-${i}`,
+                            name: `User ${i}`,
+                            email: `user${i}@example.com`,
+                            age: 20 + (i % 50),
+                            description: `This is user ${i} with some description text for testing full-text search capabilities. Developer and JavaScript enthusiast.`
+                        }), Date.now()],
+                        id: `batch-${i}`
+                    });
+                }
+                
+                await db.batch.flush();
+                
+                // Verify documents were actually inserted
+                const count = await db.queryValue(`SELECT COUNT(*) FROM "${TABLE_NAME}"`);
+                log(`Batch flush completed. Documents in table: ${count}`, 'info');
+                
+                if (count === 0) {
+                    log('⚠️ WARNING: No documents found in table after batch insert!', 'warn');
+                }
+                
+                const duration = performance.now() - startTime;
+                log(`✓ Batch wrote 100 documents in ${duration.toFixed(2)}ms (${(100 / duration * 1000).toFixed(1)} ops/sec)`, 'success');
+                log('Note: FTS index will be synced automatically. If search returns 0 results, recreate FTS index.', 'info');
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnBatch1000').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                // Check if table exists
+                const tableExists = await db.queryValue(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, [TABLE_NAME]);
+                if (!tableExists || tableExists === 0) {
+                    log('✗ Error: JSON table does not exist. Please click "Create JSON Table" first (Step 2).', 'error');
+                    return;
+                }
+                
+                const startTime = performance.now();
+                log('Batch writing 1000 documents...', 'info');
+                
+                for (let i = 1; i <= 1000; i++) {
+                    await db.batch.add({
+                        type: 'insert',
+                        table: TABLE_NAME,
+                        sql: `INSERT OR REPLACE INTO "${TABLE_NAME}" (id, doc, ts) VALUES (?, ?, ?)`,
+                        params: [`batch-${i}`, JSON.stringify({
+                            id: `batch-${i}`,
+                            name: `User ${i}`,
+                            email: `user${i}@example.com`,
+                            age: 20 + (i % 50),
+                            description: `This is user ${i} with some description text for testing full-text search capabilities. Developer and JavaScript enthusiast.`
+                        }), Date.now()],
+                        id: `batch-${i}`
+                    });
+                }
+                
+                await db.batch.flush();
+                
+                // Verify documents were actually inserted
+                const count = await db.queryValue(`SELECT COUNT(*) FROM "${TABLE_NAME}"`);
+                log(`Batch flush completed. Documents in table: ${count}`, 'info');
+                
+                if (count === 0) {
+                    log('⚠️ WARNING: No documents found in table after batch insert!', 'warn');
+                }
+                
+                const duration = performance.now() - startTime;
+                log(`✓ Batch wrote 1000 documents in ${duration.toFixed(2)}ms (${(1000 / duration * 1000).toFixed(1)} ops/sec)`, 'success');
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnFlushBatch').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const queueSize = db.batch.getQueueSize();
+                if (queueSize === 0) {
+                    log('No operations in batch queue', 'info');
+                    return;
+                }
+                log(`Flushing ${queueSize} operations from batch queue...`, 'info');
+                await db.batch.flush();
+                log('✓ Batch flushed successfully', 'success');
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 4: Cache Testing
+        document.getElementById('btnCacheWarm').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                // Check if table exists
+                const tableExists = await db.queryValue(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, [TABLE_NAME]);
+                if (!tableExists || tableExists === 0) {
+                    log('✗ Error: JSON table does not exist. Please click "Create JSON Table" first (Step 2).', 'error');
+                    return;
+                }
+                
+                // Ensure cache is initialized and get reference
+                const cache = db.cache;
+                const cacheStatsBefore = cache.getStats();
+                log(`Cache before warm: ${cacheStatsBefore.size} entries, ${cacheStatsBefore.hits} hits, ${cacheStatsBefore.misses} misses`, 'info');
+                
+                const startTime = performance.now();
+                log('Warming cache with 100 reads...', 'info');
+                
+                // Just call getDoc - it will cache automatically
+                // Read documents batch-1 through batch-100
+                for (let i = 1; i <= 100; i++) {
+                    await db.json.getDoc(TABLE_NAME, `batch-${i}`);
+                }
+                
+                const duration = performance.now() - startTime;
+                const cacheStatsAfter = cache.getStats();
+                log(`✓ Cache warmed in ${duration.toFixed(2)}ms`, 'success');
+                log(`Cache after warm: ${cacheStatsAfter.size} entries, ${cacheStatsAfter.hits} hits, ${cacheStatsAfter.misses} misses`, 'info');
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnCacheTest').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                // Check if table exists
+                const tableExists = await db.queryValue(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, [TABLE_NAME]);
+                if (!tableExists || tableExists === 0) {
+                    log('✗ Error: JSON table does not exist. Please click "Create JSON Table" first (Step 2).', 'error');
+                    return;
+                }
+                
+                // Ensure cache is initialized and get reference (should be same instance)
+                const cache = db.cache;
+                const cacheStatsBefore = cache.getStats();
+                log(`Cache before test: ${cacheStatsBefore.size} entries, ${cacheStatsBefore.hits} hits, ${cacheStatsBefore.misses} misses`, 'info');
+                
+                // Verify cache instance is the same
+                const jsonCache = db.json['cache'];
+                if (cache !== jsonCache) {
+                    log('⚠️ WARNING: Cache instances are different! This will cause cache misses.', 'warn');
+                } else {
+                    log('✓ Cache instance verified (same instance)', 'info');
+                }
+                
+                const startTime = performance.now();
+                log('Testing cache with 1000 reads...', 'info');
+                
+                // Just call getDoc - it will use cache automatically
+                // Read batch-1 through batch-100 repeatedly (1000 times)
+                for (let i = 0; i < 1000; i++) {
+                    const docId = `batch-${(i % 100) + 1}`;
+                    await db.json.getDoc(TABLE_NAME, docId);
+                }
+                
+                const duration = performance.now() - startTime;
+                const cacheStatsAfter = cache.getStats();
+                log(`✓ Cache test completed in ${duration.toFixed(2)}ms`, 'success');
+                log(`Cache after test: ${cacheStatsAfter.size} entries, ${cacheStatsAfter.hits} hits, ${cacheStatsAfter.misses} misses, ${cacheStatsAfter.hitRate.toFixed(1)}% hit rate`, 'info');
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnCacheClear').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            await db.cache.clear();
+            log('✓ Cache cleared', 'success');
+            updateMetrics();
+        });
+
+        // Step 5: FTS5 Search
+        document.getElementById('btnCreateFTS').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Creating FTS5 index...', 'info');
+                
+                // Check if table exists first
+                const tableExists = await db.queryValue(
+                    `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`,
+                    [TABLE_NAME]
+                );
+                
+                if (!tableExists || tableExists === 0) {
+                    log('✗ Error: JSON table does not exist. Please click "Create JSON Table" button first (Step 2).', 'error');
+                    return;
+                }
+                
+                // Check if FTS already exists
+                const ftsExists = await db.json.fts.exists(TABLE_NAME);
+                if (ftsExists) {
+                    log('FTS5 index already exists. Recreating...', 'info');
+                }
+                
+                await db.json.fts.createFTSIndex(TABLE_NAME);
+                
+                // Verify it was created
+                const verified = await db.json.fts.exists(TABLE_NAME);
+                if (verified) {
+                    // Check if there are documents to index
+                    const docCount = await db.json.count(TABLE_NAME);
+                    log(`✓ FTS5 index created and verified successfully! (${docCount} documents will be indexed)`, 'success');
+                    
+                    // If documents exist, they should already be indexed by populateFTSIndex
+                    // But if they were inserted after FTS creation, we need to rebuild
+                    if (docCount > 0) {
+                        log('Note: Documents inserted via batch writes may need FTS sync. Recreate FTS index after inserting documents.', 'info');
+                    }
+                } else {
+                    log('✗ Error: FTS5 index creation reported success but table not found', 'error');
+                }
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+                console.error('FTS creation error:', error);
+            }
+        });
+
+        document.getElementById('btnSearchFTS').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const startTime = performance.now();
+                log('Searching for "developer"...', 'info');
+                const results = await db.json.fts.search(TABLE_NAME, 'developer', { limit: 10 });
+                const duration = performance.now() - startTime;
+                log(`✓ Found ${results.length} results in ${duration.toFixed(2)}ms:`, 'success');
+                results.forEach((result, i) => {
+                    log(`  [${i + 1}] Rank: ${result.rank.toFixed(2)} - ${JSON.stringify(result.doc).substring(0, 100)}...`, 'info');
+                });
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnSearchFTS2').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const startTime = performance.now();
+                log('Searching for "javascript OR python"...', 'info');
+                const results = await db.json.fts.search(TABLE_NAME, 'javascript OR python', { limit: 10 });
+                const duration = performance.now() - startTime;
+                log(`✓ Found ${results.length} results in ${duration.toFixed(2)}ms:`, 'success');
+                results.forEach((result, i) => {
+                    log(`  [${i + 1}] Rank: ${result.rank.toFixed(2)} - ${JSON.stringify(result.doc).substring(0, 100)}...`, 'info');
+                });
+                updateMetrics();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 6: Metrics
+        document.getElementById('btnShowMetrics').addEventListener('click', () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            updateMetrics();
+            const metrics = db.getMetrics();
+            log('Performance Metrics:', 'info');
+            log(JSON.stringify(metrics, null, 2), 'info');
+        });
+
+        document.getElementById('btnResetMetrics').addEventListener('click', () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            db.resetMetrics();
+            log('✓ Metrics reset', 'success');
+            updateMetrics();
+        });
+
+        // Step 7: Cleanup
+        document.getElementById('btnClose').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                if (metricsInterval) {
+                    clearInterval(metricsInterval);
+                    metricsInterval = null;
+                }
+                await db.close();
+                log('✓ Database closed', 'success');
+                db = null;
+                updateStatus(false);
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+    </script>
+</body>
+</html>
+

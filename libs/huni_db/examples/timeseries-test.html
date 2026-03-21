@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HuniDB - Time-Series Testing</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .content {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 0;
+            min-height: 700px;
+        }
+
+        .sidebar {
+            background: #f8f9fa;
+            padding: 20px;
+            border-right: 1px solid #e0e0e0;
+            overflow-y: auto;
+        }
+
+        .main {
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .section {
+            margin-bottom: 25px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border-left: 4px solid #4facfe;
+        }
+
+        .section h3 {
+            color: #4facfe;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .section p {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        button {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            background: #4facfe;
+            color: white;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+
+        button:hover:not(:disabled) {
+            background: #3d8bfe;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(79, 172, 254, 0.4);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+
+        .status.ready {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .status.not-ready {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .output {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            line-height: 1.6;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .output .log {
+            margin-bottom: 6px;
+        }
+
+        .output .log.info { color: #4fc3f7; }
+        .output .log.success { color: #81c784; }
+        .output .log.error { color: #e57373; }
+        .output .log.warn { color: #ffb74d; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .stat-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .stat-card h4 {
+            color: #666;
+            font-size: 0.85em;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #4facfe;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            color: #999;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📈 HuniDB Time-Series Testing</h1>
+            <p>Optimized for Bulk Storage, Retrieval, and Removal</p>
+        </div>
+
+        <div class="content">
+            <div class="sidebar">
+                <div class="status not-ready" id="status">
+                    ⚠️ Database not initialized
+                </div>
+
+                <div class="section">
+                    <h3>1. Initialize</h3>
+                    <button id="btnInit">Initialize Database</button>
+                </div>
+
+                <div class="section">
+                    <h3>2. Create Table</h3>
+                    <p>Create optimized time-series table</p>
+                    <button id="btnCreateTable" disabled>Create Time-Series Table</button>
+                </div>
+
+                <div class="section">
+                    <h3>3. Bulk Insert</h3>
+                    <p>Insert time-series points in bulk</p>
+                    <div class="button-group">
+                        <button id="btnInsert1K" disabled>Insert 1,000 Points</button>
+                        <button id="btnInsert10K" disabled>Insert 10,000 Points</button>
+                        <button id="btnInsert100K" disabled>Insert 100,000 Points</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>4. Query Range</h3>
+                    <p>Query data by time range</p>
+                    <div class="button-group">
+                        <button id="btnQueryLastHour" disabled>Last Hour</button>
+                        <button id="btnQueryLastDay" disabled>Last Day</button>
+                        <button id="btnQueryLastWeek" disabled>Last Week</button>
+                        <button id="btnQueryCustom" disabled>Custom Range</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>5. Aggregation</h3>
+                    <p>Downsample data with aggregation</p>
+                    <div class="button-group">
+                        <button id="btnAggregate1Min" disabled>1-Minute Avg</button>
+                        <button id="btnAggregate5Min" disabled>5-Minute Avg</button>
+                        <button id="btnAggregate1Hour" disabled>1-Hour Avg</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>6. Retention</h3>
+                    <p>Delete old data</p>
+                    <div class="button-group">
+                        <button id="btnDeleteOld7Days" disabled>Delete >7 Days</button>
+                        <button id="btnDeleteOld30Days" disabled>Delete >30 Days</button>
+                        <button id="btnGetStats" disabled>Get Statistics</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>7. Cleanup</h3>
+                    <button id="btnClose" disabled>Close Database</button>
+                </div>
+            </div>
+
+            <div class="main">
+                <h2>Time-Series Statistics</h2>
+                <div class="stats-grid" id="statsGrid">
+                    <!-- Stats will be populated here -->
+                </div>
+
+                <h2 style="margin-top: 30px;">Output</h2>
+                <div class="output" id="output"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { connect, LogLevel } from '@hunico/hunidb';
+
+        let db = null;
+        const TABLE_NAME = 'sensor_data';
+        let tsTable = null;
+
+        const output = document.getElementById('output');
+        const status = document.getElementById('status');
+        const statsGrid = document.getElementById('statsGrid');
+
+        function log(message, type = 'info') {
+            const logEl = document.createElement('div');
+            logEl.className = `log ${type}`;
+            logEl.textContent = message;
+            output.appendChild(logEl);
+            output.scrollTop = output.scrollHeight;
+            console.log(`[${type.toUpperCase()}]`, message);
+        }
+
+        function updateStatus(ready) {
+            if (ready) {
+                status.className = 'status ready';
+                status.textContent = '✅ Database ready';
+                document.querySelectorAll('button:not(#btnInit)').forEach(btn => btn.disabled = false);
+            } else {
+                status.className = 'status not-ready';
+                status.textContent = '⚠️ Database not initialized';
+                document.querySelectorAll('button:not(#btnInit)').forEach(btn => btn.disabled = true);
+            }
+        }
+
+        function updateStats() {
+            if (!tsTable) return;
+
+            tsTable.getStats(TABLE_NAME).then(stats => {
+                statsGrid.innerHTML = `
+                    <div class="stat-card">
+                        <h4>Point Count</h4>
+                        <div class="stat-value">${stats.pointCount.toLocaleString()}</div>
+                        <div class="stat-label">Total data points</div>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Time Span</h4>
+                        <div class="stat-value">${stats.timeSpan ? (stats.timeSpan / (1000 * 60 * 60 * 24)).toFixed(1) : '0'}</div>
+                        <div class="stat-label">Days</div>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Oldest</h4>
+                        <div class="stat-value">${stats.oldestTimestamp ? new Date(stats.oldestTimestamp).toLocaleDateString() : 'N/A'}</div>
+                        <div class="stat-label">First data point</div>
+                    </div>
+                    <div class="stat-card">
+                        <h4>Newest</h4>
+                        <div class="stat-value">${stats.newestTimestamp ? new Date(stats.newestTimestamp).toLocaleDateString() : 'N/A'}</div>
+                        <div class="stat-label">Latest data point</div>
+                    </div>
+                `;
+            }).catch(err => {
+                log(`Error getting stats: ${err.message}`, 'error');
+            });
+        }
+
+        // Step 1: Initialize
+        document.getElementById('btnInit').addEventListener('click', async () => {
+            if (db) {
+                log('Database already initialized', 'warn');
+                return;
+            }
+            try {
+                log('Connecting to database...', 'info');
+                db = await connect({
+                    name: 'hunidb-timeseries-test',
+                    storage: 'indexeddb',
+                    verbose: true
+                });
+                log('✓ Database connected successfully!', 'success');
+                updateStatus(true);
+                updateStats();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 2: Create Table
+        document.getElementById('btnCreateTable').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Creating time-series table...', 'info');
+                tsTable = db.timeseries({
+                    tableName: TABLE_NAME,
+                    chunkSize: 1000,
+                    valueType: 'REAL',
+                });
+                await tsTable.createTable(TABLE_NAME);
+                log('✓ Time-series table created successfully!', 'success');
+                updateStats();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 3: Bulk Insert
+        function generatePoints(count, startTime = Date.now() - (7 * 24 * 60 * 60 * 1000)) {
+            const points = [];
+            const interval = (7 * 24 * 60 * 60 * 1000) / count; // Spread over 7 days
+            
+            for (let i = 0; i < count; i++) {
+                points.push({
+                    timestamp: startTime + (i * interval),
+                    value: 20 + Math.random() * 10, // Temperature-like data
+                    tags: {
+                        sensor: `sensor-${(i % 10) + 1}`,
+                        location: ['room1', 'room2', 'room3'][i % 3],
+                    }
+                });
+            }
+            return points;
+        }
+
+        document.getElementById('btnInsert1K').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const points = generatePoints(1000);
+                log(`Inserting 1,000 points...`, 'info');
+                const result = await tsTable.bulkInsert(TABLE_NAME, points);
+                log(`✓ Inserted ${result.inserted} points in ${result.duration.toFixed(2)}ms (${result.throughput.toFixed(0)} pts/sec)`, 'success');
+                updateStats();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnInsert10K').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const points = generatePoints(10000);
+                log(`Inserting 10,000 points...`, 'info');
+                const result = await tsTable.bulkInsert(TABLE_NAME, points);
+                log(`✓ Inserted ${result.inserted} points in ${result.duration.toFixed(2)}ms (${result.throughput.toFixed(0)} pts/sec)`, 'success');
+                updateStats();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnInsert100K').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const points = generatePoints(100000);
+                log(`Inserting 100,000 points...`, 'info');
+                const startTime = performance.now();
+                const result = await tsTable.bulkInsert(TABLE_NAME, points);
+                const totalTime = performance.now() - startTime;
+                log(`✓ Inserted ${result.inserted} points in ${totalTime.toFixed(2)}ms (${result.throughput.toFixed(0)} pts/sec)`, 'success');
+                updateStats();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 4: Query Range
+        document.getElementById('btnQueryLastHour').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const endTime = Date.now();
+                const startTime = endTime - (60 * 60 * 1000);
+                log(`Querying last hour...`, 'info');
+                const points = await tsTable.queryRange(TABLE_NAME, {
+                    startTime,
+                    endTime,
+                    limit: 100,
+                });
+                log(`✓ Found ${points.length} points in last hour`, 'success');
+                if (points.length > 0) {
+                    log(`  First: ${new Date(points[0].timestamp).toLocaleString()} = ${points[0].value}`, 'info');
+                    log(`  Last: ${new Date(points[points.length - 1].timestamp).toLocaleString()} = ${points[points.length - 1].value}`, 'info');
+                }
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnQueryLastDay').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const endTime = Date.now();
+                const startTime = endTime - (24 * 60 * 60 * 1000);
+                log(`Querying last day...`, 'info');
+                const points = await tsTable.queryRange(TABLE_NAME, {
+                    startTime,
+                    endTime,
+                    limit: 1000,
+                });
+                log(`✓ Found ${points.length} points in last day`, 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnQueryLastWeek').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const endTime = Date.now();
+                const startTime = endTime - (7 * 24 * 60 * 60 * 1000);
+                log(`Querying last week...`, 'info');
+                const points = await tsTable.queryRange(TABLE_NAME, {
+                    startTime,
+                    endTime,
+                    limit: 5000,
+                });
+                log(`✓ Found ${points.length} points in last week`, 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnQueryCustom').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const endTime = Date.now();
+                const startTime = endTime - (2 * 24 * 60 * 60 * 1000); // Last 2 days
+                log(`Querying custom range (last 2 days)...`, 'info');
+                const points = await tsTable.queryRange(TABLE_NAME, {
+                    startTime,
+                    endTime,
+                    tags: { location: 'room1' }, // Filter by tag
+                    limit: 500,
+                });
+                log(`✓ Found ${points.length} points in room1 (last 2 days)`, 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 5: Aggregation
+        document.getElementById('btnAggregate1Min').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const endTime = Date.now();
+                const startTime = endTime - (24 * 60 * 60 * 1000);
+                log(`Aggregating to 1-minute averages...`, 'info');
+                const aggregated = await tsTable.aggregate(TABLE_NAME, {
+                    startTime,
+                    endTime,
+                    aggregation: {
+                        function: 'avg',
+                        interval: 60 * 1000, // 1 minute
+                    }
+                });
+                log(`✓ Aggregated to ${aggregated.length} 1-minute buckets`, 'success');
+                if (aggregated.length > 0) {
+                    log(`  Sample: ${new Date(aggregated[0].timestamp).toLocaleString()} = ${aggregated[0].value.toFixed(2)}`, 'info');
+                }
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnAggregate5Min').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const endTime = Date.now();
+                const startTime = endTime - (7 * 24 * 60 * 60 * 1000);
+                log(`Aggregating to 5-minute averages...`, 'info');
+                const aggregated = await tsTable.aggregate(TABLE_NAME, {
+                    startTime,
+                    endTime,
+                    aggregation: {
+                        function: 'avg',
+                        interval: 5 * 60 * 1000, // 5 minutes
+                    }
+                });
+                log(`✓ Aggregated to ${aggregated.length} 5-minute buckets`, 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnAggregate1Hour').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const endTime = Date.now();
+                const startTime = endTime - (30 * 24 * 60 * 60 * 1000);
+                log(`Aggregating to 1-hour averages...`, 'info');
+                const aggregated = await tsTable.aggregate(TABLE_NAME, {
+                    startTime,
+                    endTime,
+                    aggregation: {
+                        function: 'avg',
+                        interval: 60 * 60 * 1000, // 1 hour
+                    }
+                });
+                log(`✓ Aggregated to ${aggregated.length} 1-hour buckets`, 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 6: Retention
+        document.getElementById('btnDeleteOld7Days').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+                log(`Deleting data older than 7 days...`, 'info');
+                const deleted = await tsTable.deleteOld(TABLE_NAME, cutoff);
+                log(`✓ Deleted ${deleted} old points`, 'success');
+                updateStats();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnDeleteOld30Days').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+                log(`Deleting data older than 30 days...`, 'info');
+                const deleted = await tsTable.deleteOld(TABLE_NAME, cutoff);
+                log(`✓ Deleted ${deleted} old points`, 'success');
+                updateStats();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnGetStats').addEventListener('click', async () => {
+            if (!tsTable) {
+                log('✗ Error: Table not created', 'error');
+                return;
+            }
+            try {
+                const stats = await tsTable.getStats(TABLE_NAME);
+                log('Time-Series Statistics:', 'info');
+                log(`  Point Count: ${stats.pointCount.toLocaleString()}`, 'info');
+                log(`  Oldest: ${stats.oldestTimestamp ? new Date(stats.oldestTimestamp).toLocaleString() : 'N/A'}`, 'info');
+                log(`  Newest: ${stats.newestTimestamp ? new Date(stats.newestTimestamp).toLocaleString() : 'N/A'}`, 'info');
+                log(`  Time Span: ${stats.timeSpan ? (stats.timeSpan / (1000 * 60 * 60 * 24)).toFixed(1) : '0'} days`, 'info');
+                updateStats();
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 7: Cleanup
+        document.getElementById('btnClose').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                await db.close();
+                log('✓ Database closed', 'success');
+                db = null;
+                tsTable = null;
+                updateStatus(false);
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+    </script>
+</body>
+</html>
+

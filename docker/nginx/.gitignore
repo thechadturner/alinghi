@@ -1,0 +1,8 @@
+# Ignore all log files
+*.log
+access.log
+error.log
+
+# Ignore logs directory contents (but keep the directory structure)
+logs/*
+!logs/.gitkeep

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\MyGit\\RaceSight"]
+    },
+    "hunico-solid": {
+      "command": "node",
+      "args": ["tools/mcp-solid-server/dist/index.js"],
+      "cwd": "."
+    }
+  }
+}

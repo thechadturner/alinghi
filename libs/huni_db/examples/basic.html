@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HuniDB Basic Example</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .success {
+            background: #28a745;
+        }
+        .success:hover {
+            background: #218838;
+        }
+        .danger {
+            background: #dc3545;
+        }
+        .danger:hover {
+            background: #c82333;
+        }
+        #output {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+        }
+        .log-info {
+            color: #007bff;
+        }
+        .log-success {
+            color: #28a745;
+        }
+        .log-error {
+            color: #dc3545;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+        }
+        tr:hover {
+            background: #f8f9fa;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .stat-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            border-left: 4px solid #007bff;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #6c757d;
+            text-transform: uppercase;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <h1>🗄️ HuniDB Basic Example</h1>
+    
+    <div class="container">
+        <h2>1. Initialize Database</h2>
+        <button id="btnInit">Initialize Database</button>
+        <button id="btnInfo" disabled>Show Storage Info</button>
+    </div>
+
+    <div class="container">
+        <h2>2. Run Migrations</h2>
+        <button id="btnMigrate" disabled>Run Migrations</button>
+        <button id="btnMigrationStatus" disabled>Migration Status</button>
+    </div>
+
+    <div class="container">
+        <h2>3. Insert Data</h2>
+        <button id="btnInsert" disabled class="success">Insert Sample Users</button>
+        <button id="btnInsertMany" disabled class="success">Insert 100 Users (Performance Test)</button>
+    </div>
+
+    <div class="container">
+        <h2>4. Query Data</h2>
+        <button id="btnQuery" disabled>Query All Users</button>
+        <button id="btnQueryOne" disabled>Query Single User</button>
+        <button id="btnCount" disabled>Count Users</button>
+    </div>
+
+    <div class="container">
+        <h2>5. Update Data</h2>
+        <button id="btnUpdate" disabled>Update User</button>
+    </div>
+
+    <div class="container">
+        <h2>6. Transaction Test</h2>
+        <button id="btnTransaction" disabled>Run Transaction</button>
+    </div>
+
+    <div class="container">
+        <h2>7. Performance & Stats</h2>
+        <button id="btnStats" disabled>Show Statistics</button>
+        <button id="btnMetrics" disabled>Show Performance Metrics</button>
+        <div class="stats" id="statsContainer"></div>
+    </div>
+
+    <div class="container">
+        <h2>8. Cleanup</h2>
+        <button id="btnDelete" disabled class="danger">Delete All Users</button>
+        <button id="btnClose" disabled class="danger">Close Database</button>
+    </div>
+
+    <div class="container">
+        <h2>Output</h2>
+        <div id="output">Ready to connect...</div>
+    </div>
+
+    <script type="module">
+        import { connect, LogLevel } from '@hunico/hunidb';
+
+        let db = null;
+        const output = document.getElementById('output');
+
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const className = `log-${type}`;
+            output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+            output.scrollTop = output.scrollHeight;
+            console.log(message);
+        }
+
+        function clearOutput() {
+            output.innerHTML = '';
+        }
+
+        // Initialize Database
+        document.getElementById('btnInit').addEventListener('click', async () => {
+            try {
+                log('Connecting to database...', 'info');
+                db = await connect({
+                    name: 'hunidb-example',
+                    storage: 'indexeddb',
+                    verbose: true
+                });
+                log('✓ Database connected successfully!', 'success');
+                
+                // Enable other buttons
+                document.querySelectorAll('button:disabled').forEach(btn => btn.disabled = false);
+                document.getElementById('btnInit').disabled = true;
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Storage Info
+        document.getElementById('btnInfo').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const info = await db.getStorageInfo();
+                log('Storage Information:', 'info');
+                log(`  Type: ${info.type}`, 'info');
+                log(`  Available: ${info.available}`, 'info');
+                if (info.usage && info.quota) {
+                    const usagePercent = (info.usage / info.quota * 100).toFixed(2);
+                    log(`  Usage: ${(info.usage / 1024 / 1024).toFixed(2)} MB / ${(info.quota / 1024 / 1024).toFixed(2)} MB (${usagePercent}%)`, 'info');
+                }
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Run Migrations
+        document.getElementById('btnMigrate').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Running migrations...', 'info');
+                await db.migrate([
+                    {
+                        version: 1,
+                        description: 'Create users table',
+                        up: async (sql) => {
+                            await sql.exec(`
+                                CREATE TABLE users (
+                                    id TEXT PRIMARY KEY,
+                                    name TEXT NOT NULL,
+                                    email TEXT UNIQUE,
+                                    age INTEGER,
+                                    created_at INTEGER NOT NULL
+                                )
+                            `);
+                            await sql.exec(`CREATE INDEX idx_users_created ON users(created_at)`);
+                            await sql.exec(`CREATE INDEX idx_users_email ON users(email)`);
+                        },
+                        down: async (sql) => {
+                            await sql.exec(`DROP TABLE users`);
+                        }
+                    }
+                ]);
+                log('✓ Migrations completed!', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Migration Status
+        document.getElementById('btnMigrationStatus').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const migrations = [
+                    {
+                        version: 1,
+                        description: 'Create users table',
+                        up: async () => {},
+                        down: async () => {}
+                    }
+                ];
+                const status = await db.getMigrationStatus(migrations);
+                log('Migration Status:', 'info');
+                log(`  Current Version: ${status.currentVersion}`, 'info');
+                log(`  Available Version: ${status.availableVersion}`, 'info');
+                log(`  Pending: ${status.pendingMigrations.join(', ') || 'None'}`, 'info');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Insert Sample Users
+        document.getElementById('btnInsert').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Inserting sample users...', 'info');
+                await db.exec(
+                    `INSERT INTO users (id, name, email, age, created_at) VALUES (?, ?, ?, ?, ?)`,
+                    ['u1', 'John Doe', 'john@example.com', 30, Date.now()]
+                );
+                await db.exec(
+                    `INSERT INTO users (id, name, email, age, created_at) VALUES (?, ?, ?, ?, ?)`,
+                    ['u2', 'Jane Smith', 'jane@example.com', 25, Date.now()]
+                );
+                await db.exec(
+                    `INSERT INTO users (id, name, email, age, created_at) VALUES (?, ?, ?, ?, ?)`,
+                    ['u3', 'Bob Johnson', 'bob@example.com', 35, Date.now()]
+                );
+                log('✓ Inserted 3 users', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Insert Many Users
+        document.getElementById('btnInsertMany').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const startTime = performance.now();
+                log('Inserting 100 users...', 'info');
+                
+                await db.transaction(async (tx) => {
+                    for (let i = 1; i <= 100; i++) {
+                        await tx.exec(
+                            `INSERT OR IGNORE INTO users (id, name, email, age, created_at) VALUES (?, ?, ?, ?, ?)`,
+                            [`perf-${i}`, `User ${i}`, `user${i}@example.com`, 20 + (i % 50), Date.now()]
+                        );
+                    }
+                });
+                
+                const duration = performance.now() - startTime;
+                log(`✓ Inserted 100 users in ${duration.toFixed(2)}ms`, 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Query All Users
+        document.getElementById('btnQuery').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Querying all users...', 'info');
+                const users = await db.query(`SELECT * FROM users ORDER BY created_at DESC LIMIT 10`);
+                log(`✓ Found ${users.length} users:`, 'success');
+                users.forEach(user => {
+                    log(`  ${user.name} (${user.email}) - Age: ${user.age}`, 'info');
+                });
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Query Single User
+        document.getElementById('btnQueryOne').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const user = await db.queryOne(`SELECT * FROM users WHERE id = ?`, ['u1']);
+                if (user) {
+                    log(`✓ Found user:`, 'success');
+                    log(`  Name: ${user.name}`, 'info');
+                    log(`  Email: ${user.email}`, 'info');
+                    log(`  Age: ${user.age}`, 'info');
+                } else {
+                    log('No user found with id u1', 'info');
+                }
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Count Users
+        document.getElementById('btnCount').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const count = await db.queryValue(`SELECT COUNT(*) FROM users`);
+                log(`✓ Total users: ${count}`, 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Update User
+        document.getElementById('btnUpdate').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                await db.exec(`UPDATE users SET age = ? WHERE id = ?`, [31, 'u1']);
+                log('✓ Updated user age', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Transaction
+        document.getElementById('btnTransaction').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Running transaction...', 'info');
+                await db.transaction(async (tx) => {
+                    await tx.exec(
+                        `INSERT OR REPLACE INTO users (id, name, email, age, created_at) VALUES (?, ?, ?, ?, ?)`,
+                        ['tx1', 'Transaction User', 'tx@example.com', 28, Date.now()]
+                    );
+                    await tx.exec(`UPDATE users SET age = age + 1 WHERE id = ?`, ['u1']);
+                    const count = await tx.queryOne(`SELECT COUNT(*) as count FROM users`);
+                    log(`  Users in transaction: ${count.count}`, 'info');
+                });
+                log('✓ Transaction completed!', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Show Statistics
+        document.getElementById('btnStats').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const stats = db.getCacheStats();
+                const statsHtml = `
+                    <div class="stat-card">
+                        <div class="stat-label">Cache Size</div>
+                        <div class="stat-value">${stats.size} / ${stats.maxSize}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Cache Hit Rate</div>
+                        <div class="stat-value">${(stats.hitRate * 100).toFixed(1)}%</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Storage Type</div>
+                        <div class="stat-value">${db.getStorageType()}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Connection Status</div>
+                        <div class="stat-value">${db.isConnected() ? '✓ Connected' : '✗ Disconnected'}</div>
+                    </div>
+                `;
+                document.getElementById('statsContainer').innerHTML = statsHtml;
+                log('✓ Statistics updated', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Show Performance Metrics
+        document.getElementById('btnMetrics').addEventListener('click', () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const metrics = db.getMetrics();
+                log('Performance Metrics:', 'info');
+                log(`  Queries: ${metrics.queryCount}`, 'info');
+                log(`  Avg Query Time: ${metrics.averageQueryTime.toFixed(2)}ms`, 'info');
+                log(`  Transactions: ${metrics.transactionCount}`, 'info');
+                log(`  Avg Transaction Time: ${metrics.averageTransactionTime.toFixed(2)}ms`, 'info');
+                log(`  Cache Hits: ${metrics.cacheHits}`, 'info');
+                log(`  Cache Misses: ${metrics.cacheMisses}`, 'info');
+                log(`  Cache Hit Rate: ${(metrics.cacheHitRate * 100).toFixed(1)}%`, 'info');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Delete All Users
+        document.getElementById('btnDelete').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            if (!confirm('Delete all users?')) return;
+            try {
+                await db.exec(`DELETE FROM users`);
+                log('✓ Deleted all users', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Close Database
+        document.getElementById('btnClose').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                await db.close();
+                log('✓ Database closed', 'success');
+                document.querySelectorAll('button').forEach(btn => btn.disabled = true);
+                document.getElementById('btnInit').disabled = false;
+                db = null;
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+    </script>
+</body>
+</html>
+

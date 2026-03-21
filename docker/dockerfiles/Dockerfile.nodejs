@@ -1,0 +1,108 @@
+# Use Node.js LTS version as base
+FROM node:20-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies if needed
+# DuckDB requires build tools for native compilation
+# ffmpeg (and ffprobe) required by server_admin for video upload: metadata (duration, start/end) even when SKIP_VIDEO_FFMPEG=true at runtime; full encoding when false
+RUN apt-get update && \
+    apt-get install -y python3 make g++ cmake ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy package files FIRST for better Docker layer caching
+# This way, npm install only runs when dependencies change, not when code changes
+# Copy both package.json and package-lock.json (if it exists)
+# NOTE: We do NOT copy node_modules from host because they contain platform-specific binaries
+# (e.g., bcrypt, pg native bindings) that won't work in Linux containers if built on Windows
+COPY shared/package.json /app/shared/
+COPY shared/package-lock.json* /app/shared/
+COPY server_app/package.json /app/server_app/
+COPY server_app/package-lock.json* /app/server_app/
+COPY server_admin/package.json /app/server_admin/
+COPY server_admin/package-lock.json* /app/server_admin/
+COPY server_file/package.json /app/server_file/
+COPY server_file/package-lock.json* /app/server_file/
+COPY server_media/package.json /app/server_media/
+COPY server_media/package-lock.json* /app/server_media/
+COPY server_stream/package.json /app/server_stream/
+COPY server_stream/package-lock.json* /app/server_stream/
+
+# Install shared dependencies first (this layer will be cached unless shared/package.json changes)
+WORKDIR /app/shared
+RUN if [ -f package-lock.json ]; then npm ci --only=production; else npm install --only=production; fi
+
+# Install server dependencies (these layers will be cached unless respective package.json files change)
+# Always install in container to ensure platform-specific binaries are correct for Linux
+# Docker will cache these layers unless package.json or package-lock.json changes
+WORKDIR /app/server_app
+RUN if [ -f package.json ] && grep -q '"dependencies"' package.json; then \
+        if [ -f package-lock.json ]; then \
+            npm ci --only=production; \
+        else \
+            npm install --only=production; \
+        fi \
+    fi || true
+
+WORKDIR /app/server_admin
+RUN if [ -f package.json ] && grep -q '"dependencies"' package.json; then \
+        if [ -f package-lock.json ]; then \
+            npm ci --only=production; \
+        else \
+            npm install --only=production; \
+        fi \
+    fi || true
+
+WORKDIR /app/server_file
+RUN if [ -f package.json ] && grep -q '"dependencies"' package.json; then \
+        if [ -f package-lock.json ]; then \
+            npm ci --only=production; \
+        else \
+            npm install --only=production; \
+        fi \
+    fi || true
+
+WORKDIR /app/server_media
+RUN if [ -f package.json ] && grep -q '"dependencies"' package.json; then \
+        if [ -f package-lock.json ]; then \
+            npm ci --only=production; \
+        else \
+            npm install --only=production; \
+        fi \
+    fi || true
+
+WORKDIR /app/server_stream
+RUN if [ -f package.json ] && grep -q '"dependencies"' package.json; then \
+        if [ -f package-lock.json ]; then \
+            npm ci --only=production; \
+        else \
+            npm install --only=production; \
+        fi \
+    fi || true
+
+# NOW copy the actual code (this layer will be rebuilt on every code change, but npm install won't run)
+COPY shared /app/shared
+COPY server_app /app/server_app
+COPY server_admin /app/server_admin
+COPY server_file /app/server_file
+COPY server_media /app/server_media
+COPY server_stream /app/server_stream
+
+# Install bash for better signal handling
+RUN apt-get update && apt-get install -y bash && rm -rf /var/lib/apt/lists/*
+
+# Copy startup script
+COPY docker/scripts/start-servers.sh /app/start-servers.sh
+RUN chmod +x /app/start-servers.sh
+
+# Expose all ports
+EXPOSE 8069 8059 8079 8089 8099
+
+# Health check (check all servers)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD node -e "const http=require('http');let checks=0;const ports=[8069,8059,8079,8089,8099];ports.forEach(p=>{http.get('http://localhost:'+p+'/api/health',(r)=>{if(r.statusCode===200)checks++;if(checks===ports.length)process.exit(0)}).on('error',()=>process.exit(1))});setTimeout(()=>process.exit(checks===ports.length?0:1),2000)" || exit 1
+
+# Run the startup script with bash for proper signal handling
+CMD ["/bin/bash", "/app/start-servers.sh"]
+

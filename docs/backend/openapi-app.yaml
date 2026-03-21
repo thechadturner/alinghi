@@ -1,0 +1,1571 @@
+openapi: 3.0.3
+info:
+  title: TeamShare App API
+  version: 0.1.0
+  description: |
+    Core read-optimized API for authentication, users, projects, datasets, events, targets, pages, and data.
+    
+    ## Database Schema
+    For complete database schema documentation, see `docs/database/database-schema.md`.
+    The database uses PostgreSQL with three main schemas: `admin`, `ac75`, and `gp50`.
+    Schema definition: `database/hunico_database_emptry.sql`
+    
+    ## Key Features
+    - **Unified Filtering System**: Class-specific filter configurations with cross-window synchronization
+    - **Multi-Window Support**: Real-time data and filter synchronization across multiple browser windows
+    - **Component-Specific Filters**: Charts can override unified filters with their own filtering logic
+    - **Original Case Field Names**: Consistent field naming convention (Twa, Race_number, Leg_number, Grade)
+    - **Performance Optimized**: Efficient filtering algorithms with early returns and smart caching
+    
+    ## Network Configuration
+    The API supports multiple network configuration modes controlled by environment variables:
+    - **Auto Mode** (default): Automatically detects localhost vs network IP based on access method
+    - **Localhost Mode**: Forces all services to use localhost
+    - **Network Mode**: Forces all services to use network IP
+    - **Custom Mode**: Uses a specified custom host
+    
+    Default ports:
+    - **API Server**: 8069
+    - **Media Server**: 8089
+    - **File Server**: 8079
+    - **Admin Server**: 8059
+    - **Python Server**: 8049
+
+servers:
+  - url: http://localhost:8069
+    description: Local development (localhost mode)
+  - url: http://127.0.0.1:8069
+    description: Local development (127.0.0.1)
+  - url: http://{host}:8069
+    description: Network deployment (auto or network mode)
+    variables:
+      host:
+        default: 192.168.1.100
+        description: Network IP address or hostname
+  - url: https://{host}:443
+    description: Production with HTTPS (custom mode)
+    variables:
+      host:
+        default: api.company.com
+        description: Production API hostname
+
+paths:
+  /api/health:
+    get:
+      summary: Health check endpoint
+      description: Returns the health status of the API server
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+                  service:
+                    type: string
+                    example: "app"
+                  uptime:
+                    type: number
+                    description: Server uptime in seconds
+                  timestamp:
+                    type: integer
+                    format: int64
+                    description: Unix timestamp in milliseconds
+  /api/auth/autoLogin:
+    post:
+      summary: Auto login with legacy token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: User info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      user_id: { type: string }
+                      token: { type: string, description: JWT or legacy token }
+        '401': { description: Unauthorized }
+  
+  # Authentication (JWT) - server_app
+  /api/auth/user:
+    get:
+      summary: Get current user profile
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Current user info }
+        '401': { description: Unauthorized }
+  /api/auth/login:
+    post:
+      summary: Login with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                rememberMe: { type: boolean }
+      responses:
+        '200': { description: Login successful }
+        '401': { description: Invalid credentials }
+  /api/auth/register:
+    post:
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200': { description: Registration successful }
+  /api/auth/verify:
+    post:
+      summary: Verify a newly registered user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string, format: email }
+                code: { type: string }
+                rememberMe: { type: boolean }
+      responses:
+        '200': { description: Verification successful }
+  /api/auth/refresh:
+    post:
+      summary: Refresh access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200': { description: Token refreshed }
+  /api/auth/logout:
+    post:
+      summary: Logout current session
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Logged out }
+  /api/auth/forgot-password:
+    post:
+      summary: Start password reset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200': { description: Email sent if user exists }
+  /api/auth/reset-password:
+    post:
+      summary: Complete password reset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string, format: email }
+                code: { type: string }
+                newPassword: { type: string, format: password }
+      responses:
+        '200': { description: Password reset }
+  /api/projects:
+    get:
+      summary: List projects accessible to the user
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Projects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        project_id: { type: string }
+                        name: { type: string }
+        '401': { description: Unauthorized }
+  /api/projects/users:
+    get:
+      summary: List users on a project
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Users }
+  /api/projects/type:
+    get:
+      summary: List projects by type
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: type
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Projects }
+  /api/projects/class:
+    get:
+      summary: Get project class
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Class name }
+  /api/projects/id:
+    get:
+      summary: Get project by id
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Project }
+  /api/projects/object:
+    get:
+      summary: Get project object
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: object_name
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Project object }
+    post:
+      summary: Create project
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project_name: { type: string }
+                class_id: { type: integer }
+      responses:
+        '200': { description: Created }
+    put:
+      summary: Update project
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project_id: { type: integer }
+                project_name: { type: string }
+                class_id: { type: integer }
+      responses:
+        '200': { description: Updated }
+    delete:
+      summary: Delete project
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project_id: { type: integer }
+      responses:
+        '200': { description: Deleted }
+  /api/users/subscription:
+    get:
+      summary: Get user subscription info
+      parameters:
+        - in: query
+          name: id
+          schema: { type: string }
+          required: true
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Subscription info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+        '401': { description: Unauthorized }
+
+  /api/users/all:
+    get:
+      summary: Get all users
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Users }
+  /api/users/active:
+    get:
+      summary: Get user activity status
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Status }
+  /api/users/permissions:
+    get:
+      summary: Get user permissions for project
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Permissions }
+  /api/users/api_key:
+    get:
+      summary: Get user API key
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: API key }
+  /api/users:
+    get:
+      summary: Get user info by id
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: User }
+    post:
+      summary: Create user (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_name: { type: string }
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string, format: email }
+                password_hash: { type: string }
+      responses:
+        '200': { description: Created }
+    put:
+      summary: Update user (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                user_name: { type: string }
+                first_name: { type: string }
+                last_name: { type: string }
+                email: { type: string }
+                tags: { type: string, description: JSON string }
+      responses:
+        '200': { description: Updated }
+    delete:
+      summary: Delete user (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Deleted }
+  /api/users/update/subscription:
+    put:
+      summary: Update subscription (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                subscription_type: { type: string }
+                duration: { type: integer }
+      responses:
+        '200': { description: Updated }
+  /api/users/disable:
+    put:
+      summary: Disable user (admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Updated }
+
+  
+  # Unified Filtering System Endpoints
+  /api/classes/object:
+    get:
+      summary: Get class-specific object (e.g., filter configurations)
+      parameters:
+        - in: query
+          name: class_name
+          schema: { type: string }
+          required: true
+          description: Class name (e.g., 'ac75')
+        - in: query
+          name: project_id
+          schema: { type: integer }
+          required: true
+          description: Project ID
+        - in: query
+          name: object_name
+          schema: { type: string }
+          required: true
+          description: Object name (e.g., 'filters')
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Class object retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    $ref: '#/components/schemas/ClassFilterConfig'
+        '404':
+          description: Object not found
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+  # User Objects Management
+  /api/users/object:
+    get:
+      summary: Get user-specific object (e.g., chart configurations)
+      parameters:
+        - in: query
+          name: class_name
+          schema: { type: string }
+          required: true
+        - in: query
+          name: project_id
+          schema: { type: integer }
+          required: true
+        - in: query
+          name: user_id
+          schema: { type: string }
+          required: true
+        - in: query
+          name: parent_name
+          schema: { type: string }
+          required: true
+        - in: query
+          name: object_name
+          schema: { type: string }
+          required: true
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: User object retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    description: User object data (chart configuration, etc.)
+        '204':
+          description: User object not found
+        '401':
+          description: Unauthorized
+        '404':
+          description: User objects table not found
+
+    post:
+      summary: Create or update user-specific object
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                user_id: { type: string }
+                parent_name: { type: string }
+                object_name: { type: string }
+                json: { type: string, description: JSON string }
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: User object created/updated successfully
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+
+    delete:
+      summary: Delete user-specific object
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                user_id: { type: string }
+                parent_name: { type: string }
+                object_name: { type: string }
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: User object deleted successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Object not found
+        '500':
+          description: Internal server error
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # Unified Filtering System Schemas
+    ClassFilterConfig:
+      type: object
+      description: Class-specific filter configuration
+      properties:
+        class_name:
+          type: string
+          example: "AC75"
+          description: Class name
+        version:
+          type: string
+          example: "1.0"
+          description: Configuration version
+        filter_channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterChannel'
+          description: Available filter channels
+        default_filters:
+          type: array
+          items:
+            type: string
+          example: ["Twa", "Race_number", "Leg_number", "Grade"]
+          description: Default filter channels
+        filter_types:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/FilterTypeConfig'
+          description: Filter type configurations
+        required_for_filtering:
+          type: boolean
+          description: Whether filters are required
+        cache_duration:
+          type: integer
+          example: 3600
+          description: Cache duration in seconds
+
+    FilterChannel:
+      type: object
+      description: Filter channel definition
+      properties:
+        name:
+          type: string
+          example: "Twa"
+          description: Channel name (original case)
+        type:
+          type: string
+          enum: ["float", "int", "string", "datetime"]
+          example: "float"
+          description: Data type
+        display_name:
+          type: string
+          example: "True Wind Angle"
+          description: Human-readable name
+        description:
+          type: string
+          example: "Wind angle relative to boat heading"
+          description: Channel description
+
+    FilterTypeConfig:
+      type: object
+      description: Filter type configuration
+      properties:
+        type:
+          type: string
+          enum: ["directional", "numeric", "categorical"]
+          example: "directional"
+          description: Filter type
+        options:
+          type: array
+          items:
+            type: string
+          example: ["upwind", "downwind", "reaching", "port", "stbd"]
+          description: Available filter options
+        ranges:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/FilterRange'
+          description: Range definitions for directional filters
+
+    FilterRange:
+      type: object
+      description: Filter range definition
+      properties:
+        min:
+          type: number
+          example: 0
+          description: Minimum value
+        max:
+          type: number
+          example: 75
+          description: Maximum value
+
+    # Data endpoints
+    ManeuverType:
+      type: string
+      enum: [tack, gybe, mark, start, finish, all]
+
+paths:
+  /api/classes:
+    get:
+      summary: List classes
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Classes }
+
+  /api/datasets/years:
+    get:
+      summary: Get dataset years
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: source_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Years }
+  /api/datasets/events:
+    get:
+      summary: Get dataset events by year
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: source_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: year
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Events }
+  /api/datasets/info:
+    get:
+      summary: Get dataset info
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Info }
+  /api/datasets/tags:
+    get:
+      summary: Get dataset tags
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Tags }
+  /api/datasets/count:
+    get:
+      summary: Get dataset count
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Count }
+  /api/datasets/id:
+    get:
+      summary: Get dataset by id
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Dataset }
+  /api/datasets:
+    get:
+      summary: List datasets
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: source_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: year
+          required: true
+          schema: { type: string }
+        - in: query
+          name: event
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Datasets }
+    post:
+      summary: Create dataset
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                source_id: { type: integer }
+                date: { type: string }
+                year: { type: integer }
+                event_name: { type: string }
+                report_name: { type: string }
+                description: { type: string }
+                tags: { type: object }
+      responses:
+        '200': { description: Created }
+    put:
+      summary: Update dataset
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                dataset_id: { type: integer }
+                event_name: { type: string }
+                report_name: { type: string }
+                description: { type: string }
+                location: { type: string }
+                tws: { type: string }
+                twd: { type: string }
+                shared: { type: integer }
+      responses:
+        '200': { description: Updated }
+    delete:
+      summary: Delete dataset
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                dataset_id: { type: integer }
+      responses:
+        '200': { description: Deleted }
+  /api/datasets/object:
+    get:
+      summary: Get dataset object
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: parent_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: object_name
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Object }
+  /api/datasets/tags:
+    put:
+      summary: Update dataset tags
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                dataset_id: { type: integer }
+                tags: { type: string }
+      responses:
+        '200': { description: Updated }
+  /api/datasets/visibility:
+    put:
+      summary: Update dataset visibility
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                dataset_id: { type: integer }
+                visible: { type: integer }
+      responses:
+        '200': { description: Updated }
+
+  /api/events:
+    get:
+      summary: Get events by type
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: event_type
+          required: true
+          schema: { $ref: '#/components/schemas/ManeuverType' }
+      responses:
+        '200': { description: Events }
+  /api/events/info:
+    get:
+      summary: Get events info
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: event_type
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Info }
+  /api/events/times:
+    get:
+      summary: Get event times
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: event_list
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Times }
+  /api/events/object:
+    get:
+      summary: Get event object
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: event_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: table
+          required: true
+          schema: { type: string }
+        - in: query
+          name: desc
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Object }
+
+  /api/media/sources:
+    get:
+      summary: Get media sources for a date
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: date
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Sources }
+  /api/media:
+    get:
+      summary: Get media by source and date
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: media_source
+          required: true
+          schema: { type: string }
+        - in: query
+          name: date
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Media }
+
+  /api/pages/selection:
+    get:
+      summary: Get page selection
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: page_type
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Pages }
+  /api/pages:
+    get:
+      summary: Get pages
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: page_type
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Pages }
+
+  /api/data/maneuvers-table-data:
+    get:
+      summary: Get maneuvers table data
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: event_type
+          required: true
+          schema: { $ref: '#/components/schemas/ManeuverType' }
+      responses:
+        '200': { description: Data }
+  /api/data/maneuvers-map-data:
+    get:
+      summary: Get maneuvers map data
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: event_type
+          required: true
+          schema: { $ref: '#/components/schemas/ManeuverType' }
+        - in: query
+          name: desc
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Data }
+  /api/data/maneuvers-timeseries-data:
+    get:
+      summary: Get maneuvers time series data
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: event_type
+          required: true
+          schema: { $ref: '#/components/schemas/ManeuverType' }
+        - in: query
+          name: desc
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Data }
+  /api/data/channels:
+    get:
+      summary: Get data channels for a table
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: table_name
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Channels }
+  /api/data/performance-data:
+    get:
+      summary: Get aggregated performance data
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: dataset_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: event_type
+          required: true
+          schema: { type: string, enum: ["bin 10","phase","period"] }
+        - in: query
+          name: agr_type
+          required: true
+          schema: { type: string, enum: [none, avg, min, max, std, aav] }
+        - in: query
+          name: channels
+          required: true
+          schema: { type: string, description: JSON array string of channel names }
+      responses:
+        '200': { description: Data }
+
+  /api/sources:
+    get:
+      summary: Get sources
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Sources }
+    post:
+      summary: Create source
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                source_name: { type: string }
+                color: { type: string }
+      responses:
+        '200': { description: Created }
+    put:
+      summary: Update source
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                source_id: { type: integer }
+                source_name: { type: string }
+                color: { type: string }
+                fleet: { type: integer }
+                visible: { type: integer }
+      responses:
+        '200': { description: Updated }
+    delete:
+      summary: Delete source
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                class_name: { type: string }
+                project_id: { type: integer }
+                source_id: { type: integer }
+      responses:
+        '200': { description: Deleted }
+
+  /api/targets/channels:
+    get:
+      summary: Get target channels
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Channels }
+  /api/targets:
+    get:
+      summary: Get targets
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: isPolar
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Targets }
+  /api/targets/data:
+    get:
+      summary: Get target data by name
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: isPolar
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Data }
+  /api/targets/latest:
+    get:
+      summary: Get latest targets
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: class_name
+          required: true
+          schema: { type: string }
+        - in: query
+          name: project_id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: isPolar
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Targets }
+
+    # Database Schema Schemas
+    ClassObjectsTable:
+      type: object
+      description: Class objects table schema
+      properties:
+        object_id:
+          type: integer
+          format: serial
+          description: Primary key
+        object_name:
+          type: string
+          example: "filters"
+          description: Object name
+        json:
+          type: object
+          description: JSON data (filter configuration, etc.)
+        date_modified:
+          type: string
+          format: date
+          description: Last modification date
+
+    UserObjectsTable:
+      type: object
+      description: User objects table schema
+      properties:
+        object_id:
+          type: integer
+          format: serial
+          description: Primary key
+        user_id:
+          type: string
+          description: User identifier
+        parent_name:
+          type: string
+          example: "scatter"
+          description: Parent component name
+        object_name:
+          type: string
+          example: "default"
+          description: Object name
+        json:
+          type: object
+          description: JSON data (chart configuration, etc.)
+        date_modified:
+          type: string
+          format: date
+          description: Last modification date
+
+    # Data Field Conventions
+    DataFieldConventions:
+      type: object
+      description: Standard data field naming conventions
+      properties:
+        wind_angle:
+          type: string
+          example: "Twa"
+          description: True Wind Angle (not 'twa')
+        race_number:
+          type: string
+          example: "Race_number"
+          description: Race Number (not 'race_number')
+        leg_number:
+          type: string
+          example: "Leg_number"
+          description: Leg Number (not 'leg_number')
+        data_grade:
+          type: string
+          example: "Grade"
+          description: Data Quality Grade (not 'grade')
+        wind_speed:
+          type: string
+          example: "Tws"
+          description: True Wind Speed (not 'tws')
+        boat_speed:
+          type: string
+          example: "Bsp"
+          description: Boat Speed (not 'bsp')
+        datetime:
+          type: string
+          example: "Datetime"
+          description: Timestamp field (not 'datetime')
+
+    # Multi-Window Synchronization
+    WindowMessage:
+      type: object
+      description: Cross-window message protocol
+      properties:
+        type:
+          type: string
+          enum: ["SELECTION_STORE_UPDATE", "FILTER_CHANGE", "WINDOW_READY"]
+          description: Message type
+        payload:
+          type: object
+          description: Message payload
+        windowName:
+          type: string
+          description: Source window name
+
+    FilterChangePayload:
+      type: object
+      description: Filter change payload for cross-window sync
+      properties:
+        type:
+          type: string
+          example: "FILTER_CHANGE"
+          description: Payload type
+        selectedStates:
+          type: array
+          items:
+            type: string
+          example: ["upwind", "downwind"]
+          description: TWA filter states
+        selectedRaces:
+          type: array
+          items:
+            type: string
+          example: ["1", "2"]
+          description: Selected race numbers
+        selectedLegs:
+          type: array
+          items:
+            type: string
+          example: ["1", "2", "3"]
+          description: Selected leg numbers
+        selectedGrades:
+          type: array
+          items:
+            type: string
+          example: ["1", "2"]
+          description: Selected data quality grades
+

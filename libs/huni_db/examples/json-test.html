@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HuniDB - JSON Table Testing</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .content {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 0;
+            min-height: 600px;
+        }
+
+        .sidebar {
+            background: #f8f9fa;
+            padding: 20px;
+            border-right: 1px solid #e0e0e0;
+            overflow-y: auto;
+        }
+
+        .main {
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .step-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .step-section h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+
+        .step-section p {
+            color: #666;
+            margin-bottom: 15px;
+            font-size: 0.95em;
+        }
+
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            background: #667eea;
+            color: white;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+
+        button:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        button.success {
+            background: #10b981;
+        }
+
+        button.success:hover:not(:disabled) {
+            background: #059669;
+        }
+
+        button.danger {
+            background: #ef4444;
+        }
+
+        button.danger:hover:not(:disabled) {
+            background: #dc2626;
+        }
+
+        .output {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            line-height: 1.6;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+
+        .output .log {
+            margin-bottom: 8px;
+        }
+
+        .output .log.info {
+            color: #4fc3f7;
+        }
+
+        .output .log.success {
+            color: #81c784;
+        }
+
+        .output .log.error {
+            color: #e57373;
+        }
+
+        .output .log.warn {
+            color: #ffb74d;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-weight: 500;
+        }
+
+        .status.ready {
+            background: #d1fae5;
+            color: #065f46;
+        }
+
+        .status.not-ready {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .step-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .step-number {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: #667eea;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+
+        .step-number.completed {
+            background: #10b981;
+        }
+
+        .step-number.current {
+            background: #f59e0b;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🗄️ HuniDB JSON Tables</h1>
+            <p>Step-by-Step Testing Interface</p>
+        </div>
+
+        <div class="content">
+            <div class="sidebar">
+                <div class="status not-ready" id="status">
+                    ⚠️ Database not initialized
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 1: Initialize</h3>
+                    <p>Connect to the database</p>
+                    <button id="btnInit">Initialize Database</button>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 2: Create Table</h3>
+                    <p>Create a JSON table</p>
+                    <button id="btnCreateTable" disabled>Create JSON Table</button>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 3: Store Documents</h3>
+                    <p>Add JSON documents</p>
+                    <div class="button-group">
+                        <button id="btnPutDoc1" disabled>Store Document 1</button>
+                        <button id="btnPutDoc2" disabled>Store Document 2</button>
+                        <button id="btnPutDoc3" disabled>Store Document 3</button>
+                    </div>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 4: Retrieve</h3>
+                    <p>Get documents by ID</p>
+                    <div class="button-group">
+                        <button id="btnGetDoc1" disabled>Get Document 1</button>
+                        <button id="btnGetDoc2" disabled>Get Document 2</button>
+                    </div>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 5: Query</h3>
+                    <p>Find documents with filters</p>
+                    <div class="button-group">
+                        <button id="btnFindAll" disabled>Find All</button>
+                        <button id="btnFindEq" disabled>Find (age = 30)</button>
+                        <button id="btnFindGt" disabled>Find (age > 25)</button>
+                        <button id="btnFindHasKey" disabled>Find (has 'email')</button>
+                    </div>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 6: Count</h3>
+                    <p>Count documents</p>
+                    <button id="btnCount" disabled>Count All</button>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 7: Update</h3>
+                    <p>Update a document</p>
+                    <button id="btnUpdate" disabled>Update Document 1</button>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 8: Delete</h3>
+                    <p>Delete a document</p>
+                    <button id="btnDelete" disabled>Delete Document 3</button>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 9: Metadata</h3>
+                    <p>Get table information</p>
+                    <button id="btnMetadata" disabled>Get Metadata</button>
+                </div>
+
+                <div class="step-section">
+                    <h3>Step 10: Cleanup</h3>
+                    <p>Clean up resources</p>
+                    <div class="button-group">
+                        <button id="btnRebuildIndexes" disabled>Rebuild Indexes</button>
+                        <button id="btnDropTable" disabled class="danger">Drop Table</button>
+                        <button id="btnClose" disabled>Close Database</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="main">
+                <h2>Output</h2>
+                <div class="output" id="output"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { connect, LogLevel } from '@hunico/hunidb';
+
+        let db = null;
+        const TABLE_NAME = 'test_docs';
+
+        const output = document.getElementById('output');
+        const status = document.getElementById('status');
+
+        function log(message, type = 'info') {
+            const logEl = document.createElement('div');
+            logEl.className = `log ${type}`;
+            logEl.textContent = message;
+            output.appendChild(logEl);
+            output.scrollTop = output.scrollHeight;
+            console.log(`[${type.toUpperCase()}]`, message);
+        }
+
+        function updateStatus(ready) {
+            if (ready) {
+                status.className = 'status ready';
+                status.textContent = '✅ Database ready';
+                document.querySelectorAll('button:not(#btnInit)').forEach(btn => btn.disabled = false);
+            } else {
+                status.className = 'status not-ready';
+                status.textContent = '⚠️ Database not initialized';
+                document.querySelectorAll('button:not(#btnInit)').forEach(btn => btn.disabled = true);
+            }
+        }
+
+        // Step 1: Initialize
+        document.getElementById('btnInit').addEventListener('click', async () => {
+            if (db) {
+                log('Database already initialized', 'warn');
+                return;
+            }
+            try {
+                log('Connecting to database...', 'info');
+                db = await connect({
+                    name: 'hunidb-json-test',
+                    storage: 'indexeddb',
+                    verbose: true
+                });
+                log('✓ Database connected successfully!', 'success');
+                updateStatus(true);
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 2: Create Table
+        document.getElementById('btnCreateTable').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Creating JSON table...', 'info');
+                await db.json.createTable(TABLE_NAME);
+                await db.flush(); // Ensure table creation is saved
+                log('✓ JSON table created successfully!', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 3: Store Documents
+        document.getElementById('btnPutDoc1').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const doc = {
+                    id: 'doc1',
+                    name: 'John Doe',
+                    email: 'john@example.com',
+                    age: 30,
+                    city: 'New York',
+                    tags: ['developer', 'javascript']
+                };
+                await db.json.putDoc(TABLE_NAME, 'doc1', doc);
+                log('Flushing database to IndexedDB...', 'info');
+                await db.flush(); // Ensure document is saved
+                log('✓ Flush completed', 'success');
+                log('✓ Stored document 1: ' + JSON.stringify(doc, null, 2), 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnPutDoc2').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const doc = {
+                    id: 'doc2',
+                    name: 'Jane Smith',
+                    email: 'jane@example.com',
+                    age: 25,
+                    city: 'San Francisco',
+                    tags: ['designer', 'ui']
+                };
+                await db.json.putDoc(TABLE_NAME, 'doc2', doc);
+                await db.flush(); // Ensure document is saved
+                log('✓ Stored document 2: ' + JSON.stringify(doc, null, 2), 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnPutDoc3').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const doc = {
+                    id: 'doc3',
+                    name: 'Bob Johnson',
+                    email: 'bob@example.com',
+                    age: 35,
+                    city: 'Chicago',
+                    tags: ['manager', 'leadership']
+                };
+                await db.json.putDoc(TABLE_NAME, 'doc3', doc);
+                await db.flush(); // Ensure document is saved
+                log('✓ Stored document 3: ' + JSON.stringify(doc, null, 2), 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 4: Retrieve
+        document.getElementById('btnGetDoc1').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const doc = await db.json.getDoc(TABLE_NAME, 'doc1');
+                if (doc) {
+                    log('✓ Retrieved document 1: ' + JSON.stringify(doc, null, 2), 'success');
+                } else {
+                    log('Document 1 not found', 'warn');
+                }
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnGetDoc2').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const doc = await db.json.getDoc(TABLE_NAME, 'doc2');
+                if (doc) {
+                    log('✓ Retrieved document 2: ' + JSON.stringify(doc, null, 2), 'success');
+                } else {
+                    log('Document 2 not found', 'warn');
+                }
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 5: Query
+        document.getElementById('btnFindAll').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const docs = await db.json.find(TABLE_NAME, {});
+                log(`✓ Found ${docs.length} documents:`, 'success');
+                docs.forEach((doc, i) => {
+                    log(`  [${i + 1}] ${JSON.stringify(doc, null, 2)}`, 'info');
+                });
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnFindEq').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const docs = await db.json.find(TABLE_NAME, { eq: { age: 30 } });
+                log(`✓ Found ${docs.length} documents with age = 30:`, 'success');
+                docs.forEach((doc, i) => {
+                    log(`  [${i + 1}] ${JSON.stringify(doc, null, 2)}`, 'info');
+                });
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnFindGt').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const docs = await db.json.find(TABLE_NAME, { gt: { age: 25 } });
+                log(`✓ Found ${docs.length} documents with age > 25:`, 'success');
+                docs.forEach((doc, i) => {
+                    log(`  [${i + 1}] ${JSON.stringify(doc, null, 2)}`, 'info');
+                });
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnFindHasKey').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const docs = await db.json.find(TABLE_NAME, { hasKey: 'email' });
+                log(`✓ Found ${docs.length} documents with 'email' key:`, 'success');
+                docs.forEach((doc, i) => {
+                    log(`  [${i + 1}] ${JSON.stringify(doc, null, 2)}`, 'info');
+                });
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 6: Count
+        document.getElementById('btnCount').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const count = await db.json.count(TABLE_NAME);
+                log(`✓ Total documents: ${count}`, 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 7: Update
+        document.getElementById('btnUpdate').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const updatedDoc = {
+                    id: 'doc1',
+                    name: 'John Doe Updated',
+                    email: 'john.updated@example.com',
+                    age: 31,
+                    city: 'New York',
+                    tags: ['developer', 'javascript', 'senior']
+                };
+                await db.json.putDoc(TABLE_NAME, 'doc1', updatedDoc);
+                log('✓ Updated document 1: ' + JSON.stringify(updatedDoc, null, 2), 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 8: Delete
+        document.getElementById('btnDelete').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                await db.json.deleteDoc(TABLE_NAME, 'doc3');
+                log('✓ Deleted document 3', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 9: Metadata
+        document.getElementById('btnMetadata').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                const metadata = await db.json.getMetadata(TABLE_NAME);
+                log('✓ Table Metadata:', 'success');
+                log(`  Table Name: ${metadata.tableName}`, 'info');
+                log(`  Document Count: ${metadata.documentCount}`, 'info');
+                log(`  Indexed Keys: ${metadata.indexedKeys.join(', ')}`, 'info');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        // Step 10: Cleanup
+        document.getElementById('btnRebuildIndexes').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                log('Rebuilding indexes...', 'info');
+                await db.json.rebuildIndexes(TABLE_NAME);
+                log('✓ Indexes rebuilt successfully', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnDropTable').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            if (!confirm('Are you sure you want to drop the table? This cannot be undone.')) {
+                return;
+            }
+            try {
+                await db.json.dropTable(TABLE_NAME);
+                log('✓ Table dropped successfully', 'success');
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+
+        document.getElementById('btnClose').addEventListener('click', async () => {
+            if (!db) {
+                log('✗ Error: Database not initialized', 'error');
+                return;
+            }
+            try {
+                // Flush any pending saves before closing
+                await db.flush();
+                await db.close();
+                log('✓ Database closed', 'success');
+                db = null;
+                updateStatus(false);
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        });
+    </script>
+</body>
+</html>
+

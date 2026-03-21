@@ -1,0 +1,44 @@
+name: container-nginx
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"  # HTTPS port for SharedArrayBuffer support
+    volumes:
+      # Use dev config by default, or prod config if NGINX_CONFIG=prod
+      # For production: Set NGINX_CONFIG=prod in .env
+      # Path is relative to compose file: ../nginx/ goes up to docker/ then into nginx/
+      - ../nginx/nginx-${NGINX_CONFIG:-dev}.conf:/etc/nginx/conf.d/default.conf:ro
+      # For production, mount static files
+      - ../../dist:/usr/share/nginx/html:ro
+      # SSL certificates (if using HTTPS)
+      # Certificates are obtained via Certbot on the host and placed in docker/nginx/ssl/
+      # Container path: /etc/nginx/ssl/
+      # Required files: fullchain.pem, privkey.pem
+      # See docs/deployment/PRODUCTION_SSL_SETUP.md for certificate setup instructions
+      - ../nginx/ssl:/etc/nginx/ssl:ro
+      # Logs
+      - ../nginx/logs:/var/log/nginx
+    extra_hosts:
+      # Allow nginx to reach Vite on host machine (Windows Docker)
+      - "host.docker.internal:host-gateway"
+    # Note: depends_on removed because nginx runs in separate compose file
+    # Services connect via shared hunico-network using container names
+    networks:
+      - hunico-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  hunico-network:
+    name: hunico-network
+    external: true  # Network must be created first: docker network create hunico-network
+

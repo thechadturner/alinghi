@@ -1,0 +1,36 @@
+{
+  "watch": [
+    "server_media/**/*",
+    "shared/**/*"
+  ],
+  "watchOptions": {
+    "ignored": [
+      "**/node_modules/**",
+      "**/shared/utils/logs/**",
+      "**/*.log",
+      "**/*.log.*"
+    ]
+  },
+  "ext": "js,json",
+  "ignore": [
+    "node_modules/**/*",
+    "server_media/node_modules/**/*",
+    "shared/node_modules/**/*",
+    "shared/utils/logs/**/*",
+    "shared\\utils\\logs\\**\\*",
+    "**/*.log",
+    "**/*.log.*",
+    "**/logs/**",
+    "**/logs\\**",
+    "**/*.test.js",
+    "**/*.spec.js"
+  ],
+  "exec": "node server_media/server.js",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": 1000,
+  "verbose": true,
+  "restartable": "rs",
+  "colours": true
+}

@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HuniDB Admin</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #2563eb;
+            margin-bottom: 10px;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .status.connected {
+            background: #10b981;
+            color: white;
+        }
+
+        .status.disconnected {
+            background: #ef4444;
+            color: white;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 20px;
+        }
+
+        .sidebar {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            max-height: calc(100vh - 200px);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-tabs {
+            display: flex;
+            border-bottom: 2px solid #e5e7eb;
+            background: #f9fafb;
+            border-radius: 8px 8px 0 0;
+        }
+
+        .sidebar-tab {
+            flex: 1;
+            padding: 12px 16px;
+            text-align: center;
+            cursor: pointer;
+            font-weight: 500;
+            color: #6b7280;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .sidebar-tab:hover {
+            color: #2563eb;
+            background: #f3f4f6;
+        }
+
+        .sidebar-tab.active {
+            color: #2563eb;
+            border-bottom-color: #2563eb;
+            background: white;
+        }
+
+        .sidebar-content {
+            padding: 20px;
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .sidebar-content.hidden {
+            display: none;
+        }
+
+        .sidebar h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #1f2937;
+        }
+
+        .table-list {
+            list-style: none;
+        }
+
+        .table-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #f9fafb;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid transparent;
+        }
+
+        .table-item:hover {
+            background: #f3f4f6;
+            border-color: #2563eb;
+        }
+
+        .table-item.active {
+            background: #dbeafe;
+            border-color: #2563eb;
+            font-weight: 600;
+        }
+
+        .table-item .table-name {
+            font-size: 14px;
+            color: #1f2937;
+        }
+
+        .table-item .table-info {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+
+        .tool-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #f9fafb;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid transparent;
+        }
+
+        .tool-item:hover {
+            background: #f3f4f6;
+            border-color: #2563eb;
+        }
+
+        .tool-item a {
+            text-decoration: none;
+            color: #1f2937;
+            display: block;
+            font-size: 14px;
+        }
+
+        .tool-item:hover a {
+            color: #2563eb;
+        }
+
+        .content-area {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .content-tabs {
+            display: flex;
+            border-bottom: 2px solid #e5e7eb;
+            background: #f9fafb;
+            padding: 0;
+        }
+
+        .content-tab {
+            padding: 12px 20px;
+            cursor: pointer;
+            font-weight: 500;
+            color: #6b7280;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .content-tab:hover {
+            color: #2563eb;
+            background: #f3f4f6;
+        }
+
+        .content-tab.active {
+            color: #2563eb;
+            border-bottom-color: #2563eb;
+            background: white;
+        }
+
+        .content-panel {
+            padding: 20px;
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .content-panel.hidden {
+            display: none;
+        }
+
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+
+        .table-header h2 {
+            color: #1f2937;
+            font-size: 20px;
+        }
+
+        .table-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #2563eb;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #1d4ed8;
+        }
+
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #4b5563;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        select, input[type="text"], textarea {
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+            width: 100%;
+            font-family: inherit;
+        }
+
+        select:focus, input[type="text"]:focus, textarea:focus {
+            outline: none;
+            border-color: #2563eb;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        textarea {
+            font-family: 'Courier New', monospace;
+            resize: vertical;
+            min-height: 150px;
+        }
+
+        .db-select-wrapper {
+            position: relative;
+            margin-bottom: 10px;
+        }
+
+        .db-select-wrapper::after {
+            content: '▼';
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            pointer-events: none;
+            color: #6b7280;
+            font-size: 10px;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        .data-table th {
+            background: #f9fafb;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #374151;
+            border-bottom: 2px solid #e5e7eb;
+            position: sticky;
+            top: 0;
+        }
+
+        .data-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            font-size: 14px;
+        }
+
+        .data-table tr:hover {
+            background: #f9fafb;
+        }
+
+        .data-table .json-cell {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 2px solid #e5e7eb;
+        }
+
+        .pagination-info {
+            color: #6b7280;
+            font-size: 14px;
+        }
+
+        .pagination-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6b7280;
+        }
+
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 20px;
+            opacity: 0.5;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6b7280;
+        }
+
+        .error {
+            background: #fee2e2;
+            color: #991b1b;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .success {
+            background: #d1fae5;
+            color: #065f46;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .query-editor {
+            margin-bottom: 15px;
+        }
+
+        .query-actions {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .sql-code {
+            background: #1f2937;
+            color: #10b981;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .log-area {
+            margin-top: 20px;
+            border-top: 2px solid #e5e7eb;
+            padding-top: 20px;
+        }
+
+        .log-area h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .log-textarea {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            color: #1f2937;
+            resize: vertical;
+            min-height: 150px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>
+                HuniDB Admin
+                <span id="status" class="status disconnected">Disconnected</span>
+            </h1>
+            <p>Database administration and exploration tool</p>
+        </header>
+
+        <div class="main-content">
+            <div class="sidebar">
+                <div class="sidebar-tabs">
+                    <div class="sidebar-tab active" data-tab="database">Database</div>
+                    <div class="sidebar-tab" data-tab="tools">Tools</div>
+                </div>
+                
+                <div class="sidebar-content" id="databaseTab">
+                    <h2>Database</h2>
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 8px; font-size: 14px; color: #374151; font-weight: 500;">
+                            Select Database:
+                        </label>
+                        <div class="db-select-wrapper">
+                            <select id="dbNameSelect" style="padding-right: 30px;">
+                                <option value="">Loading databases...</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" id="btnConnect" style="width: 100%; margin-top: 10px;">
+                            Connect to Database
+                        </button>
+                    </div>
+                    <h2 style="margin-top: 20px;">Tables</h2>
+                    <ul class="table-list" id="tableList">
+                        <li class="empty-state">Connect to load tables</li>
+                    </ul>
+                </div>
+
+                <div class="sidebar-content hidden" id="toolsTab">
+                    <h2>Tools</h2>
+                    <div class="tool-item">
+                        <a href="basic.html">Basic Example</a>
+                    </div>
+                    <div class="tool-item">
+                        <a href="json-test.html">JSON Test</a>
+                    </div>
+                    <div class="tool-item">
+                        <a href="timeseries-test.html">TimeSeries Test</a>
+                    </div>
+                    <div class="tool-item">
+                        <a href="performance-test.html">Performance Test</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="content-area">
+                <div class="content-tabs" id="contentTabs" style="display: none;">
+                    <div class="content-tab active" data-panel="data">Data</div>
+                    <div class="content-tab" data-panel="sql">SQL</div>
+                    <div class="content-tab" data-panel="schema">Schema</div>
+                    <div class="content-tab" data-panel="logs">Logs</div>
+                </div>
+                
+                <div id="tableContent">
+                    <div class="content-panel" style="padding: 40px;">
+                        <div class="empty-state">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            <p>Select a table to view its data</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script type="module">
+        import { connect, LogLevel } from '@hunico/hunidb';
+
+        let db = null;
+        let currentTable = null;
+        let currentPage = 1;
+        let pageSize = 50;
+        let totalRows = 0;
+        let currentContentTab = 'data';
+        let tableMetadata = {};
+
+        const statusEl = document.getElementById('status');
+        const btnConnect = document.getElementById('btnConnect');
+        const dbNameSelect = document.getElementById('dbNameSelect');
+        const tableList = document.getElementById('tableList');
+        const tableContent = document.getElementById('tableContent');
+        const contentTabs = document.getElementById('contentTabs');
+
+        // Sidebar tab switching
+        document.querySelectorAll('.sidebar-tab').forEach(tab => {
+            tab.addEventListener('click', async () => {
+                const tabName = tab.dataset.tab;
+                document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.sidebar-content').forEach(c => c.classList.add('hidden'));
+                tab.classList.add('active');
+                document.getElementById(`${tabName}Tab`).classList.remove('hidden');
+                
+                // Refresh tables list when switching back to database tab
+                // Use silent mode to avoid excessive logging
+                if (tabName === 'database' && db) {
+                    await loadTables(true);
+                }
+            });
+        });
+
+        // Content tab switching
+        function switchContentTab(tabName) {
+            currentContentTab = tabName;
+            document.querySelectorAll('.content-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.panel === tabName);
+            });
+            document.querySelectorAll('.content-panel').forEach(p => {
+                p.classList.toggle('hidden', p.id !== `${tabName}Panel`);
+            });
+            
+            // Scroll logs textarea to bottom when switching to Logs tab
+            if (tabName === 'logs') {
+                const logsTextarea = document.getElementById('logsTextarea');
+                if (logsTextarea) {
+                    logsTextarea.scrollTop = logsTextarea.scrollHeight;
+                }
+            }
+        }
+
+        document.querySelectorAll('.content-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                switchContentTab(tab.dataset.panel);
+            });
+        });
+
+        async function populateDatabaseSelect() {
+            dbNameSelect.innerHTML = '<option value="">Discovering databases...</option>';
+            
+            try {
+                const discoveredDatabases = await discoverDatabases();
+                
+                dbNameSelect.innerHTML = '<option value="">-- Select a database --</option>';
+                
+                if (discoveredDatabases.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No databases found';
+                    option.disabled = true;
+                    dbNameSelect.appendChild(option);
+                    log('No databases found. Databases are created automatically when data is stored.', 'info');
+                    return [];
+                } else {
+                    discoveredDatabases.sort();
+                    
+                    discoveredDatabases.forEach(dbName => {
+                        const option = document.createElement('option');
+                        option.value = dbName;
+                        option.textContent = dbName;
+                        dbNameSelect.appendChild(option);
+                    });
+                    return discoveredDatabases;
+                }
+            } catch (error) {
+                console.error('Error discovering databases:', error);
+                dbNameSelect.innerHTML = '<option value="">Error discovering databases</option>';
+                return [];
+            }
+        }
+
+        async function discoverDatabases() {
+            const databases = new Set();
+            
+            try {
+                const dbName = 'hunidb_storage';
+                const storeName = 'databases';
+                
+                const db = await new Promise((resolve, reject) => {
+                    // Open without specifying version to use existing version
+                    // This prevents triggering unnecessary upgrades that might clear data
+                    const request = indexedDB.open(dbName);
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => {
+                        console.debug('Failed to open IndexedDB for discovery:', request.error);
+                        resolve(null);
+                    };
+                    request.onupgradeneeded = (event) => {
+                        const db = (event.target || event.currentTarget).result;
+                        // CRITICAL: Only create object store if it doesn't exist
+                        // NEVER delete existing stores - this would lose all database data!
+                        if (!db.objectStoreNames.contains(storeName)) {
+                            console.log('Creating object store for database discovery (first time only)');
+                            db.createObjectStore(storeName, { keyPath: 'name' });
+                        } else {
+                            console.log('Object store already exists - preserving existing data');
+                        }
+                    };
+                });
+                
+                if (db) {
+                    try {
+                        // Method 1: Get all keys from the object store
+                        const storedDbs = await new Promise((resolve, reject) => {
+                            const transaction = db.transaction([storeName], 'readonly');
+                            const store = transaction.objectStore(storeName);
+                            const request = store.getAllKeys();
+                            request.onsuccess = () => resolve(request.result);
+                            request.onerror = () => reject(request.error);
+                        });
+                        
+                        storedDbs.forEach(dbName => {
+                            if (dbName && typeof dbName === 'string') {
+                                databases.add(dbName);
+                            }
+                        });
+                        
+                        // Method 2: Also try to get all records and extract names
+                        try {
+                            const allRecords = await new Promise((resolve, reject) => {
+                                const transaction = db.transaction([storeName], 'readonly');
+                                const store = transaction.objectStore(storeName);
+                                const request = store.getAll();
+                                request.onsuccess = () => resolve(request.result);
+                                request.onerror = () => reject(request.error);
+                            });
+                            
+                            allRecords.forEach(record => {
+                                if (record && record.name && typeof record.name === 'string') {
+                                    databases.add(record.name);
+                                }
+                            });
+                        } catch (error) {
+                            console.debug('Failed to read all records from IndexedDB storage store:', error);
+                        }
+                    } catch (error) {
+                        console.debug('Failed to read from IndexedDB storage store:', error);
+                    } finally {
+                        db.close();
+                    }
+                }
+                
+                // Method 3: Try to list all IndexedDB databases (if browser supports it)
+                if (indexedDB.databases) {
+                    try {
+                        const allIndexedDBs = await indexedDB.databases();
+                        allIndexedDBs.forEach(idb => {
+                            // Look for databases that might be HuniDB databases
+                            // EXCLUDE 'hunidb_storage' itself - that's the container, not a database
+                            // HuniDB databases are stored IN 'hunidb_storage', not AS 'hunidb_storage'
+                            if (idb.name && 
+                                idb.name !== 'hunidb_storage' && // Exclude the storage container
+                                (idb.name.startsWith('hunidb-') || idb.name.startsWith('hunico_'))) {
+                                databases.add(idb.name);
+                            }
+                        });
+                    } catch (error) {
+                        console.debug('Failed to list IndexedDB databases:', error);
+                    }
+                }
+            } catch (error) {
+                console.debug('IndexedDB storage store discovery failed:', error);
+            }
+            
+            const result = Array.from(databases);
+            
+            // Filter out 'hunidb_storage' if it was accidentally included
+            const filtered = result.filter(db => db !== 'hunidb_storage');
+            
+            if (filtered.length !== result.length) {
+                console.warn('Filtered out "hunidb_storage" - that is the IndexedDB store container, not a database');
+            }
+            
+            console.log(`Discovered ${filtered.length} database(s):`, filtered);
+            return filtered;
+        }
+
+        function log(message, type = 'info') {
+            // Find the logs textarea in the Logs panel
+            const logsTextarea = document.getElementById('logsTextarea');
+            if (!logsTextarea) return;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = type === 'error' ? '[ERROR]' : type === 'warn' ? '[WARN]' : '[INFO]';
+            const logLine = `[${timestamp}] ${prefix} ${message}\n`;
+            
+            logsTextarea.value += logLine;
+            logsTextarea.scrollTop = logsTextarea.scrollHeight;
+            
+            // Also log to console
+            if (type === 'error') {
+                console.error(message);
+            } else if (type === 'warn') {
+                console.warn(message);
+            } else {
+                console.log(message);
+            }
+        }
+
+        function updateStatus(connected) {
+            if (connected) {
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'status connected';
+                btnConnect.textContent = 'Disconnect';
+            } else {
+                statusEl.textContent = 'Disconnected';
+                statusEl.className = 'status disconnected';
+                btnConnect.textContent = 'Connect to Database';
+            }
+        }
+
+        async function connectDatabase() {
+            if (db) {
+                await db.close();
+                db = null;
+                updateStatus(false);
+                tableList.innerHTML = '<li class="empty-state">Connect to load tables</li>';
+                tableContent.innerHTML = '<div class="content-panel" style="padding: 40px;"><div class="empty-state"><p>Select a table to view its data</p></div></div>';
+                contentTabs.style.display = 'none';
+                console.log('Disconnected from database');
+                return;
+            }
+
+            // Get database name from select
+            const dbName = dbNameSelect.value.trim();
+
+            if (!dbName) {
+                log('Please select a database from the dropdown', 'error');
+                return;
+            }
+            
+            // Warn if user tries to connect to hunidb_storage
+            if (dbName === 'hunidb_storage') {
+                log('⚠️ ERROR: "hunidb_storage" is NOT a database name!', 'error');
+                log('It is the IndexedDB container that stores all databases.', 'error');
+                log('Databases are created automatically when data is stored.', 'info');
+                return;
+            }
+
+            try {
+                log(`Connecting to database: ${dbName}...`, 'info');
+                
+                db = await connect({
+                    name: dbName,
+                    storage: 'indexeddb',
+                    verbose: true,
+                    logLevel: LogLevel.INFO
+                });
+                
+                const connection = db.connection;
+                const storageType = connection?.getStorageType?.() || 'unknown';
+                
+                if (storageType === 'indexeddb') {
+                    log('✓ Connected using IndexedDB storage (persistent, cross-tab compatible)', 'success');
+                } else if (storageType === 'memory') {
+                    log('⚠️ WARNING: Fell back to memory storage. Data will be lost on refresh.', 'warn');
+                } else {
+                    log(`Using storage type: ${storageType}`, 'info');
+                }
+                
+                await populateDatabaseSelect();
+                dbNameSelect.value = dbName;
+                
+                updateStatus(true);
+                log(`Connected successfully to: ${dbName}`);
+                
+                try {
+                    const testResult = await db.queryValue('SELECT 1');
+                    if (testResult !== 1) {
+                        throw new Error('Database connection test failed');
+                    }
+                    log('Database connection verified', 'info');
+                    
+                    // Log database info
+                    try {
+                        const tableCount = await db.queryValue(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`);
+                        log(`Database contains ${tableCount} user table(s)`, 'info');
+                        if (tableCount === 0) {
+                            log('Note: Tables are created automatically when data is stored. If this is a new database, store some data first.', 'info');
+                        }
+                    } catch (err) {
+                        // Ignore errors here
+                    }
+                } catch (testError) {
+                    log(`Warning: Database test query failed: ${testError.message}`, 'warn');
+                }
+                
+                await loadTables();
+            } catch (error) {
+                log(`Connection error: ${error.message}`, 'error');
+                updateStatus(false);
+            }
+        }
+
+        async function loadTables(silent = false) {
+            if (!db) {
+                log('Error: Database not connected', 'error');
+                return;
+            }
+
+            try {
+                if (!silent) {
+                    log('Loading tables...');
+                }
+                
+                // First, check if we can query sqlite_master at all
+                try {
+                    const masterCheck = await db.query(`SELECT COUNT(*) as count FROM sqlite_master`);
+                    log(`sqlite_master contains ${masterCheck[0]?.count || 0} entries`, 'info');
+                } catch (masterError) {
+                    log(`Error querying sqlite_master: ${masterError.message}`, 'error');
+                    throw masterError;
+                }
+                
+                const allTables = await db.query(`
+                    SELECT 
+                        name,
+                        type,
+                        (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=m.name) as index_count
+                    FROM sqlite_master m
+                    WHERE type IN ('table', 'view')
+                    AND name NOT LIKE 'sqlite_%'
+                    ORDER BY 
+                        CASE 
+                            WHEN name LIKE 'json_keys_%' OR name LIKE 'json_values_%' THEN 2
+                            WHEN name LIKE '%_fts' THEN 3
+                            ELSE 1
+                        END,
+                        name
+                `);
+                
+                if (!silent) {
+                    log(`Found ${allTables.length} table(s) in database`, 'info');
+                    if (allTables.length > 0) {
+                        log(`Table names: ${allTables.map(t => t.name).join(', ')}`, 'info');
+                    }
+                }
+
+                tableList.innerHTML = '';
+
+                if (allTables.length === 0) {
+                    tableList.innerHTML = '<li class="empty-state">No tables found</li>';
+                    log('No tables found in database. The database may be empty or newly created.', 'warn');
+                    log('Note: Tables are created automatically when data is stored. If you just created this database, try storing some data first.', 'info');
+                    
+                    // Show helpful info about what database they're connected to
+                    const dbName = dbNameSelect.value || 'unknown';
+                    log(`Connected to database: ${dbName}`, 'info');
+                    log('Tip: Make sure you\'re connected to the correct database (e.g., hunico_ac75, hunico_imoca)', 'info');
+                    
+                    // Try to list ALL tables including sqlite_% to see if database is truly empty
+                    try {
+                        const allTablesIncludingSystem = await db.query(`
+                            SELECT name, type FROM sqlite_master ORDER BY type, name
+                        `);
+                        log(`Total entries in sqlite_master (including system): ${allTablesIncludingSystem.length}`, 'info');
+                        if (allTablesIncludingSystem.length > 0) {
+                            log(`All entries: ${allTablesIncludingSystem.map(t => `${t.name} (${t.type})`).join(', ')}`, 'info');
+                        }
+                    } catch (debugError) {
+                        log(`Could not query all tables for debugging: ${debugError.message}`, 'warn');
+                    }
+                    return;
+                }
+
+                const mainTables = [];
+                const helperTables = [];
+                
+                for (const table of allTables) {
+                    if (table.name.startsWith('json_keys_') || 
+                        table.name.startsWith('json_values_') || 
+                        table.name.endsWith('_fts')) {
+                        helperTables.push(table);
+                    } else {
+                        mainTables.push(table);
+                    }
+                }
+
+                for (const table of mainTables) {
+                    const li = document.createElement('li');
+                    li.className = 'table-item';
+                    // Preserve active state if this is the currently selected table
+                    if (currentTable === table.name) {
+                        li.classList.add('active');
+                    }
+                    li.innerHTML = `
+                        <div class="table-name">${escapeHtml(table.name)}</div>
+                        <div class="table-info">${table.type} • ${table.index_count || 0} indexes</div>
+                    `;
+                    li.addEventListener('click', () => selectTable(table.name));
+                    tableList.appendChild(li);
+                }
+
+                if (helperTables.length > 0) {
+                    const separator = document.createElement('li');
+                    separator.className = 'table-separator';
+                    separator.innerHTML = '<div style="padding: 8px 12px; font-size: 12px; color: #6b7280; font-weight: 600; text-transform: uppercase; border-top: 1px solid #e5e7eb; margin-top: 8px;">Helper Tables</div>';
+                    tableList.appendChild(separator);
+
+                    for (const table of helperTables) {
+                        const li = document.createElement('li');
+                        li.className = 'table-item';
+                        // Preserve active state if this is the currently selected table
+                        if (currentTable === table.name) {
+                            li.classList.add('active');
+                        }
+                        li.style.opacity = '0.7';
+                        li.innerHTML = `
+                            <div class="table-name" style="font-size: 13px;">${escapeHtml(table.name)}</div>
+                            <div class="table-info" style="font-size: 11px;">${table.type} • ${table.index_count || 0} indexes</div>
+                        `;
+                        li.addEventListener('click', () => selectTable(table.name));
+                        tableList.appendChild(li);
+                    }
+                }
+
+                if (!silent) {
+                    log(`Loaded ${mainTables.length} main table(s)${helperTables.length > 0 ? ` and ${helperTables.length} helper table(s)` : ''}`);
+                }
+            } catch (error) {
+                log(`Error loading tables: ${error.message}`, 'error');
+                console.error('Table loading error:', error);
+            }
+        }
+
+        async function selectTable(tableName) {
+            if (!db) return;
+
+            // Refresh tables list when selecting a different table (to catch any new tables)
+            // Use silent mode to avoid excessive logging
+            if (currentTable !== tableName) {
+                await loadTables(true);
+            }
+
+            currentTable = tableName;
+            currentPage = 1;
+            currentContentTab = 'data';
+
+            document.querySelectorAll('.table-item').forEach(item => {
+                item.classList.remove('active');
+                if (item.querySelector('.table-name').textContent === tableName) {
+                    item.classList.add('active');
+                }
+            });
+
+            document.querySelectorAll('.content-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.panel === 'data');
+            });
+            
+            // Clear logs when switching tables
+            const logsTextarea = document.getElementById('logsTextarea');
+            if (logsTextarea) {
+                logsTextarea.value = '';
+            }
+
+            contentTabs.style.display = 'flex';
+            await loadTableData();
+        }
+
+        async function loadTableData() {
+            if (!db || !currentTable) return;
+
+            try {
+                log(`Loading data from table: ${currentTable}`);
+
+                const countResult = await db.queryValue(`SELECT COUNT(*) FROM ${escapeIdentifier(currentTable)}`);
+                totalRows = countResult || 0;
+
+                const schema = await db.query(`
+                    SELECT 
+                        name, 
+                        type, 
+                        pk, 
+                        dflt_value, 
+                        "notnull" AS not_null,
+                        cid
+                    FROM pragma_table_info(${escapeValue(currentTable)})
+                    ORDER BY cid
+                `);
+
+                const indexes = await db.query(`
+                    SELECT 
+                        name,
+                        "unique" AS is_unique,
+                        origin,
+                        partial
+                    FROM pragma_index_list(${escapeValue(currentTable)})
+                `);
+
+                const indexDetails = [];
+                for (const idx of indexes) {
+                    const columns = await db.query(`
+                        SELECT 
+                            seqno,
+                            cid,
+                            name
+                        FROM pragma_index_info(${escapeValue(idx.name)})
+                        ORDER BY seqno
+                    `);
+                    indexDetails.push({ ...idx, columns });
+                }
+
+                const foreignKeys = await db.query(`
+                    SELECT 
+                        id,
+                        seq,
+                        "table" AS table_name,
+                        "from" AS from_column,
+                        "to" AS to_column
+                    FROM pragma_foreign_key_list(${escapeValue(currentTable)})
+                    ORDER BY id, seq
+                `);
+
+                const tableDef = await db.query(`
+                    SELECT sql
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name = ${escapeValue(currentTable)}
+                `);
+
+                const offset = (currentPage - 1) * pageSize;
+                const data = await db.query(`
+                    SELECT * FROM ${escapeIdentifier(currentTable)}
+                    LIMIT ? OFFSET ?
+                `, [pageSize, offset]);
+
+                tableMetadata = {
+                    schema,
+                    totalRows,
+                    indexes: indexDetails,
+                    foreignKeys,
+                    tableDef: tableDef[0]?.sql || null
+                };
+
+                renderTableData(schema, data, tableMetadata);
+                log(`Loaded ${data.length} row(s) (page ${currentPage})`);
+            } catch (error) {
+                tableContent.innerHTML = `
+                    <div class="content-panel">
+                        <div class="error">
+                            Error loading table data: ${error.message}
+                        </div>
+                    </div>
+                `;
+                log(`Error loading table data: ${error.message}`, 'error');
+                console.error('Table data error:', error);
+            }
+        }
+
+        function renderTableData(schema, data, metadata = {}) {
+            const { totalRows = 0, indexes = [], foreignKeys = [], tableDef = null } = metadata;
+            const totalPages = Math.ceil(totalRows / pageSize);
+
+            // Schema Panel
+            const schemaPanel = `
+                <div class="content-panel hidden" id="schemaPanel">
+                    <div class="table-header">
+                        <h2>${escapeHtml(currentTable)}</h2>
+                    </div>
+                    <div style="background: #f9fafb; border-radius: 6px; padding: 15px; margin-bottom: 20px; border: 1px solid #e5e7eb;">
+                        <h3 style="margin-bottom: 12px; font-size: 16px; color: #1f2937;">Schema Information</h3>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                            <div>
+                                <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">Total Rows</div>
+                                <div style="font-size: 18px; font-weight: 600; color: #1f2937;">${totalRows.toLocaleString()}</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">Columns</div>
+                                <div style="font-size: 18px; font-weight: 600; color: #1f2937;">${schema.length}</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">Indexes</div>
+                                <div style="font-size: 18px; font-weight: 600; color: #1f2937;">${indexes.length}</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">Foreign Keys</div>
+                                <div style="font-size: 18px; font-weight: 600; color: #1f2937;">${foreignKeys.length}</div>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom: 15px;">
+                            <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px;">Columns</div>
+                            <div style="background: white; border-radius: 4px; overflow: hidden; border: 1px solid #e5e7eb;">
+                                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                                    <thead style="background: #f3f4f6;">
+                                        <tr>
+                                            <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">Name</th>
+                                            <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">Type</th>
+                                            <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">Primary Key</th>
+                                            <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">Not Null</th>
+                                            <th style="padding: 8px 12px; text-align: left; font-weight: 600; color: #374151;">Default</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${schema.map((col, i) => `
+                                            <tr style="border-top: 1px solid #e5e7eb; ${i % 2 === 0 ? 'background: #fafafa;' : ''}">
+                                                <td style="padding: 8px 12px; font-weight: ${col.pk ? '600' : '400'}; color: ${col.pk ? '#2563eb' : '#1f2937'};">
+                                                    ${escapeHtml(col.name)}${col.pk ? ' 🔑' : ''}
+                                                </td>
+                                                <td style="padding: 8px 12px; color: #6b7280; font-family: monospace;">${escapeHtml(col.type)}</td>
+                                                <td style="padding: 8px 12px; color: #6b7280;">${col.pk ? '✓' : '—'}</td>
+                                                <td style="padding: 8px 12px; color: #6b7280;">${col.not_null ? '✓' : '—'}</td>
+                                                <td style="padding: 8px 12px; color: #6b7280; font-family: monospace; font-size: 11px;">${col.dflt_value ? escapeHtml(String(col.dflt_value)) : '—'}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        ${indexes.length > 0 ? `
+                            <div style="margin-bottom: 15px;">
+                                <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px;">Indexes</div>
+                                <div style="background: white; border-radius: 4px; padding: 12px; border: 1px solid #e5e7eb;">
+                                    ${indexes.map(idx => `
+                                        <div style="margin-bottom: 8px; padding: 8px; background: #f9fafb; border-radius: 4px;">
+                                            <div style="font-weight: 600; color: #1f2937; margin-bottom: 4px;">
+                                                ${escapeHtml(idx.name)} 
+                                                ${idx.is_unique ? '<span style="color: #059669; font-size: 11px;">UNIQUE</span>' : ''}
+                                                <span style="color: #6b7280; font-size: 11px; font-weight: normal;">(${idx.origin || 'manual'})</span>
+                                            </div>
+                                            <div style="font-size: 12px; color: #6b7280;">
+                                                Columns: ${idx.columns.map(c => escapeHtml(c.name || `column_${c.cid}`)).join(', ')}
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+
+                        ${foreignKeys.length > 0 ? `
+                            <div style="margin-bottom: 15px;">
+                                <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px;">Foreign Keys</div>
+                                <div style="background: white; border-radius: 4px; padding: 12px; border: 1px solid #e5e7eb;">
+                                    ${foreignKeys.map(fk => `
+                                        <div style="margin-bottom: 8px; padding: 8px; background: #f9fafb; border-radius: 4px; font-size: 12px;">
+                                            ${escapeHtml(fk.from_column)} → ${escapeHtml(fk.table_name)}.${escapeHtml(fk.to_column)}
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+
+                        ${tableDef ? `
+                            <div style="margin-bottom: 15px;">
+                                <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 8px;">Table Definition</div>
+                                <textarea readonly class="log-textarea" style="font-family: 'Courier New', monospace; font-size: 12px;">${escapeHtml(tableDef)}</textarea>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+
+            // Data Panel
+            let dataPanel = `
+                <div class="content-panel" id="dataPanel">
+                    <div class="table-header">
+                        <h2>${escapeHtml(currentTable)}</h2>
+                        <div class="table-actions">
+                            <label>
+                                Page size:
+                                <select id="pageSizeSelect" onchange="changePageSize(this.value)">
+                                    <option value="25" ${pageSize === 25 ? 'selected' : ''}>25</option>
+                                    <option value="50" ${pageSize === 50 ? 'selected' : ''}>50</option>
+                                    <option value="100" ${pageSize === 100 ? 'selected' : ''}>100</option>
+                                    <option value="200" ${pageSize === 200 ? 'selected' : ''}>200</option>
+                                </select>
+                            </label>
+                            <button class="btn btn-secondary" onclick="refreshData()">Refresh</button>
+                        </div>
+                    </div>
+            `;
+
+            if (data.length === 0) {
+                dataPanel += '<div class="empty-state"><p>No data in this table</p></div>';
+            } else {
+                dataPanel += '<table class="data-table">';
+                dataPanel += '<thead><tr>';
+                for (const col of schema) {
+                    dataPanel += `<th>${escapeHtml(col.name)} <span style="color: #9ca3af; font-weight: normal;">(${col.type})</span></th>`;
+                }
+                dataPanel += '</tr></thead>';
+                dataPanel += '<tbody>';
+
+                for (const row of data) {
+                    dataPanel += '<tr>';
+                    for (const col of schema) {
+                        const value = row[col.name];
+                        let displayValue = '';
+                        let cellClass = '';
+
+                        if (value === null || value === undefined) {
+                            displayValue = '<span style="color: #9ca3af;">NULL</span>';
+                        } else if (typeof value === 'object') {
+                            displayValue = escapeHtml(JSON.stringify(value, null, 2));
+                            cellClass = 'json-cell';
+                        } else {
+                            displayValue = escapeHtml(String(value));
+                        }
+
+                        dataPanel += `<td class="${cellClass}">${displayValue}</td>`;
+                    }
+                    dataPanel += '</tr>';
+                }
+
+                dataPanel += '</tbody></table>';
+
+                dataPanel += `
+                    <div class="pagination">
+                        <div class="pagination-info">
+                            Showing ${(currentPage - 1) * pageSize + 1} - ${Math.min(currentPage * pageSize, totalRows)} of ${totalRows} rows
+                        </div>
+                        <div class="pagination-controls">
+                            <button class="btn btn-secondary" onclick="goToPage(1)" ${currentPage === 1 ? 'disabled' : ''}>
+                                First
+                            </button>
+                            <button class="btn btn-secondary" onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>
+                                Previous
+                            </button>
+                            <span style="padding: 8px 16px;">Page ${currentPage} of ${totalPages}</span>
+                            <button class="btn btn-secondary" onclick="goToPage(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>
+                                Next
+                            </button>
+                            <button class="btn btn-secondary" onclick="goToPage(${totalPages})" ${currentPage >= totalPages ? 'disabled' : ''}>
+                                Last
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            dataPanel += '</div>';
+
+            // SQL Panel (renamed from Query)
+            const sqlPanel = `
+                <div class="content-panel hidden" id="sqlPanel">
+                    <div class="table-header">
+                        <h2>SQL Query</h2>
+                    </div>
+                    <div class="query-editor">
+                        <textarea id="queryInput" placeholder="Enter your SQL query here...&#10;Example: SELECT * FROM ${escapeHtml(currentTable)} LIMIT 10"></textarea>
+                    </div>
+                    <div class="query-actions">
+                        <button class="btn btn-primary" onclick="executeQuery()">Execute Query</button>
+                        <button class="btn btn-secondary" onclick="clearQuery()">Clear</button>
+                    </div>
+                    <div id="queryResults"></div>
+                </div>
+            `;
+
+            // Logs Panel
+            const logsPanel = `
+                <div class="content-panel hidden" id="logsPanel">
+                    <div class="table-header">
+                        <h2>Logs</h2>
+                        <div class="table-actions">
+                            <button class="btn btn-secondary" onclick="clearLogs()">Clear Logs</button>
+                        </div>
+                    </div>
+                    <textarea readonly id="logsTextarea" class="log-textarea" style="min-height: 400px;"></textarea>
+                </div>
+            `;
+
+            tableContent.innerHTML = dataPanel + sqlPanel + schemaPanel + logsPanel;
+            
+            // Show the active panel
+            switchContentTab(currentContentTab);
+        }
+
+        async function executeQuery() {
+            if (!db) {
+                log('Error: Database not connected', 'error');
+                return;
+            }
+
+            const queryInput = document.getElementById('queryInput');
+            const queryResults = document.getElementById('queryResults');
+            const sql = queryInput.value.trim();
+
+            if (!sql) {
+                queryResults.innerHTML = '<div class="error">Please enter a SQL query</div>';
+                return;
+            }
+
+            try {
+                queryResults.innerHTML = '<div class="loading">Executing query...</div>';
+                log(`Executing query: ${sql.substring(0, 100)}${sql.length > 100 ? '...' : ''}`);
+
+                const startTime = performance.now();
+                const result = await db.query(sql);
+                const endTime = performance.now();
+                const executionTime = (endTime - startTime).toFixed(2);
+
+                if (result.length === 0) {
+                    queryResults.innerHTML = `
+                        <div class="success">Query executed successfully in ${executionTime}ms</div>
+                        <div class="empty-state"><p>No rows returned</p></div>
+                    `;
+                    log(`Query executed successfully in ${executionTime}ms (0 rows)`);
+                    return;
+                }
+
+                // Get column names from first row
+                const columns = Object.keys(result[0]);
+                
+                let html = `
+                    <div class="success">Query executed successfully in ${executionTime}ms (${result.length} row(s))</div>
+                    <table class="data-table">
+                        <thead><tr>
+                            ${columns.map(col => `<th>${escapeHtml(col)}</th>`).join('')}
+                        </tr></thead>
+                        <tbody>
+                `;
+
+                for (const row of result) {
+                    html += '<tr>';
+                    for (const col of columns) {
+                        const value = row[col];
+                        let displayValue = '';
+                        let cellClass = '';
+
+                        if (value === null || value === undefined) {
+                            displayValue = '<span style="color: #9ca3af;">NULL</span>';
+                        } else if (typeof value === 'object') {
+                            displayValue = escapeHtml(JSON.stringify(value, null, 2));
+                            cellClass = 'json-cell';
+                        } else {
+                            displayValue = escapeHtml(String(value));
+                        }
+
+                        html += `<td class="${cellClass}">${displayValue}</td>`;
+                    }
+                    html += '</tr>';
+                }
+
+                html += '</tbody></table>';
+                queryResults.innerHTML = html;
+                log(`Query executed successfully in ${executionTime}ms (${result.length} row(s))`);
+            } catch (error) {
+                queryResults.innerHTML = `
+                    <div class="error">
+                        Query Error: ${escapeHtml(error.message)}
+                    </div>
+                `;
+                log(`Query error: ${error.message}`, 'error');
+                console.error('Query error:', error);
+            }
+        }
+
+        function clearQuery() {
+            document.getElementById('queryInput').value = '';
+            document.getElementById('queryResults').innerHTML = '';
+        }
+
+        window.changePageSize = function(newSize) {
+            pageSize = parseInt(newSize);
+            currentPage = 1;
+            currentContentTab = 'data';
+            switchContentTab('data');
+            loadTableData();
+        };
+
+        window.goToPage = function(page) {
+            currentPage = page;
+            currentContentTab = 'data';
+            switchContentTab('data');
+            loadTableData();
+        };
+
+        window.refreshData = function() {
+            loadTableData();
+        };
+
+        window.executeQuery = executeQuery;
+        window.clearQuery = clearQuery;
+        window.clearLogs = function() {
+            const logsTextarea = document.getElementById('logsTextarea');
+            if (logsTextarea) {
+                logsTextarea.value = '';
+            }
+        };
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function escapeIdentifier(name) {
+            return `"${name.replace(/"/g, '""')}"`;
+        }
+
+        function escapeValue(value) {
+            return `'${String(value).replace(/'/g, "''")}'`;
+        }
+
+        btnConnect.addEventListener('click', connectDatabase);
+
+        // Auto-connect when database selection changes
+        dbNameSelect.addEventListener('change', async () => {
+            if (dbNameSelect.value && dbNameSelect.value.trim()) {
+                // If already connected to a different database, disconnect first
+                if (db) {
+                    await db.close();
+                    db = null;
+                    updateStatus(false);
+                    tableList.innerHTML = '<li class="empty-state">Connect to load tables</li>';
+                    tableContent.innerHTML = '<div class="content-panel" style="padding: 40px;"><div class="empty-state"><p>Select a table to view its data</p></div></div>';
+                    contentTabs.style.display = 'none';
+                }
+                // Connect to the newly selected database
+                await connectDatabase();
+            }
+        });
+
+        // Initialize: populate databases and auto-connect to first one
+        (async () => {
+            const databases = await populateDatabaseSelect();
+            
+            const urlParams = new URLSearchParams(window.location.search);
+            const dbParam = urlParams.get('db');
+            
+            if (dbParam) {
+                // URL parameter takes precedence
+                dbNameSelect.value = dbParam;
+                setTimeout(() => {
+                    if (dbNameSelect.value === dbParam) {
+                        connectDatabase();
+                    }
+                }, 100);
+            } else if (databases.length > 0) {
+                // Auto-select and connect to first database
+                const firstDb = databases[0];
+                dbNameSelect.value = firstDb;
+                log(`Auto-selecting first database: ${firstDb}`, 'info');
+                setTimeout(() => {
+                    if (dbNameSelect.value === firstDb) {
+                        connectDatabase();
+                    }
+                }, 100);
+            }
+        })();
+
+        log('HuniDB Browser ready');
+    </script>
+</body>
+</html>

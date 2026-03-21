@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <script>
+      (function() {
+        var theme = 'medium';
+        try {
+          var saved = localStorage.getItem('teamshare-theme');
+          if (saved === 'dark-grey') { theme = 'dark'; }
+          else if (saved === 'medium' || saved === 'light' || saved === 'dark') { theme = saved; }
+        } catch (e) {}
+        document.documentElement.setAttribute('data-theme', theme);
+        if (theme === 'medium' || theme === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      })();
+    </script>
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex, notranslate" />
+    <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex" />
+    <meta name="bingbot" content="noindex, nofollow, noarchive, nosnippet, noimageindex" />
+    <link rel="shortcut icon" type="image/ico" href="/frontend/assets/favicon.ico" />
+    <title>RACESIGHT</title>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+
+    <script src="/frontend/index.jsx" type="module"></script>
+  </body>
+</html>

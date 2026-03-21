@@ -1,0 +1,155 @@
+name: container-nodejs
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    # Pull policy: only pull if image doesn't exist locally
+    # This ensures Docker uses cached image instead of re-downloading
+    pull_policy: if_not_present
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      # Persistent volume - data survives container restarts
+      # This volume persists across container recreations
+      - redis-data:/data
+    networks:
+      - hunico-network
+    restart: unless-stopped
+    # Redis uses pre-built image (no build step)
+    # Docker caches the pulled image, so subsequent starts are instant
+    # The volume ensures data persists even if container is recreated
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    mem_limit: 512m
+    mem_reservation: 256m
+
+  node:
+    build:
+      context: ../..  # Build from workspace root to access all servers and shared
+      dockerfile: docker/dockerfiles/Dockerfile.nodejs
+      args:
+        SKIP_VIDEO_FFMPEG: ${SKIP_VIDEO_FFMPEG:-}
+    container_name: node
+    ports:
+      - "${APP_PORT:-8069}:8069"
+      - "${ADMIN_PORT:-8059}:8059"
+      - "${FILE_PORT:-8079}:8079"
+      - "${MEDIA_PORT:-8089}:8089"
+      - "${STREAM_PORT:-8099}:8099"
+    environment:
+      # Docker container flag
+      - DOCKER_CONTAINER=true
+      
+      # Network and API Configuration
+      - VITE_NETWORK_MODE=${VITE_NETWORK_MODE:-auto}
+      - VITE_API_HOST=${VITE_API_HOST:-}
+      - VITE_API_TIMEOUT=${VITE_API_TIMEOUT:-30000}
+      - API_HOST=${API_HOST:-host.docker.internal}
+      
+      # Port Configuration
+      - APP_PORT=${APP_PORT:-8069}
+      - ADMIN_PORT=${ADMIN_PORT:-8059}
+      - FILE_PORT=${FILE_PORT:-8079}
+      - MEDIA_PORT=${MEDIA_PORT:-8089}
+      - STREAM_PORT=${STREAM_PORT:-8099}
+      - PYTHON_PORT=${PYTHON_PORT:-8049}
+      - VITE_PYTHON_PORT=${VITE_PYTHON_PORT:-8049}
+      - VITE_ADMIN_PORT=${VITE_ADMIN_PORT:-}
+      - VITE_APP_PORT=${VITE_APP_PORT:-}
+      - VITE_FILE_PORT=${VITE_FILE_PORT:-}
+      - VITE_MEDIA_PORT=${VITE_MEDIA_PORT:-}
+      - VITE_STREAM_PORT=${VITE_STREAM_PORT:-}
+      
+      # Logging and Debug Configuration
+      - VITE_VERBOSE=${VITE_VERBOSE:-false}
+      - VITE_LOG_LEVEL=${VITE_LOG_LEVEL:-debug}
+      - NODE_ENV=${NODE_ENV:-development}
+      - NODE_OPTIONS=--max-old-space-size=6144
+      
+      # CORS Configuration
+      # Include both direct Vite access (port 3000) and nginx access (port 80/443) origins
+      # Include both HTTP and HTTPS origins for network IP access
+      # Production domains: racesight.cloud and www.racesight.cloud
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost,http://127.0.0.1,http://192.168.0.18,https://192.168.0.18,https://localhost,https://racesight.cloud,https://www.racesight.cloud}
+      
+      # Mapbox Configuration
+      - VITE_MAPBOX_TOKEN=${VITE_MAPBOX_TOKEN:-}
+      - VITE_MAPBOX_STYLE=${VITE_MAPBOX_STYLE:-}
+      
+      # Build Configuration
+      - VITE_BUILD_ANALYZE=${VITE_BUILD_ANALYZE:-false}
+      - VITE_SOURCE_MAPS=${VITE_SOURCE_MAPS:-true}
+      - VITE_DEV_TOOLS=${VITE_DEV_TOOLS:-true}
+      - VITE_HOT_RELOAD=${VITE_HOT_RELOAD:-true}
+      
+      # JWT Configuration
+      # JWT_SECRET, SYSTEM_KEY, PAT_TOKEN, SUPER_USER loaded from env_file (.env.local)
+      # Only set defaults for non-secret values
+      - JWT_ISSUER=${JWT_ISSUER:-teamshare-auth}
+      - JWT_AUDIENCE=${JWT_AUDIENCE:-teamshare-servers}
+      
+      # Redis Configuration
+      # REDIS_PASSWORD loaded from env_file (.env.local) if needed
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      
+      # InfluxDB Simulator Configuration
+      - INFLUX_HOST=${INFLUX_HOST:-192.168.0.18}
+      - INFLUX_PORT=${INFLUX_PORT:-8086}
+      - INFLUX_DATABASE=${INFLUX_DATABASE:-sailgp}
+      
+      # Database Configuration
+      # DB_PASSWORD and DB_HOST loaded from env_file (.env.local) - secrets should not be in environment section
+      # We don't set defaults here to avoid conflicts - let env_file handle it
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-hunico}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_SSL=${DB_SSL:-false}
+      - DB_SSL_REJECT_UNAUTHORIZED=${DB_SSL_REJECT_UNAUTHORIZED:-false}
+      
+      # File storage directories (use container paths)
+      - DATA_DIRECTORY=/data
+      - MEDIA_DIRECTORY=/media
+      - DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-1g}
+    env_file:
+      - .env  # Load from .env file (copied to compose directory by batch scripts)
+      - .env.local  # Load from .env.local file (secrets, gitignored, copied by batch scripts)
+    volumes:
+      # Mount Windows data directory to container
+      # The Windows path comes from your .env file's DATA_DIRECTORY
+      # Format: Windows_Path:Container_Path
+      - ${DATA_DIRECTORY:-C:/MyApps/Hunico/Uploads/Data}:/data
+      # Mount Windows media directory to container
+      - ${MEDIA_DIRECTORY:-C:/MyApps/Hunico/Uploads/Media}:/media
+    networks:
+      - hunico-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');let checks=0;const ports=[8069,8059,8079,8089,8099];ports.forEach(p=>{http.get('http://localhost:'+p+'/api/health',(r)=>{if(r.statusCode===200)checks++;if(checks===ports.length)process.exit(0)}).on('error',()=>process.exit(1))});setTimeout(()=>process.exit(checks===ports.length?0:1),2000)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    cpus: '1.0'
+    # Increased for server_file (DuckDB/parquet) and other Node servers
+    mem_limit: 8g
+    mem_reservation: 2.5g
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  hunico-network:
+    name: hunico-network
+    external: true
+

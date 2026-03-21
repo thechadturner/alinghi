@@ -1,0 +1,90 @@
+# Node.js dependencies (should be installed in container, not copied)
+**/node_modules/
+node_modules/
+
+# Package lock files (we copy them explicitly in Dockerfile for caching)
+# But exclude them from the general COPY commands to avoid cache invalidation
+# Actually, we want package-lock.json, so don't exclude it
+
+# Environment files (should be provided at runtime via env_file)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+**/logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files
+**/__tests__/
+**/*.test.js
+**/*.test.ts
+**/*.spec.js
+**/*.spec.ts
+
+# Documentation
+*.md
+docs/
+README.md
+
+# Temporary files
+*.tmp
+*.temp
+
+# Build artifacts
+dist/
+build/
+*.map
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+.pytest_cache/
+# Python server scripts (mounted at runtime like data/media)
+server_python/scripts/
+
+# Docker files themselves (don't need to copy these into the image)
+# BUT we need docker/scripts/start-servers.sh, so exclude specific subdirectories
+docker/compose/
+docker/docs/
+docker/dockerfiles/
+docker/*.bat
+docker/*.config
+docker/README.md
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Other
+.cache/
+.temp/
+

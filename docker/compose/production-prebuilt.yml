@@ -1,0 +1,179 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: hunico-redis
+    pull_policy: if_not_present
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - hunico-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    mem_limit: 512m
+    mem_reservation: 256m
+
+  node:
+    image: hunico-node:latest
+    container_name: hunico-node
+    ports:
+      - "${APP_PORT:-8069}:8069"
+      - "${ADMIN_PORT:-8059}:8059"
+      - "${FILE_PORT:-8079}:8079"
+      - "${MEDIA_PORT:-8089}:8089"
+      - "${STREAM_PORT:-8099}:8099"
+    environment:
+      - DOCKER_CONTAINER=true
+      - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=6144
+      - VITE_NETWORK_MODE=${VITE_NETWORK_MODE:-auto}
+      - VITE_API_HOST=${VITE_API_HOST:-}
+      - VITE_API_TIMEOUT=${VITE_API_TIMEOUT:-30000}
+      - API_HOST=${API_HOST:-node}
+      - APP_PORT=${APP_PORT:-8069}
+      - ADMIN_PORT=${ADMIN_PORT:-8059}
+      - FILE_PORT=${FILE_PORT:-8079}
+      - MEDIA_PORT=${MEDIA_PORT:-8089}
+      - STREAM_PORT=${STREAM_PORT:-8099}
+      - PYTHON_PORT=${PYTHON_PORT:-8049}
+      - VITE_PYTHON_PORT=${VITE_PYTHON_PORT:-8049}
+      - VITE_ADMIN_PORT=${VITE_ADMIN_PORT:-}
+      - VITE_APP_PORT=${VITE_APP_PORT:-}
+      - VITE_FILE_PORT=${VITE_FILE_PORT:-}
+      - VITE_MEDIA_PORT=${VITE_MEDIA_PORT:-}
+      - VITE_STREAM_PORT=${VITE_STREAM_PORT:-}
+      - VITE_VERBOSE=${VITE_VERBOSE:-false}
+      - VITE_LOG_LEVEL=${VITE_LOG_LEVEL:-error}
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://racesight.cloud,https://www.racesight.cloud}
+      - VITE_MAPBOX_TOKEN=${VITE_MAPBOX_TOKEN:-}
+      - VITE_MAPBOX_STYLE=${VITE_MAPBOX_STYLE:-}
+      - VITE_BUILD_ANALYZE=${VITE_BUILD_ANALYZE:-false}
+      - VITE_SOURCE_MAPS=${VITE_SOURCE_MAPS:-true}
+      - VITE_DEV_TOOLS=${VITE_DEV_TOOLS:-false}
+      - VITE_HOT_RELOAD=${VITE_HOT_RELOAD:-false}
+      - JWT_ISSUER=${JWT_ISSUER:-teamshare-auth}
+      - JWT_AUDIENCE=${JWT_AUDIENCE:-teamshare-servers}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      # InfluxDB Configuration - loaded from .env.production.local via env_file
+      - INFLUX_PORT=${INFLUX_PORT:-8086}
+      - INFLUX_DATABASE=${INFLUX_DATABASE:-sailgp}
+      # Secrets: INFLUX_HOST, INFLUX_TOKEN, and INFLUX_BUCKET loaded from .env.production.local via env_file only
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-production}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_SSL=${DB_SSL:-false}
+      - DB_SSL_REJECT_UNAUTHORIZED=${DB_SSL_REJECT_UNAUTHORIZED:-false}
+      - DATA_DIRECTORY=/data
+      - MEDIA_DIRECTORY=/media
+      - DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-1g}
+    env_file:
+      - .env.production
+      - .env.production.local
+    volumes:
+      - ${DATA_DIRECTORY:-./data}:/data
+      - ${MEDIA_DIRECTORY:-./media}:/media
+    networks:
+      - hunico-network
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');let checks=0;const ports=[8069,8059,8079,8089,8099];ports.forEach(p=>{http.get('http://localhost:'+p+'/api/health',(r)=>{if(r.statusCode===200)checks++;if(checks===ports.length)process.exit(0)}).on('error',()=>process.exit(1))});setTimeout(()=>process.exit(checks===ports.length?0:1),2000)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    cpus: '1.0'
+    # Increased for server_file (DuckDB/parquet) and other Node servers
+    mem_limit: 8g
+    mem_reservation: 2.5g
+
+  python:
+    image: hunico-python:latest
+    container_name: hunico-python
+    ports:
+      - "${PYTHON_PORT:-8049}:8049"
+    environment:
+      - PYTHON_PORT=${PYTHON_PORT:-8049}
+      - APP_PORT=${APP_PORT:-8069}
+      - API_HOST=${API_HOST:-node}
+      - JWT_ISSUER=${JWT_ISSUER:-teamshare-auth}
+      - JWT_AUDIENCE=${JWT_AUDIENCE:-teamshare-servers}
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://racesight.cloud,https://www.racesight.cloud}
+      - VITE_VERBOSE=${VITE_VERBOSE:-false}
+      - VALIDATE_WITH_EXTERNAL_SERVICE=${VALIDATE_WITH_EXTERNAL_SERVICE:-false}
+      - FILE_PORT=${FILE_PORT:-8069}
+      - DATA_DIRECTORY=/data
+      - NODE_ENV=production
+      # InfluxDB Configuration (required for normalization scripts)
+      # Non-secret defaults from .env.production (can be overridden by .env.production.local via env_file)
+      - INFLUX_HOST=${INFLUX_HOST:-https://data.sailgp.tech}
+      - INFLUX_PORT=${INFLUX_PORT:-8086}
+      - INFLUX_DATABASE=${INFLUX_DATABASE:-sailgp}
+      # Secrets (INFLUX_TOKEN, INFLUX_BUCKET) loaded from .env.production.local via env_file only
+    env_file:
+      - .env.production
+      - .env.production.local
+    volumes:
+      - ${DATA_DIRECTORY:-./data}:/data
+      - ${SCRIPTS_DIRECTORY:-./scripts}:/app/server_python/scripts
+    networks:
+      - hunico-network
+    depends_on:
+      node:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8049/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    cpus: '2.5'
+    # Increased CPU and memory for Python processing tasks
+    # With 16GB RAM available, increased limit for better performance
+    mem_limit: 10g
+    mem_reservation: 3g
+
+  nginx:
+    image: nginx:alpine
+    container_name: hunico-nginx
+    ports:
+      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./servers/docker/nginx/nginx-prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend:/usr/share/nginx/html:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - ./servers/docker/nginx/logs:/var/log/nginx
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - hunico-network
+    depends_on:
+      - node
+      - python
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  hunico-network:
+    driver: bridge

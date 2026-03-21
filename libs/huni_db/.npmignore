@@ -1,0 +1,16 @@
+src/
+__tests__/
+examples/
+node_modules/
+.gitignore
+.eslintrc.js
+tsconfig.json
+vite.config.ts
+*.log
+*.tsbuildinfo
+coverage/
+.vscode/
+.idea/
+*.test.ts
+*.spec.ts
+

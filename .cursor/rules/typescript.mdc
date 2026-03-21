@@ -1,0 +1,29 @@
+---
+description: TypeScript type safety and project path aliases
+globs: **/*.ts,**/*.tsx
+alwaysApply: false
+---
+
+# TypeScript Conventions
+
+- **Maintain type safety**: Avoid `any` unless justified and documented. Use strict null checks.
+- Use project **path aliases**: `@/`, `@store/`, `@utils/`, `@components/`, `@pages/`, `@styles/`, `@config/` (see tsconfig.json paths).
+- Prefer **explicit return types** for public functions and exported APIs.
+
+## Examples
+
+```typescript
+// Prefer: typed, explicit return, path alias
+import { debug } from '@utils/console';
+
+export function formatLabel(value: number, unit: string): string {
+  return `${value.toFixed(1)} ${unit}`;
+}
+```
+
+```typescript
+// Avoid: any and implicit return
+export function formatLabel(value: any, unit: any) {
+  return `${value.toFixed(1)} ${unit}`;
+}
+```

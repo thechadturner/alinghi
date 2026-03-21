@@ -1,0 +1,62 @@
+# Use Python 3.11 slim image as base
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies if needed (for building Python packages like scipy, numpy)
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy utilities requirements and setup files first for better caching
+# Create directory structure first
+RUN mkdir -p /app/libs/utilities
+
+# Copy only essential files needed for installation (this layer is cached unless these files change)
+COPY libs/utilities/requirements.txt /app/libs/utilities/requirements.txt
+COPY libs/utilities/setup.py /app/libs/utilities/setup.py
+COPY libs/utilities/README.md /app/libs/utilities/README.md
+# Copy pyproject.toml if it exists (optional)
+COPY libs/utilities/pyproject.toml* /app/libs/utilities/
+WORKDIR /app/libs/utilities
+
+# Install utilities dependencies first (cached unless requirements.txt changes)
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+
+# Copy utilities package code (only the actual package directory, not tests/docs)
+# This allows Docker to cache the pip install layer separately from code changes
+COPY libs/utilities/utilities /app/libs/utilities/utilities
+
+# Install utilities package in editable mode
+RUN pip install --no-cache-dir -e .
+
+# Set working directory back to server_python
+WORKDIR /app/server_python
+
+# Copy requirements FIRST for better caching (cached unless requirements.txt changes)
+COPY server_python/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the server_python application (this layer rebuilds on code changes)
+COPY server_python/ .
+
+# Create necessary directories
+RUN mkdir -p scripts
+
+# Expose the port (default 8049, configurable via PYTHON_PORT env var)
+EXPOSE 8049
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8049/api/health')" || exit 1
+
+# Run the application
+CMD ["python", "run.py"]
+
