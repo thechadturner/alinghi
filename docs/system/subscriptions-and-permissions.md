@@ -1,7 +1,7 @@
 # Subscriptions and Permissions Documentation
 
 ## Overview
-TeamShare implements a comprehensive subscription and permission system that controls user access to features and data based on their subscription plan and role within projects.
+RaceSight implements a comprehensive subscription and permission system that controls user access to features and data based on their subscription plan and role within projects.
 
 ## Subscription System
 

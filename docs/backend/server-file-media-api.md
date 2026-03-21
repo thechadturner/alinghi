@@ -1,4 +1,4 @@
-TeamShare File and Media Servers
+RaceSight File and Media Servers
 
 File Server (Metadata and Raw Channel Access)
 Base URL: /api
@@ -36,10 +36,10 @@ Health
 
 Path Handling
 - **Windows Paths**: Automatically converted to container paths in Docker
-  - Example: `C:\MyApps\Hunico\Uploads\Media\System\1\ac75\20240905\youtube\high_res\video1.mp4`
+  - Example: `C:\MyApps\RaceSight\Uploads\Media\System\1\ac75\20240905\youtube\high_res\video1.mp4`
   - Converts to: `/media/System/1/ac75/20240905/youtube/high_res/video1.mp4`
 - **Path Format**: Database stores paths with `{res}` placeholder for quality
-  - Example: `C:\MyApps\Hunico\Uploads\Media\System\1\ac75\20240905\youtube\{res}\video1.mp4`
+  - Example: `C:\MyApps\RaceSight\Uploads\Media\System\1\ac75\20240905\youtube\{res}\video1.mp4`
   - Frontend replaces `{res}` with `high_res`, `med_res`, or `low_res`
 
 Video Quality Management

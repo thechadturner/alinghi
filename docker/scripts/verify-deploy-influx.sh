@@ -2,7 +2,7 @@
 # Quick verification script to check if InfluxDB env vars are deployed correctly
 # Run this on the production server after deployment
 
-cd /home/racesight/hunico || exit 1
+cd /home/racesight/racesight || exit 1
 
 echo "============================================"
 echo "  Verifying InfluxDB Deployment"

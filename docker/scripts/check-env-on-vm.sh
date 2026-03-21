@@ -7,7 +7,7 @@ echo "  Checking Environment Configuration"
 echo "============================================"
 echo
 
-BASE_PATH="${1:-/home/racesight/hunico}"
+BASE_PATH="${1:-/home/racesight/racesight}"
 cd "$BASE_PATH" || {
     echo "[ERROR] Cannot access: $BASE_PATH"
     exit 1

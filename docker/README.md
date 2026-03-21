@@ -1,6 +1,6 @@
 # Docker Configuration
 
-This directory contains all Docker-related configuration and scripts for the Hunico application.
+This directory contains all Docker-related configuration and scripts for the RaceSight application.
 
 ## Structure
 
@@ -63,13 +63,13 @@ Services are registered in `docker-services.config`. Each service entry defines:
 
 Data, media, and Python server scripts are stored on the host and mounted into containers at runtime (not baked into images):
 
-- **Data**: `DATA_DIRECTORY` (e.g. `/opt/hunico/data`) — mounted into Node and Python containers.
-- **Media**: `MEDIA_DIRECTORY` (e.g. `/opt/hunico/media`) — mounted into Node container.
-- **Python scripts**: `SCRIPTS_DIRECTORY` (e.g. `/opt/hunico/scripts`) — mounted into the Python container at `/app/server_python/scripts`. In production, `setup-vm.sh` creates this directory and `DEPLOY_VM_SERVERS.bat` copies `server_python/scripts` into it. Configurable via `VM_SCRIPTS_PATH` in `deploy.config`.
+- **Data**: `DATA_DIRECTORY` — mounted into Node and Python containers (host paths come from `deploy.config` / `.env`).
+- **Media**: `MEDIA_DIRECTORY` — mounted into Node container.
+- **Python scripts**: `SCRIPTS_DIRECTORY` — mounted into the Python container at `/app/server_python/scripts`. In production, `setup-vm.sh` creates the scripts directory and `DEPLOY_VM_SERVERS.bat` copies `server_python/scripts` into it. See `VM_SCRIPTS_PATH` in `deploy.config`.
 
 ## Deployment: Permission errors on VM
 
-If server deploy fails during extraction with "Permission denied" or "Cannot mkdir", the VM deployment path has root-owned files. On the VM run once: `sudo chown -R <deploy-user>:<deploy-user> <VM_BASE_PATH>` (e.g. `sudo chown -R racesight:racesight /home/racesight/hunico`), then re-run the deploy script. See [Deployment Guide](../docs/distribution/deployment-guide.md#tar-extraction-permission-denied-or-cannot-mkdir) for details.
+If server deploy fails during extraction with "Permission denied" or "Cannot mkdir", the VM deployment path has root-owned files. On the VM run once: `sudo chown -R <deploy-user>:<deploy-user> <VM_BASE_PATH>` (e.g. `sudo chown -R racesight:racesight /home/racesight/racesight`), then re-run the deploy script. See [Deployment Guide](../docs/distribution/deployment-guide.md#tar-extraction-permission-denied-or-cannot-mkdir) for details.
 
 ## Documentation
 

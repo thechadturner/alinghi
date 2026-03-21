@@ -1,4 +1,4 @@
-TeamShare Frontend Architecture (frontend/)
+RaceSight Frontend Architecture (frontend/)
 
 Overview
 The frontend is a SolidJS application that manages authentication, routing, multi-window synchronization, and data visualization. It uses a unified data store with in-session in-memory caches and HuniDB for non-timeseries data (events, aggregates, mapdata, objects). Timeseries/channel-values are not persisted locally. See [Data Caching Policy](./data-caching-policy.md) for details.

@@ -72,7 +72,7 @@ Create the SSL directory structure that Docker nginx will use:
 
 ```bash
 # Navigate to your project directory
-cd /path/to/Hunico
+cd /path/to/RaceSight
 
 # Ensure SSL directory exists
 mkdir -p docker/nginx/ssl
@@ -158,7 +158,7 @@ The renewal script handles Docker nginx reload automatically:
 sudo crontab -e
 
 # Add this line:
-0 0,12 * * * /path/to/Hunico/docker/nginx/scripts/renew-ssl-cert.sh >> /var/log/certbot-renewal.log 2>&1
+0 0,12 * * * /path/to/RaceSight/docker/nginx/scripts/renew-ssl-cert.sh >> /var/log/certbot-renewal.log 2>&1
 ```
 
 ### Option B: Manual Renewal Setup

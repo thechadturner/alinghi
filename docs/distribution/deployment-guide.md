@@ -1,6 +1,6 @@
 # Production Deployment Guide
 
-This guide explains how to deploy the Hunico application to a production Linux VM.
+This guide explains how to deploy the RaceSight application to a production Linux VM.
 
 ## Prerequisites
 
@@ -24,14 +24,14 @@ SSH_USER=racesight
 SSH_KEY=C:\Users\guyt2\OneDrive\Projects\AzureVM\RaceSight\racesight-azure-vm.pub.pem
 
 # VM Deployment Paths
-VM_BASE_PATH=/home/racesight/hunico
-VM_FRONTEND_PATH=/home/racesight/hunico/frontend
-VM_SERVERS_PATH=/home/racesight/hunico/servers
-VM_DATA_PATH=/home/racesight/hunico/data
-VM_MEDIA_PATH=/home/racesight/hunico/media
+VM_BASE_PATH=/home/racesight/racesight
+VM_FRONTEND_PATH=/home/racesight/racesight/frontend
+VM_SERVERS_PATH=/home/racesight/racesight/servers
+VM_DATA_PATH=/home/racesight/racesight/data
+VM_MEDIA_PATH=/home/racesight/racesight/media
 ```
 
-**Note**: `deploy.config.local` is gitignored and should not be committed.
+**Note**: `deploy.config.local` is gitignored and should not be committed. If your VM still uses a legacy deployment root (for example `/home/racesight/hunico`), set `VM_BASE_PATH` and related paths in `deploy.config.local` to match the server.
 
 ### 2. Create Production Environment Files
 
@@ -56,7 +56,7 @@ On the VM, run the setup script once (or it will be run automatically during dep
 ssh -i <your-key> racesight@20.224.64.96
 
 # Run setup script
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 bash servers/docker/setup-vm.sh
 ```
 
@@ -105,7 +105,7 @@ This script will:
 After deployment, the VM will have this structure:
 
 ```
-/home/racesight/hunico/
+/home/racesight/racesight/
 ├── frontend/              # Production frontend build
 │   ├── index.html
 │   ├── assets/
@@ -139,7 +139,7 @@ After deployment, start the services:
 ssh -i <your-key> racesight@20.224.64.96
 
 # Navigate to base directory
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 
 # Start all services
 docker-compose -f docker-compose.yml up -d --build
@@ -191,7 +191,7 @@ If the deploy script fails during "Extracting files on VM" with errors like `tar
 ssh -i <your-key> <SSH_USER>@<SSH_HOST>
 
 # Fix ownership (replace <SSH_USER> and path with your VM_BASE_PATH)
-sudo chown -R <SSH_USER>:<SSH_USER> /home/racesight/hunico
+sudo chown -R <SSH_USER>:<SSH_USER> /home/racesight/racesight
 
 # Exit and re-run from Windows: docker\DEPLOY_VM_SERVERS.bat
 ```
@@ -229,7 +229,7 @@ To update services after code changes:
 To manually restart services on VM:
 
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 docker-compose -f docker-compose.yml down
 docker-compose -f docker-compose.yml up -d --build
 ```

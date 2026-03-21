@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the architecture and implementation strategy for multi-source mapping in the Hunico application. It covers the data flow, component responsibilities, and the solution to the time window filtering issue.
+This document describes the architecture and implementation strategy for multi-source mapping in the RaceSight application. It covers the data flow, component responsibilities, and the solution to the time window filtering issue.
 
 ## Problem Statement
 

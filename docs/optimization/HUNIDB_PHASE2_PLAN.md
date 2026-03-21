@@ -1,6 +1,6 @@
 # HuniDB Development Plan - Phase 2 (Performance & Reliability)
 
-**Note:** In Hunico, timeseries, map data, and aggregates are **no longer cached in HuniDB**; the app uses API + in-memory cache for that data. HuniDB is used only for events, metadata, and settings. See `HUNIDB_CACHING_AND_INDEXING.md` for current usage.
+**Note:** In RaceSight, timeseries, map data, and aggregates are **no longer cached in HuniDB**; the app uses API + in-memory cache for that data. HuniDB is used only for events, metadata, and settings. See `HUNIDB_CACHING_AND_INDEXING.md` for current usage.
 
 ## Overview
 

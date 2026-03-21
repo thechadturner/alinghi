@@ -106,7 +106,7 @@ VITE_MEDIA_PORT=443
 The media server automatically binds to `0.0.0.0` to accept connections from any network interface.
 
 **Docker Path Conversion**: When running in Docker, the media server automatically converts Windows file paths to container paths:
-- Windows paths from database: `C:\MyApps\Hunico\Uploads\Media\System\...`
+- Windows paths from database: `C:\MyApps\RaceSight\Uploads\Media\System\...`
 - Container paths: `/media/System/...` (mounted volume)
 - Conversion happens automatically - no configuration needed
 

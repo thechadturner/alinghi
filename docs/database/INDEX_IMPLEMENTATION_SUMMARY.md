@@ -15,7 +15,7 @@ This document provides a quick reference for implementing the recommended databa
 
 ```bash
 # Run audit script
-psql -U postgres -d hunico -f database/migrations/audit_existing_indexes.sql > audit_results.txt
+psql -U postgres -d <database_name> -f database/migrations/audit_existing_indexes.sql > audit_results.txt
 ```
 
 This will:
@@ -35,10 +35,10 @@ Read `docs/database/database-index-recommendations.md` for complete analysis of 
 ```bash
 # Linux/Mac
 chmod +x database/migrations/apply_indexes_to_all_classes.sh
-./database/migrations/apply_indexes_to_all_classes.sh hunico postgres
+./database/migrations/apply_indexes_to_all_classes.sh <database_name> postgres
 
 # Windows
-database\migrations\apply_indexes_to_all_classes.bat hunico postgres
+database\migrations\apply_indexes_to_all_classes.bat <database_name> postgres
 ```
 
 The script will:
@@ -54,13 +54,13 @@ The script will:
 # 2. Edit database/migrations/add_missing_indexes.sql
 # 3. Replace {class_name} with your schema name
 # 4. Run the SQL file:
-psql -U postgres -d hunico -f database/migrations/add_missing_indexes.sql
+psql -U postgres -d <database_name> -f database/migrations/add_missing_indexes.sql
 ```
 
 ### Step 4: Verify Indexes
 ```bash
 # Run verification script
-psql -U postgres -d hunico -f database/migrations/verify_indexes.sql > verification_results.txt
+psql -U postgres -d <database_name> -f database/migrations/verify_indexes.sql > verification_results.txt
 ```
 
 Or manually:

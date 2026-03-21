@@ -1,6 +1,6 @@
 # HuniDB Workspace Setup
 
-HuniDB is configured to use npm workspaces and share dependencies with the parent Hunico project.
+HuniDB is configured to use npm workspaces and share dependencies with the parent RaceSight project.
 
 ## How It Works
 

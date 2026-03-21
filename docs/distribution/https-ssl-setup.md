@@ -1,6 +1,6 @@
 # HTTPS/SSL Setup Guide
 
-This guide explains how to set up HTTPS for the Hunico application using Let's Encrypt certificates.
+This guide explains how to set up HTTPS for the RaceSight application using Let's Encrypt certificates.
 
 ## Overview
 
@@ -80,7 +80,7 @@ Create the SSL directory structure that Docker nginx will use:
 
 ```bash
 # Navigate to your project directory
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 
 # Ensure SSL directory exists
 mkdir -p servers/docker/nginx/ssl
@@ -105,7 +105,7 @@ chmod +x obtain-ssl-cert.sh
 
 1. **Temporarily stop nginx container** (Certbot needs port 80):
    ```bash
-   cd /home/racesight/hunico
+   cd /home/racesight/racesight
    docker-compose -f docker-compose.yml stop nginx
    ```
 
@@ -148,15 +148,15 @@ If you already have SSL certificates:
 
 1. Copy your certificates to the VM:
    ```bash
-   scp -i <your-key> fullchain.pem racesight@20.224.64.96:/home/racesight/hunico/servers/docker/nginx/ssl/
-   scp -i <your-key> privkey.pem racesight@20.224.64.96:/home/racesight/hunico/servers/docker/nginx/ssl/
+   scp -i <your-key> fullchain.pem racesight@20.224.64.96:/home/racesight/racesight/servers/docker/nginx/ssl/
+   scp -i <your-key> privkey.pem racesight@20.224.64.96:/home/racesight/racesight/servers/docker/nginx/ssl/
    ```
 
 2. Set proper permissions on the VM:
    ```bash
    ssh -i <your-key> racesight@20.224.64.96
-   chmod 644 /home/racesight/hunico/servers/docker/nginx/ssl/fullchain.pem
-   chmod 600 /home/racesight/hunico/servers/docker/nginx/ssl/privkey.pem
+   chmod 644 /home/racesight/racesight/servers/docker/nginx/ssl/fullchain.pem
+   chmod 600 /home/racesight/racesight/servers/docker/nginx/ssl/privkey.pem
    ```
 
 ## Step 7: Enable HTTPS Redirect
@@ -170,7 +170,7 @@ After certificates are in place, enable the HTTP to HTTPS redirect:
 
 2. Edit the nginx configuration:
    ```bash
-   cd /home/racesight/hunico
+   cd /home/racesight/racesight
    nano servers/docker/nginx/nginx-prod.conf
    ```
 
@@ -221,7 +221,7 @@ The renewal script handles Docker nginx reload automatically:
 sudo crontab -e
 
 # Add this line:
-0 0,12 * * * /home/racesight/hunico/servers/docker/nginx/scripts/renew-ssl-cert.sh >> /var/log/certbot-renewal.log 2>&1
+0 0,12 * * * /home/racesight/racesight/servers/docker/nginx/scripts/renew-ssl-cert.sh >> /var/log/certbot-renewal.log 2>&1
 ```
 
 ### Option B: Manual Renewal Setup
@@ -245,24 +245,24 @@ Let's Encrypt certificates expire every 90 days. Set up automatic renewal:
 
 1. Create a renewal script on the VM:
    ```bash
-   nano /home/racesight/hunico/renew-ssl.sh
+   nano /home/racesight/racesight/renew-ssl.sh
    ```
 
 2. Add this content:
    ```bash
    #!/bin/bash
    # Stop nginx
-   cd /home/racesight/hunico
+   cd /home/racesight/racesight
    docker-compose -f docker-compose.yml stop nginx
    
    # Renew certificate
    sudo certbot renew
    
    # Copy renewed certificates
-   sudo cp /etc/letsencrypt/live/racesight.cloud/fullchain.pem /home/racesight/hunico/servers/docker/nginx/ssl/
-   sudo cp /etc/letsencrypt/live/racesight.cloud/privkey.pem /home/racesight/hunico/servers/docker/nginx/ssl/
-   sudo chmod 644 /home/racesight/hunico/servers/docker/nginx/ssl/fullchain.pem
-   sudo chmod 600 /home/racesight/hunico/servers/docker/nginx/ssl/privkey.pem
+   sudo cp /etc/letsencrypt/live/racesight.cloud/fullchain.pem /home/racesight/racesight/servers/docker/nginx/ssl/
+   sudo cp /etc/letsencrypt/live/racesight.cloud/privkey.pem /home/racesight/racesight/servers/docker/nginx/ssl/
+   sudo chmod 644 /home/racesight/racesight/servers/docker/nginx/ssl/fullchain.pem
+   sudo chmod 600 /home/racesight/racesight/servers/docker/nginx/ssl/privkey.pem
    
    # Restart nginx
    docker-compose -f docker-compose.yml start nginx
@@ -270,14 +270,14 @@ Let's Encrypt certificates expire every 90 days. Set up automatic renewal:
 
 3. Make it executable:
    ```bash
-   chmod +x /home/racesight/hunico/renew-ssl.sh
+   chmod +x /home/racesight/racesight/renew-ssl.sh
    ```
 
 4. Add to crontab (runs monthly):
    ```bash
    crontab -e
    # Add this line:
-   0 2 1 * * /home/racesight/hunico/renew-ssl.sh >> /var/log/ssl-renewal.log 2>&1
+   0 2 1 * * /home/racesight/racesight/renew-ssl.sh >> /var/log/ssl-renewal.log 2>&1
    ```
 
 ## Verify SSL Configuration
@@ -302,7 +302,7 @@ Let's Encrypt certificates expire every 90 days. Set up automatic renewal:
 ### Certificate Not Found Error
 
 If nginx fails to start with "certificate not found":
-- Verify certificates exist: `ls -la /home/racesight/hunico/servers/docker/nginx/ssl/`
+- Verify certificates exist: `ls -la /home/racesight/racesight/servers/docker/nginx/ssl/`
 - Check file permissions
 - Verify certificate paths in nginx-prod.conf match the actual file locations
 

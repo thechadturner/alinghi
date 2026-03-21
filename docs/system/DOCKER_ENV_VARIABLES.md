@@ -37,7 +37,7 @@ This means:
 
 SSH to your VM and check:
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 cat .env.production | grep DB_NAME
 ```
 
@@ -46,7 +46,7 @@ Should show: `DB_NAME=production`
 ### Step 2: Force Restart Containers
 
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 docker-compose -f docker-compose.yml down
 docker-compose -f docker-compose.yml up -d
 ```
@@ -65,7 +65,7 @@ Should show: `DB_NAME=production`
 docker logs hunico-node --tail=50
 ```
 
-Look for database connection errors. If you still see `database "hunico" does not exist`, the container is still using the old environment variable.
+Look for database connection errors. If you still see a message like `database "<wrong_name>" does not exist`, the container is still using the wrong `DB_NAME` or PostgreSQL has no database matching your setting.
 
 ## Updated Deployment Process
 
@@ -77,7 +77,7 @@ The deployment script (`DEPLOY_VM_SERVERS.bat`) has been updated to:
 
 Use the verification script on the VM:
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 bash docker/scripts/check-env-on-vm.sh
 ```
 
@@ -92,7 +92,7 @@ This will:
 
 **Solution**: Force restart with environment variable check:
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 docker-compose -f docker-compose.yml down
 # Verify .env.production has correct value
 cat .env.production | grep DB_NAME
@@ -107,17 +107,17 @@ docker exec hunico-node sh -c 'echo DB_NAME=$DB_NAME'
 **Solution**: The deployment script should upload it, but you can manually upload:
 ```bash
 # From your local machine
-scp -i <your-key> .env.production racesight@<vm-ip>:/home/racesight/hunico/.env.production
+scp -i <your-key> .env.production racesight@<vm-ip>:/home/racesight/racesight/.env.production
 ```
 
 ### Issue: Environment variable not overriding default
 
-In `production.yml`, line 72 has:
+In `docker/compose/production.yml`, the Node service includes:
 ```yaml
-- DB_NAME=${DB_NAME:-hunico}
+- DB_NAME=${DB_NAME:-production}
 ```
 
-This means if `DB_NAME` is not set, it defaults to "hunico". Make sure:
+This means if `DB_NAME` is not set in the environment passed to Compose, it defaults to `production`. Other compose files (for example `node.yml`) may use a different fallback—check the file you deploy with. Make sure:
 1. `.env.production` has `DB_NAME=production` (no spaces around `=`)
 2. Container is restarted after updating `.env.production`
 
@@ -164,7 +164,7 @@ docker exec hunico-python sh -c 'echo INFLUX_BUCKET=$INFLUX_BUCKET'
 
 ```bash
 # Check .env.production on VM
-cat /home/racesight/hunico/.env.production | grep DB_NAME
+cat /home/racesight/racesight/.env.production | grep DB_NAME
 
 # Check environment variable in container
 docker exec hunico-node sh -c 'echo DB_NAME=$DB_NAME'
@@ -173,7 +173,7 @@ docker exec hunico-node sh -c 'echo DB_NAME=$DB_NAME'
 docker exec hunico-python sh -c 'echo INFLUX_HOST=$INFLUX_HOST INFLUX_TOKEN=$INFLUX_TOKEN INFLUX_BUCKET=$INFLUX_BUCKET'
 
 # Restart containers to load new env vars
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 docker-compose -f docker-compose.yml down
 docker-compose -f docker-compose.yml up -d
 

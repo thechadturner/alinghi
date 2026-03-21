@@ -4,7 +4,7 @@
 
 set -e
 
-NGINX_CONF="/home/racesight/hunico/servers/docker/nginx/nginx-prod.conf"
+NGINX_CONF="/home/racesight/racesight/servers/docker/nginx/nginx-prod.conf"
 
 echo "============================================"
 echo "  Enabling HTTPS Redirect"
@@ -18,7 +18,7 @@ if [ ! -f "$NGINX_CONF" ]; then
 fi
 
 # Check if certificates exist
-SSL_DIR="/home/racesight/hunico/servers/docker/nginx/ssl"
+SSL_DIR="/home/racesight/racesight/servers/docker/nginx/ssl"
 if [ ! -f "$SSL_DIR/fullchain.pem" ] || [ ! -f "$SSL_DIR/privkey.pem" ]; then
     echo "[ERROR] SSL certificates not found in $SSL_DIR"
     echo "[INFO] Please obtain certificates first (see docs/distribution/https-ssl-setup.md)"
@@ -49,7 +49,7 @@ echo
 
 # Restart nginx
 echo "[INFO] Restarting nginx..."
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 docker-compose -f docker-compose.yml restart nginx
 
 if [ $? -eq 0 ]; then

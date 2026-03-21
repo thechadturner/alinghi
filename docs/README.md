@@ -1,6 +1,6 @@
-# TeamShare Documentation
+# RaceSight Documentation
 
-Welcome to the TeamShare documentation. This directory contains comprehensive documentation organized by category to help you understand and work with the TeamShare application.
+Welcome to the RaceSight documentation. This directory contains comprehensive documentation organized by category to help you understand and work with the RaceSight application.
 
 ## 📋 Project & IP
 

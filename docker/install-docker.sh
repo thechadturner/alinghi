@@ -1,5 +1,5 @@
 #!/bin/bash
-# Docker Installation Script for Hunico Production VM
+# Docker Installation Script for RaceSight production VM
 # This script installs Docker and docker-compose on Ubuntu/Debian systems
 
 set -e

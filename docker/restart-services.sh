@@ -1,11 +1,11 @@
 #!/bin/bash
-# Restart All Hunico Services
-# This script restarts all Docker services for the Hunico application
+# Restart All RaceSight Services
+# This script restarts all Docker services for the RaceSight application
 
 set -e
 
 echo "============================================"
-echo "  Restarting Hunico Services"
+echo "  Restarting RaceSight Services"
 echo "============================================"
 echo
 

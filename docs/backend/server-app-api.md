@@ -1,4 +1,4 @@
-TeamShare Application Server API
+RaceSight Application Server API
 
 Overview
 The application server exposes authenticated REST endpoints under the /api namespace. All endpoints require JWT auth (bearer token cookie/header) and CSRF protection for state-changing requests. See Auth and CSRF below.

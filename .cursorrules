@@ -1,4 +1,4 @@
-# TeamShare Cursor Rules
+# RaceSight Cursor Rules
 
 ## Data Field Case Sensitivity
 - **CRITICAL**: All data fields from the API are stored in lowercase (e.g., "twa", "bsp", "twd", "tws")

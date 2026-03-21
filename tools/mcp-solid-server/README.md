@@ -1,4 +1,4 @@
-# Hunico Solid.js MCP Server
+# RaceSight Solid.js MCP Server
 
 MCP server that exposes Solid.js and TypeScript conventions to Cursor. It provides resources, prompts, and a tool so the AI gets consistent guidance when editing frontend code.
 
@@ -11,7 +11,7 @@ npm install
 npm run build
 ```
 
-From the repo root (Hunico):
+From the repo root (RaceSight):
 
 ```bash
 cd tools/mcp-solid-server && npm install && npm run build

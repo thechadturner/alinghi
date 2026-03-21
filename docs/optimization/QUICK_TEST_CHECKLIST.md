@@ -48,16 +48,18 @@ window.timerAudit.getActiveTimers();
 
 ## Database Tests (5 minutes)
 
+Replace `<database_name>` with your PostgreSQL database name (same value as `DB_NAME` in your environment).
+
 ```bash
 # 1. Run audit
-psql -U postgres -d hunico -f database/migrations/audit_existing_indexes.sql
+psql -U postgres -d <database_name> -f database/migrations/audit_existing_indexes.sql
 
 # 2. Check results - note which indexes exist
 # 3. Run migration (if needed)
-./database/migrations/apply_indexes_to_all_classes.sh hunico postgres
+./database/migrations/apply_indexes_to_all_classes.sh <database_name> postgres
 
 # 4. Verify
-psql -U postgres -d hunico -f database/migrations/verify_indexes.sql
+psql -U postgres -d <database_name> -f database/migrations/verify_indexes.sql
 ```
 ✅ Audit script runs successfully
 ✅ Migration creates only missing indexes

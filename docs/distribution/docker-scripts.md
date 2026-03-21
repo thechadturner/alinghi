@@ -83,7 +83,7 @@ docker-server.bat database status
 
 ## Service Management Scripts (Linux/VM)
 
-All service management scripts are located in `/home/racesight/hunico/servers/docker/` or `/home/racesight/hunico/docker/`:
+All service management scripts are located in `/home/racesight/racesight/servers/docker/` or `/home/racesight/racesight/docker/`:
 
 ### Start Services
 ```bash

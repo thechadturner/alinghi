@@ -1,6 +1,6 @@
 # Docker Installation and Service Management
 
-This guide explains how to install Docker on the production VM and manage the Hunico services.
+This guide explains how to install Docker on the production VM and manage the RaceSight services.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ SSH to your VM and run the installation script:
 
 ```bash
 ssh -i "your-key.pem" racesight@20.224.64.96
-cd /home/racesight/hunico/servers/docker
+cd /home/racesight/racesight/servers/docker
 sudo bash install-docker.sh
 ```
 
@@ -46,7 +46,7 @@ docker run hello-world
 ## Step 3: Run VM Setup (if not already done)
 
 ```bash
-cd /home/racesight/hunico/servers/docker
+cd /home/racesight/racesight/servers/docker
 sudo bash setup-vm.sh
 ```
 
@@ -57,20 +57,20 @@ This creates the necessary directories and Docker network.
 Once Docker is installed and the deployment is complete, start all services:
 
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 bash servers/docker/start-services.sh
 ```
 
 Or if the scripts are in the base directory:
 
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 bash docker/start-services.sh
 ```
 
 ## Service Management Scripts
 
-All service management scripts are located in `/home/racesight/hunico/servers/docker/` or `/home/racesight/hunico/docker/`:
+All service management scripts are located in `/home/racesight/racesight/servers/docker/` or `/home/racesight/racesight/docker/`:
 
 ### Start Services
 ```bash
@@ -101,7 +101,7 @@ Shows the status of all running containers.
 You can also manage services manually using docker-compose:
 
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 
 # Start services
 docker-compose -f docker-compose.yml up -d --build
@@ -169,7 +169,7 @@ sudo docker ps
 After deploying new code:
 
 ```bash
-cd /home/racesight/hunico
+cd /home/racesight/racesight
 docker-compose -f docker-compose.yml up -d --build
 ```
 

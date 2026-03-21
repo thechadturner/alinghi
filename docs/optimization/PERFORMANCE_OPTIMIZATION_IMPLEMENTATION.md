@@ -191,10 +191,10 @@ This document summarizes the implementation of Steps 1-4 from the Performance Op
 
 ### Database Indexes
 
-1. Run audit script: `psql -U postgres -d hunico -f database/migrations/audit_existing_indexes.sql`
+1. Run audit script: `psql -U postgres -d <database_name> -f database/migrations/audit_existing_indexes.sql`
 2. Review audit results
-3. Run migration script: `./database/migrations/apply_indexes_to_all_classes.sh hunico postgres`
-4. Run verification: `psql -U postgres -d hunico -f database/migrations/verify_indexes.sql`
+3. Run migration script: `./database/migrations/apply_indexes_to_all_classes.sh <database_name> postgres`
+4. Run verification: `psql -U postgres -d <database_name> -f database/migrations/verify_indexes.sql`
 5. Monitor query performance with `EXPLAIN ANALYZE`
 
 ### Cache Cleanup

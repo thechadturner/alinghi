@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the field name normalization pattern used throughout the Hunico application, specifically for metadata fields in the UnifiedDataStore and HuniDB.
+This document describes the field name normalization pattern used throughout the RaceSight application, specifically for metadata fields in the UnifiedDataStore and HuniDB.
 
 **Note:** Timeseries, map data, and aggregates are **no longer cached in HuniDB**; only events, meta.datasets, meta.sources, meta.channel_names, and json.* tables are used. The **agg.aggregates** table is deprecated and not created; race/leg metadata is sourced from **agg.events** (JSON `tags` column). The conventions below still apply to those tables and to API response handling.
 

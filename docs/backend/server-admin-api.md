@@ -1,4 +1,4 @@
-TeamShare Admin Server API
+RaceSight Admin Server API
 
 Overview
 Admin endpoints manage content (projects, datasets, events, targets, media), personal access tokens (PAT), and uploads. All endpoints require JWT auth and CSRF; some require superuser privileges.

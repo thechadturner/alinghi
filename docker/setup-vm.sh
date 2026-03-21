@@ -1,22 +1,22 @@
 #!/bin/bash
-# VM Setup Script for Hunico Production Deployment
+# VM Setup Script for RaceSight production deployment
 # This script sets up the initial directory structure and Docker network on the VM
 # Run this once on the VM, or as part of the deployment process
 
 set -e
 
 echo "============================================"
-echo "  Hunico VM Setup Script"
+echo "  RaceSight VM Setup Script"
 echo "============================================"
 echo
 
 # Configuration (can be overridden by environment variables)
-BASE_PATH="${VM_BASE_PATH:-/home/racesight/hunico}"
+BASE_PATH="${VM_BASE_PATH:-/home/racesight/racesight}"
 FRONTEND_PATH="${VM_FRONTEND_PATH:-$BASE_PATH/frontend}"
 SERVERS_PATH="${VM_SERVERS_PATH:-$BASE_PATH/servers}"
 DATA_PATH="${VM_DATA_PATH:-$BASE_PATH/data}"
 MEDIA_PATH="${VM_MEDIA_PATH:-$BASE_PATH/media}"
-SCRIPTS_PATH="${VM_SCRIPTS_PATH:-/opt/hunico/scripts}"
+SCRIPTS_PATH="${VM_SCRIPTS_PATH:-/opt/racesight/scripts}"
 DOCKER_NETWORK="${DOCKER_NETWORK_NAME:-hunico-network}"
 
 echo "[INFO] Base path: $BASE_PATH"

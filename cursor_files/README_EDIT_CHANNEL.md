@@ -383,4 +383,4 @@ Potential improvements for future versions:
 
 ## License
 
-Part of the Hunico project.
+Part of the RaceSight project.

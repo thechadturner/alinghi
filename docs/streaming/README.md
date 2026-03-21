@@ -1,6 +1,6 @@
 # Streaming Service Documentation
 
-This directory contains comprehensive documentation for the Hunico Streaming Service (`server_stream`).
+This directory contains comprehensive documentation for the RaceSight streaming service (`server_stream`).
 
 ## Documentation Index
 

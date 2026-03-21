@@ -28,7 +28,7 @@ echo ============================================
 echo.
 
 echo [INFO] Checking frontend directory on VM...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "ls -lah /home/racesight/hunico/frontend/ 2>&1 | head -20"
+ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "ls -lah /home/racesight/racesight/frontend/ 2>&1 | head -20"
 
 echo.
 echo [INFO] Checking what Nginx is serving...

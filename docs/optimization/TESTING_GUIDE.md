@@ -17,15 +17,18 @@ npm test -- unifiedDataStore
 ```
 
 ### Manual Tests (Database)
+
+Use your real PostgreSQL database name everywhere `<database_name>` appears (typically the `DB_NAME` from your `.env`).
+
 ```bash
 # 1. Audit existing indexes
-psql -U postgres -d hunico -f database/migrations/audit_existing_indexes.sql
+psql -U postgres -d <database_name> -f database/migrations/audit_existing_indexes.sql
 
 # 2. Apply missing indexes (after review)
-./database/migrations/apply_indexes_to_all_classes.sh hunico postgres
+./database/migrations/apply_indexes_to_all_classes.sh <database_name> postgres
 
 # 3. Verify indexes
-psql -U postgres -d hunico -f database/migrations/verify_indexes.sql
+psql -U postgres -d <database_name> -f database/migrations/verify_indexes.sql
 ```
 
 ---
@@ -37,7 +40,7 @@ psql -U postgres -d hunico -f database/migrations/verify_indexes.sql
 **Test**: Verify audit script works and identifies existing indexes
 
 ```bash
-psql -U postgres -d hunico -f database/migrations/audit_existing_indexes.sql > audit_results.txt
+psql -U postgres -d <database_name> -f database/migrations/audit_existing_indexes.sql > audit_results.txt
 ```
 
 **Expected Results**:
@@ -62,10 +65,10 @@ ORDER BY indexname;
 
 ```bash
 # Linux/Mac
-./database/migrations/apply_indexes_to_all_classes.sh hunico postgres
+./database/migrations/apply_indexes_to_all_classes.sh <database_name> postgres
 
 # Windows
-database\migrations\apply_indexes_to_all_classes.bat hunico postgres
+database\migrations\apply_indexes_to_all_classes.bat <database_name> postgres
 ```
 
 **Expected Results**:
@@ -546,13 +549,13 @@ npm test -- --watch
 
 ```bash
 # Test audit script
-psql -U postgres -d hunico -f database/migrations/audit_existing_indexes.sql
+psql -U postgres -d <database_name> -f database/migrations/audit_existing_indexes.sql
 
 # Test migration (dry run - review output first)
-psql -U postgres -d hunico -f database/migrations/add_missing_indexes.sql --dry-run
+psql -U postgres -d <database_name> -f database/migrations/add_missing_indexes.sql --dry-run
 
 # Test verification
-psql -U postgres -d hunico -f database/migrations/verify_indexes.sql
+psql -U postgres -d <database_name> -f database/migrations/verify_indexes.sql
 ```
 
 ### Manual Browser Testing

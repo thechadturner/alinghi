@@ -1,4 +1,4 @@
-## HuniDB in Hunico (Metadata & Settings Only)
+## HuniDB in RaceSight (Metadata & Settings Only)
 
 HuniDB is **no longer used** to cache timeseries, map data, aggregates, or density-optimized data. Those flows use the API only (with in-memory cache where applicable).
 

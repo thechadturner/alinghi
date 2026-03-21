@@ -1,6 +1,6 @@
 # Distribution and Deployment Documentation
 
-This directory contains all documentation related to distributing and deploying the Hunico application.
+This directory contains all documentation related to distributing and deploying the RaceSight application.
 
 ## Documentation Structure
 

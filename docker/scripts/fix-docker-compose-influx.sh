@@ -1,10 +1,10 @@
 #!/bin/bash
 # Fix docker-compose.yml on production server by removing INFLUX_TOKEN and INFLUX_BUCKET from environment section
 
-cd /home/racesight/hunico || exit 1
+cd /home/racesight/racesight || exit 1
 
 if [ ! -f "docker-compose.yml" ]; then
-    echo "[ERROR] docker-compose.yml not found in /home/racesight/hunico"
+    echo "[ERROR] docker-compose.yml not found in /home/racesight/racesight"
     exit 1
 fi
 

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Start All Hunico Services
-# This script starts all Docker services for the Hunico application
+# Start All RaceSight Services
+# This script starts all Docker services for the RaceSight application
 
 set -e
 
 echo "============================================"
-echo "  Starting Hunico Services"
+echo "  Starting RaceSight Services"
 echo "============================================"
 echo
 
@@ -18,9 +18,9 @@ if [[ "$SCRIPT_DIR" == *"/docker" ]]; then
     BASE_PATH="$(dirname "$BASE_PATH")"
 fi
 
-# Default to /home/racesight/hunico if BASE_PATH doesn't look right
-if [[ ! "$BASE_PATH" == *"hunico"* ]]; then
-    BASE_PATH="/home/racesight/hunico"
+# Default to /home/racesight/racesight if BASE_PATH doesn't look right (legacy installs may use .../hunico)
+if [[ ! "$BASE_PATH" == *"hunico"* ]] && [[ ! "$BASE_PATH" == *"/racesight/racesight"* ]]; then
+    BASE_PATH="/home/racesight/racesight"
 fi
 
 cd "$BASE_PATH" || {

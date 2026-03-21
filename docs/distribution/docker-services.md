@@ -1,10 +1,10 @@
 # Docker Services Documentation
 
-This document provides technical documentation for the Docker services used in the Hunico application.
+This document provides technical documentation for the Docker services used in the RaceSight application.
 
 ## Service Overview
 
-The Hunico application uses the following Docker services:
+The RaceSight stack uses the following Docker services:
 
 - **Node.js Services**: Unified container running multiple Node.js servers (app, admin, file, media, stream)
 - **Python Service**: FastAPI server for data processing
@@ -74,7 +74,7 @@ docker-compose -f docker/compose/node.yml up -d
   - **Important**: Set this in your `.env` file. Do NOT set it in the `environment:` section of docker-compose.yml to avoid conflicts
   - **PostgreSQL Configuration**: Ensure `pg_hba.conf` allows connections from the Docker container IP
 - **DB_PORT**: PostgreSQL port (default: 5432)
-- **DB_NAME**: Database name (default: hunico)
+- **DB_NAME**: Database name (set in `.env` / compose; must match your PostgreSQL database)
 - **DB_USER**: Database user (default: postgres)
 - **DB_PASSWORD**: Database password (required)
 - **DB_SSL**: Enable SSL for database connections (default: false for local development, true for hosted PostgreSQL)
@@ -89,14 +89,14 @@ docker-compose -f docker/compose/node.yml up -d
 
 The servers use file paths for storing uploads and media files. By default, these paths are configured via environment variables:
 
-- **DATA_DIRECTORY**: Directory for data file uploads (default: `C:/MyApps/Hunico/Uploads/Data`)
-- **MEDIA_DIRECTORY**: Directory for media files (default: `C:/MyApps/Hunico/Uploads/Media`)
+- **DATA_DIRECTORY**: Directory for data file uploads (default: `C:/MyApps/RaceSight/Uploads/Data`)
+- **MEDIA_DIRECTORY**: Directory for media files (default: `C:/MyApps/RaceSight/Uploads/Media`)
 
 #### Path Conversion in Docker
 
 When running in Docker, the media server automatically converts Windows file paths to container paths:
 
-- **Windows paths** (from database): `C:\MyApps\Hunico\Uploads\Media\System\1\ac75\20240905\youtube\{res}\video1.mp4`
+- **Windows paths** (from database): `C:\MyApps\RaceSight\Uploads\Media\System\1\ac75\20240905\youtube\{res}\video1.mp4`
 - **Container paths** (actual file access): `/media/System/1/ac75/20240905/youtube/high_res/video1.mp4`
 
 The conversion:
@@ -148,7 +148,7 @@ docker inspect --format='{{json .State.Health}}' hunico-node | jq
 
 2. **Check PostgreSQL pg_hba.conf**:
    - Ensure your PostgreSQL `pg_hba.conf` allows connections from the Docker container
-   - Add entry: `host hunico postgres 192.168.0.18/32 md5`
+   - Add entry: `host <database_name> postgres 192.168.0.18/32 md5` (use your `DB_NAME`)
    - Restart PostgreSQL after changes
 
 3. **Test database connection**:

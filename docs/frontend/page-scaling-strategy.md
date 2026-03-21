@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines the comprehensive page scaling strategy implemented in TeamShare to provide responsive, zoom-out behavior across all screen sizes while maintaining proper scrolling and content visibility.
+This document outlines the comprehensive page scaling strategy implemented in RaceSight to provide responsive, zoom-out behavior across all screen sizes while maintaining proper scrolling and content visibility.
 
 ## The Problem We Solved
 

@@ -1,13 +1,13 @@
 #!/bin/bash
 # Post-deployment verification - run this on production server after deployment
-# Usage: ssh to server, cd /home/racesight/hunico, bash servers/docker/scripts/post-deploy-check.sh
+# Usage: ssh to server, cd /home/racesight/racesight, bash servers/docker/scripts/post-deploy-check.sh
 
 echo "============================================"
 echo "  Post-Deployment InfluxDB Check"
 echo "============================================"
 echo
 
-cd /home/racesight/hunico || exit 1
+cd /home/racesight/racesight || exit 1
 
 echo "[1] Checking files existence..."
 ls -la docker-compose.yml 2>/dev/null && echo "  ✓ docker-compose.yml exists" || echo "  ✗ docker-compose.yml NOT FOUND"

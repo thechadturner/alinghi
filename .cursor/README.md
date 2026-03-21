@@ -1,13 +1,13 @@
-# Cursor configuration for Hunico
+# Cursor configuration for RaceSight
 
-This folder configures Cursor for the Hunico project (Solid.js + TypeScript), including MCP servers, rules, and pointers to workspace settings.
+This folder configures Cursor for the RaceSight project (Solid.js + TypeScript), including MCP servers, rules, and pointers to workspace settings.
 
 ## MCP
 
 - **Config file**: `.cursor/mcp.json`
 - **Servers**:
   - **filesystem**: Safe file read/write in the workspace (scoped to the project directory).
-  - **hunico-solid**: Custom MCP that exposes Solid.js and TypeScript conventions (resources, prompts, and a guidance tool).
+  - **hunico-solid** (MCP id): Custom MCP that exposes Solid.js and TypeScript conventions (resources, prompts, and a guidance tool).
 
 **Build the Solid MCP server** before using it:
 

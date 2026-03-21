@@ -1,7 +1,7 @@
 #!/bin/bash
 # Quick check for INFLUX_TOKEN and INFLUX_BUCKET in docker-compose.yml
 
-cd /home/racesight/hunico || exit 1
+cd /home/racesight/racesight || exit 1
 
 echo "Checking docker-compose.yml for InfluxDB secrets in environment section..."
 echo

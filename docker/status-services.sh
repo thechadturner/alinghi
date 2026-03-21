@@ -1,5 +1,5 @@
 #!/bin/bash
-# Check Status of Hunico Services
+# Check Status of RaceSight Services
 # This script shows the status of all Docker services
 
 # Get script directory and base path
@@ -11,9 +11,9 @@ if [[ "$SCRIPT_DIR" == *"/docker" ]]; then
     BASE_PATH="$(dirname "$BASE_PATH")"
 fi
 
-# Default to /home/racesight/hunico if BASE_PATH doesn't look right
-if [[ ! "$BASE_PATH" == *"hunico"* ]]; then
-    BASE_PATH="/home/racesight/hunico"
+# Default to /home/racesight/racesight if BASE_PATH doesn't look right (legacy installs may use .../hunico)
+if [[ ! "$BASE_PATH" == *"hunico"* ]] && [[ ! "$BASE_PATH" == *"/racesight/racesight"* ]]; then
+    BASE_PATH="/home/racesight/racesight"
 fi
 
 cd "$BASE_PATH" || {
@@ -32,7 +32,7 @@ else
 fi
 
 echo "============================================"
-echo "  Hunico Services Status"
+echo "  RaceSight Services Status"
 echo "============================================"
 echo
 

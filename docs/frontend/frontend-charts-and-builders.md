@@ -2,7 +2,7 @@ Charts, Builders, and Configuration Conventions
 
 Builders
 - Pages for composing chart configurations and loading data: Performance, Scatter, Timeseries, Probability, Overlay, Parallel, Polar Rose, Grid, Table, Video, Targets.
-- Navigation back to explore pages must set correct menu type in global UI per TeamShare rules (e.g., setSelectedMenu("POLAR ROSE") when exiting PolarRose builder).
+- Navigation back to explore pages must set correct menu type in global UI per RaceSight rules (e.g., setSelectedMenu("POLAR ROSE") when exiting PolarRose builder).
 
 Chart Conventions
 - Never hardcode data field names. Always use dynamic field names from configuration, and convert to lowercase when indexing data from the API.
