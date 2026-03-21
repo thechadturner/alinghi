@@ -99,6 +99,7 @@ export default function AdminScriptExecution() {
   const [updatingChannels, setUpdatingChannels] = createSignal(false);
   const [channelUpdateMessage, setChannelUpdateMessage] = createSignal<string | null>(null);
   const [updatingCleanup, setUpdatingCleanup] = createSignal(false);
+  const [cleanupPagesOnly, setCleanupPagesOnly] = createSignal(false);
   const [cleanupMessage, setCleanupMessage] = createSignal<string | null>(null);
   const [updatingMarkwind, setUpdatingMarkwind] = createSignal(false);
   const [markwindMessage, setMarkwindMessage] = createSignal<string | null>(null);
@@ -415,7 +416,7 @@ export default function AdminScriptExecution() {
         const sourceName = source?.source_name || "";
 
         // Build parameters to match the flow that works for each script.
-        // For 1_normalization_influx.py: match Upload Datasets page (reports/ac40/UploadDatasets.tsx) exactly (no start_time/end_time; backend uses full-day from date + timezone).
+        // For 1_normalization_influx.py: match UploadDatasets.tsx (upload datasets page) exactly (no start_time/end_time; backend uses full-day from date + timezone).
         // For other scripts (e.g. 3_execute.py): include start_time/end_time (null) and batch so script can derive range from data if needed.
         const isNormalizeInflux = scriptName === '1_normalization_influx.py';
         const parameters: Record<string, string | number | boolean | null> = isNormalizeInflux
@@ -1276,7 +1277,9 @@ export default function AdminScriptExecution() {
     );
 
     try {
-      info(`[AdminScriptExecution] Run cleanup: ${uniqueNormalizedDates.length} unique date(s)`);
+      info(
+        `[AdminScriptExecution] Run cleanup: ${uniqueNormalizedDates.length} unique date(s)${cleanupPagesOnly() ? " (pages_only)" : ""}`
+      );
       for (let i = 0; i < uniqueNormalizedDates.length; i++) {
         const dateNorm = uniqueNormalizedDates[i];
         const statusForDate = initialStatuses[i];
@@ -1294,7 +1297,8 @@ export default function AdminScriptExecution() {
               class_name: selectedClassName(),
               project_id: selectedProjectId()!.toString(),
               date: dateNorm,
-              verbose: false
+              verbose: false,
+              pages_only: cleanupPagesOnly()
             }
           };
           const response_json = await postData(apiEndpoints.python.execute_script, payload);
@@ -1846,7 +1850,7 @@ export default function AdminScriptExecution() {
         const source = sources().find(s => s.source_id === dataset.source_id);
         const sourceName = source?.source_name || "";
 
-        // Match Upload Datasets page for 1_normalization_influx.py; otherwise include dataset_id, batch, verbose, and start_time/end_time for 3_execute
+        // Match UploadDatasets.tsx for 1_normalization_influx.py; otherwise include dataset_id, batch, verbose, and start_time/end_time for 3_execute
         const isNormalizeInfluxRetry = status.script_name === '1_normalization_influx.py';
         const parameters: Record<string, string | number | boolean | null> = isNormalizeInfluxRetry
           ? {
@@ -2529,11 +2533,26 @@ export default function AdminScriptExecution() {
               >
                 {updatingChannels() ? 'Updating channels...' : 'Update channels'}
               </button>
+              <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  class="rounded border-gray-300"
+                  checked={cleanupPagesOnly()}
+                  onChange={(e) => setCleanupPagesOnly(e.currentTarget.checked)}
+                />
+                <span>Day pages only</span>
+              </label>
               <button
                 class="px-4 py-2 bg-violet-600 text-white rounded hover:bg-violet-700 disabled:opacity-50"
                 onClick={runCleanup}
                 disabled={executing() || updatingCleanup() || datasets().length === 0 || selectedClassName() !== 'gp50'}
-                title={selectedClassName() !== 'gp50' ? 'Cleanup is only supported for gp50' : 'Run 4_cleanup.py (day-level VMG + race position) for each unique date in the fetched datasets'}
+                title={
+                  selectedClassName() !== 'gp50'
+                    ? 'Cleanup is only supported for gp50'
+                    : cleanupPagesOnly()
+                      ? 'Run 4_cleanup.py with pages_only: refresh dataset_pages and day_pages from events/channels only (no VMG, race position, grade-by-VMG)'
+                      : 'Run 4_cleanup.py (day-level VMG + race position + day page sync) for each unique date in the fetched datasets'
+                }
               >
                 {updatingCleanup() ? 'Running cleanup...' : 'Run cleanup'}
               </button>

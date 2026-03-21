@@ -14,25 +14,29 @@ exports.getRaces = async (req, res) => {
   }
 
   try {
-    const { class_name, project_id, date} = req.query; 
+    const { class_name, project_id, date, dataset_id } = req.query;
 
     let result = await check_permissions(req, 'read', project_id)
 
     if (result) {
-      let params = [project_id, date];
+      const datasetIdParsed = dataset_id != null && String(dataset_id).trim() !== ''
+        ? parseInt(String(dataset_id).trim(), 10)
+        : null;
+      const hasDatasetFilter = datasetIdParsed != null && !Number.isNaN(datasetIdParsed);
+      const dsFilter = hasDatasetFilter ? ' AND b.dataset_id = $3' : '';
+      let params = hasDatasetFilter ? [project_id, date, datasetIdParsed] : [project_id, date];
 
-      // Query mapdata instead of events to get all actual race numbers in the data
-      // Include race_number = -1 (Training races) by changing filter to >= -1
-      // Handle 'TRAINING' string values (stored as TEXT in map.data) by converting to -1
+      // Race numbers from LEG events with Leg_number > 0 only. RACE-only rows are often created from
+      // track noise on training days (Race_number > 0 in parquet); real regattas have scored legs.
+      // Optional dataset_id scopes to one dataset for per-dataset summary pages.
       let sql = `SELECT "Race_number" from (
         SELECT 
           CASE 
-            WHEN UPPER(TRIM(a.tags ->> 'Race_number')) = 'TRAINING' THEN -1
             WHEN a.tags ->> 'Race_number' IS NOT NULL AND a.tags ->> 'Race_number' != '' THEN 
               CASE 
                 WHEN (a.tags ->> 'Race_number')::text ~ '^-?[0-9]+$' THEN
                   CASE 
-                    WHEN CAST(a.tags ->> 'Race_number' AS FLOAT) = -1 THEN -1
+                    WHEN CAST(a.tags ->> 'Race_number' AS FLOAT) <= 0 THEN NULL
                     ELSE CAST(CAST(a.tags ->> 'Race_number' AS FLOAT) AS INT)
                   END
                 ELSE NULL
@@ -42,10 +46,14 @@ exports.getRaces = async (req, res) => {
         FROM ${class_name}.dataset_events a
         INNER JOIN ${class_name}.datasets b on a.dataset_id = b.dataset_id
         INNER JOIN ${class_name}.sources c on b.source_id = c.source_id
-        WHERE c.project_id = $1 AND b.date = $2
-          AND (a.tags ->> 'Race_number' IS NOT NULL AND a.tags ->> 'Race_number' != '')
+        WHERE c.project_id = $1 AND b.date = $2${dsFilter}
+          AND LOWER(TRIM(a.event_type)) = 'leg'
+          AND (a.tags ->> 'Leg_number') IS NOT NULL AND TRIM(a.tags ->> 'Leg_number') != ''
+          AND (a.tags ->> 'Leg_number')::text ~ '^[0-9]+$'
+          AND CAST((a.tags ->> 'Leg_number') AS INT) > 0
+          AND (a.tags ->> 'Race_number') IS NOT NULL AND TRIM(a.tags ->> 'Race_number') != ''
         ) 
-        WHERE "Race_number" IS NOT NULL AND "Race_number" >= -1
+        WHERE "Race_number" IS NOT NULL AND "Race_number" > 0
         GROUP BY "Race_number"
         ORDER BY "Race_number" ASC`
 
@@ -65,7 +73,7 @@ exports.getRaces = async (req, res) => {
           FROM ${class_name}.dataset_events a
           INNER JOIN ${class_name}.datasets b ON a.dataset_id = b.dataset_id
           INNER JOIN ${class_name}.sources c ON b.source_id = c.source_id
-          WHERE c.project_id = $1 AND b.date = $2
+          WHERE c.project_id = $1 AND b.date = $2${dsFilter}
             AND LOWER(a.event_type) = 'training'
             AND a.tags ->> 'HOUR' IS NOT NULL AND a.tags ->> 'HOUR' != ''
         ) sub
@@ -1020,7 +1028,7 @@ exports.getChannels = async (req, res) => {
   }
 
   try {
-    const { class_name, project_id, date, data_source } = req.query;
+    const { class_name, project_id, date, data_source, dataset_id } = req.query;
 
     let result = await check_permissions(req, 'read', project_id)
 
@@ -1032,19 +1040,28 @@ exports.getChannels = async (req, res) => {
         return sendResponse(res, info, 400, false, `Invalid date format: ${date}. Expected YYYY-MM-DD or YYYYMMDD`, null);
       }
 
-      // Build query based on data_source filter
-      let sql = `SELECT DISTINCT channel_name FROM gp50.channels WHERE date = $1`;
+      const datasetIdParsed = dataset_id != null && String(dataset_id).trim() !== ''
+        ? parseInt(String(dataset_id).trim(), 10)
+        : null;
+      const hasDatasetId = datasetIdParsed != null && !Number.isNaN(datasetIdParsed);
+
+      let sql = `SELECT DISTINCT channel_name FROM ${class_name}.channels WHERE date = $1`;
       const params = [normalizedDate];
-      
+
+      if (hasDatasetId) {
+        params.push(datasetIdParsed);
+        sql += ` AND dataset_id = $${params.length}`;
+      }
+
       if (data_source) {
         const dataSourceUpper = data_source.toUpperCase();
         if (dataSourceUpper === 'FILE' || dataSourceUpper === 'INFLUX') {
-          sql += ` AND data_source = $2`;
           params.push(dataSourceUpper);
+          sql += ` AND data_source = $${params.length}`;
         }
         // If data_source is 'UNIFIED' or anything else, return both FILE and INFLUX
       }
-      
+
       sql += ` ORDER BY channel_name`;
 
       const rows = await db.GetRows(sql, params);

@@ -16,6 +16,11 @@ Operates on a **day** (class_name, project_id, date), not on a single dataset.
 
 3) Grade by VMG: Update dataset_events.tags GRADE from events_aggregate Vmg_perc (day-scoped):
    GRADE 0 for Vmg_perc > 140, GRADE 3 for 100 < Vmg_perc < 120, GRADE 1 for Vmg_perc < 50 (AVG only).
+
+4) Optional **pages_only** (JSON parameter): skip steps 1–3 and only run `sync_day_pages_from_events`
+   — updates `dataset_pages` and `day_pages` from existing events (getRaces), channels (Tws_cor),
+   PRESTART detection, and dataset report links. Use to backfill day sidebars without Race.py or
+   heavy cleanup on full history.
 """
 
 import sys
@@ -63,6 +68,37 @@ def normalize_date(date_str):
     if len(s) == 10 and s[4] == "-":
         return s[:4] + s[5:7] + s[8:10]
     return s[:8] if len(s) >= 8 else None
+
+
+def _safe_race_number_row(r):
+    try:
+        v = r.get("Race_number", 0)
+        if v is None or v == "":
+            return 0
+        return int(v) if not isinstance(v, int) else v
+    except (ValueError, TypeError):
+        return 0
+
+
+def summary_page_from_races_response(races_resp):
+    """
+    Align with getRaces + day cleanup: API lists races from LEG events (Leg_number > 0), not RACE-only shells.
+    Training-hour payloads include HOUR on every row; racing days return Race_number > 0 without HOUR.
+    """
+    data = races_resp.get("data") or []
+    has_data = races_resp.get("success") and len(data) > 0
+    has_training_only = has_data and all(r.get("HOUR") is not None for r in data)
+    has_actual_races = has_data and not has_training_only and any(_safe_race_number_row(r) > 0 for r in data)
+    return "RACE SUMMARY" if has_actual_races else "TRAINING SUMMARY"
+
+
+def channels_list_has_tws_cor(channels):
+    if not channels:
+        return False
+    for name in channels:
+        if name and "tws_cor" in str(name).lower():
+            return True
+    return False
 
 
 # ---------- VMG day baselines (similar to update_loss.py, day-scoped) ----------
@@ -603,6 +639,127 @@ def run_day_cleanup(api_token, class_name, project_id, date_norm, verbose=False)
     return vmg_ok and position_ok and grade_ok
 
 
+def sync_day_pages_from_events(api_token, class_name, project_id, date_norm):
+    """
+    Upsert dataset_pages (RACE/TRAINING summary, CALIBRATION from Tws_cor) and day_pages
+    (summary, opposite removed, PRESTART, PERFORMANCE/MANEUVERS from dataset_pages, day CALIBRATION).
+    Uses only read APIs + admin page/day-page POSTs. No VMG, race position, or grade-by-VMG.
+
+    Returns True if the dataset list call succeeded (including zero datasets); False on API failure.
+    """
+    url = f":8069/api/datasets/date/dataset_id?class_name={class_name}&project_id={project_id}&date={date_norm}"
+    resp = u.get_api_data(api_token, url)
+    if not resp.get("success"):
+        u.log(api_token, "4_cleanup.py", "error", "sync_day_pages_from_events", f"Failed to get datasets: {resp.get('message', '')}")
+        return False
+
+    datasets = resp.get("data") or []
+    cn_enc = urllib.parse.quote(class_name, safe="")
+    has_tws_cor_any = False
+
+    # Dataset_pages: RACE SUMMARY vs TRAINING SUMMARY per dataset; CALIBRATION if Tws_cor* channels exist
+    for d in datasets:
+        dataset_id = d.get("dataset_id")
+        if dataset_id is None:
+            continue
+        races_ds_url = f":8069/api/datasets/date/races?class_name={cn_enc}&project_id={project_id}&date={date_norm}&dataset_id={dataset_id}"
+        races_ds = u.get_api_data(api_token, races_ds_url)
+        ds_summary = summary_page_from_races_response(races_ds)
+        jsondata = {"class_name": class_name, "project_id": project_id, "dataset_id": dataset_id, "page_name": ds_summary}
+        res = u.post_api_data(api_token, ":8059/api/datasets/page", jsondata)
+        if res.get("success"):
+            u.log(api_token, "4_cleanup.py", "info", "Page Loaded!", f"page_name: {ds_summary} dataset_id={dataset_id}")
+        else:
+            u.log(api_token, "4_cleanup.py", "error", "Page load failed!", f"page_name: {ds_summary} dataset_id={dataset_id}")
+
+        ch_url = f":8069/api/datasets/channels?class_name={cn_enc}&project_id={project_id}&date={date_norm}&dataset_id={dataset_id}"
+        ch_resp = u.get_api_data(api_token, ch_url)
+        ch_list = ch_resp.get("data") if ch_resp.get("success") else None
+        if channels_list_has_tws_cor(ch_list):
+            has_tws_cor_any = True
+            cal_res = u.post_api_data(
+                api_token,
+                ":8059/api/datasets/page",
+                {"class_name": class_name, "project_id": project_id, "dataset_id": dataset_id, "page_name": "CALIBRATION"},
+            )
+            if cal_res.get("success"):
+                u.log(api_token, "4_cleanup.py", "info", "Page Loaded!", f"page_name: CALIBRATION dataset_id={dataset_id}")
+            else:
+                u.log(api_token, "4_cleanup.py", "warning", "CALIBRATION page load failed", cal_res.get("message", "unknown"))
+
+    # Day_pages: one summary page (RACE or TRAINING) for the whole day; remove the opposite day/reports summary if present
+    races_resp = u.get_api_data(api_token, f":8069/api/datasets/date/races?class_name={cn_enc}&project_id={project_id}&date={date_norm}")
+    summary_page = summary_page_from_races_response(races_resp)
+    other_summary = "TRAINING SUMMARY" if summary_page == "RACE SUMMARY" else "RACE SUMMARY"
+    del_other = u.delete_api_data(
+        api_token,
+        ":8059/api/datasets/day-page",
+        {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": other_summary},
+    )
+    if not del_other.get("success"):
+        u.log(api_token, "4_cleanup.py", "info", "Day page delete opposite summary (non-fatal if absent)", del_other.get("message", "unknown"))
+
+    day_page_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": summary_page}
+    day_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", day_page_payload)
+    if day_res.get("success"):
+        u.log(api_token, "4_cleanup.py", "info", "Day page upserted", f"page_name: {summary_page}")
+    else:
+        u.log(api_token, "4_cleanup.py", "warning", "Day page upsert failed", day_res.get("message", "unknown"))
+
+    has_prestarts = False
+    for d in datasets:
+        did = d.get("dataset_id")
+        if did is None:
+            continue
+        prestart_resp = u.get_api_data(api_token, f":8069/api/events/info?class_name={class_name}&project_id={project_id}&dataset_id={did}&event_type=PRESTART&timezone=UTC")
+        if prestart_resp.get("success") and prestart_resp.get("data") and len(prestart_resp.get("data")) > 0:
+            has_prestarts = True
+            break
+    if has_prestarts:
+        prestart_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": "PRESTART"}
+        prestart_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", prestart_payload)
+        if prestart_res.get("success"):
+            u.log(api_token, "4_cleanup.py", "info", "Day page upserted", "page_name: PRESTART")
+        else:
+            u.log(api_token, "4_cleanup.py", "warning", "Day page PRESTART upsert failed", prestart_res.get("message", "unknown"))
+
+    day_report_pages_to_sync = {"PERFORMANCE", "MANEUVERS"}
+    found_day_reports = set()
+    pt_enc = urllib.parse.quote("dataset/reports", safe="")
+    for d in datasets:
+        did = d.get("dataset_id")
+        if did is None:
+            continue
+        pages_url = f":8069/api/pages?class_name={cn_enc}&project_id={project_id}&dataset_id={did}&page_type={pt_enc}"
+        pages_resp = u.get_api_data(api_token, pages_url)
+        if not pages_resp.get("success") or not pages_resp.get("data"):
+            continue
+        for item in pages_resp["data"]:
+            pname = (item.get("page_name") or "").strip().upper()
+            if pname in day_report_pages_to_sync:
+                found_day_reports.add(pname)
+    for pname in sorted(found_day_reports):
+        sync_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": pname}
+        sync_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", sync_payload)
+        if sync_res.get("success"):
+            u.log(api_token, "4_cleanup.py", "info", "Day page upserted (sync from dataset_pages)", f"page_name: {pname}")
+        else:
+            u.log(api_token, "4_cleanup.py", "warning", "Day page sync upsert failed", f"{pname}: {sync_res.get('message', 'unknown')}")
+
+    if has_tws_cor_any:
+        cal_day_res = u.post_api_data(
+            api_token,
+            ":8059/api/datasets/day-page",
+            {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": "CALIBRATION"},
+        )
+        if cal_day_res.get("success"):
+            u.log(api_token, "4_cleanup.py", "info", "Day page upserted", "page_name: CALIBRATION")
+        else:
+            u.log(api_token, "4_cleanup.py", "warning", "Day page CALIBRATION upsert failed", cal_day_res.get("message", "unknown"))
+
+    return True
+
+
 if __name__ == "__main__":
     try:
         parameters_str = sys.argv[1]
@@ -612,6 +769,7 @@ if __name__ == "__main__":
         project_id = parameters_json.get("project_id")
         date = parameters_json.get("date")
         verbose = parameters_json.get("verbose", False)
+        pages_only = bool(parameters_json.get("pages_only", False))
 
         # class_name = "gp50"
         # project_id = 1
@@ -628,6 +786,16 @@ if __name__ == "__main__":
             u.log(api_token, "4_cleanup.py", "error", "Day cleanup", f"Invalid date: {date}")
             sys.exit(1)
 
+        if pages_only:
+            u.log(api_token, "4_cleanup.py", "info", "Day pages sync only", f"date={date_norm} (skipping VMG, race position, grade-by-VMG)")
+            print("4_cleanup.py pages_only: syncing day_pages from events...", flush=True)
+            sync_ok = sync_day_pages_from_events(api_token, class_name, project_id, date_norm)
+            if sync_ok:
+                print("Day pages sync completed:", u.dt.now(), flush=True)
+                sys.exit(0)
+            print("Day pages sync failed (dataset list API)", flush=True)
+            sys.exit(1)
+
         u.log(api_token, "4_cleanup.py", "info", "Day cleanup starting", f"date={date_norm}")
 
         success = run_day_cleanup(api_token, class_name, project_id, date_norm, verbose)
@@ -635,83 +803,7 @@ if __name__ == "__main__":
         if success:
             u.log(api_token, "4_cleanup.py", "info", "Day cleanup completed", str(u.dt.now()))
             print("Day cleanup completed:", u.dt.now(), flush=True)
-            # Dataset_pages: RACE SUMMARY for each dataset (dataset mode)
-            url = f":8069/api/datasets/date/dataset_id?class_name={class_name}&project_id={project_id}&date={date_norm}"
-            resp = u.get_api_data(api_token, url)
-            if resp.get("success"):
-                datasets = resp.get("data") or []
-                for d in datasets:
-                    dataset_id = d.get("dataset_id")
-                    if dataset_id is None:
-                        continue
-                    jsondata = {"class_name": class_name, "project_id": project_id, "dataset_id": dataset_id, "page_name": "RACE SUMMARY"}
-                    res = u.post_api_data(api_token, ":8059/api/datasets/page", jsondata)
-                    if res.get("success"):
-                        u.log(api_token, "4_cleanup.py", "info", "Page Loaded!", "page_name: RACE SUMMARY")
-                    else:
-                        u.log(api_token, "4_cleanup.py", "error", "Page load failed!", "page_name: RACE SUMMARY")
-
-                # Day_pages: one summary page (RACE or TRAINING) and optionally PRESTART for day-mode sidebar
-                # date/races returns actual races (Race_number 1,2,3... no HOUR) or training hours (Race_number 0,1,2 + HOUR). Use RACE SUMMARY only for actual races.
-                races_resp = u.get_api_data(api_token, f":8069/api/datasets/date/races?class_name={class_name}&project_id={project_id}&date={date_norm}")
-                data = races_resp.get("data") or []
-                has_data = races_resp.get("success") and len(data) > 0
-                # Training-only response has every row with HOUR; race response has Race_number > 0 and no HOUR
-                has_training_only = has_data and all(r.get("HOUR") is not None for r in data)
-                has_actual_races = has_data and not has_training_only and any(
-                    int(r.get("Race_number", 0)) > 0 for r in data
-                )
-                summary_page = "RACE SUMMARY" if has_actual_races else "TRAINING SUMMARY"
-                day_page_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": summary_page}
-                day_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", day_page_payload)
-                if day_res.get("success"):
-                    u.log(api_token, "4_cleanup.py", "info", "Day page upserted", f"page_name: {summary_page}")
-                else:
-                    u.log(api_token, "4_cleanup.py", "warning", "Day page upsert failed", day_res.get("message", "unknown"))
-
-                has_prestarts = False
-                for d in datasets:
-                    did = d.get("dataset_id")
-                    if did is None:
-                        continue
-                    prestart_resp = u.get_api_data(api_token, f":8069/api/events/info?class_name={class_name}&project_id={project_id}&dataset_id={did}&event_type=PRESTART&timezone=UTC")
-                    if prestart_resp.get("success") and prestart_resp.get("data") and len(prestart_resp.get("data")) > 0:
-                        has_prestarts = True
-                        break
-                if has_prestarts:
-                    prestart_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": "PRESTART"}
-                    prestart_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", prestart_payload)
-                    if prestart_res.get("success"):
-                        u.log(api_token, "4_cleanup.py", "info", "Day page upserted", "page_name: PRESTART")
-                    else:
-                        u.log(api_token, "4_cleanup.py", "warning", "Day page PRESTART upsert failed", prestart_res.get("message", "unknown"))
-
-                # Day_pages: PERFORMANCE / MANEUVERS when any dataset for this date already has them in dataset_pages.
-                # Performance.py and Maneuvers.py upsert day-page when those scripts run; without this, running only
-                # Race.py + cleanup would leave the day sidebar with summary only even when report data exists.
-                day_report_pages_to_sync = {"PERFORMANCE", "MANEUVERS"}
-                found_day_reports = set()
-                cn_enc = urllib.parse.quote(class_name, safe="")
-                pt_enc = urllib.parse.quote("dataset/reports", safe="")
-                for d in datasets:
-                    did = d.get("dataset_id")
-                    if did is None:
-                        continue
-                    pages_url = f":8069/api/pages?class_name={cn_enc}&project_id={project_id}&dataset_id={did}&page_type={pt_enc}"
-                    pages_resp = u.get_api_data(api_token, pages_url)
-                    if not pages_resp.get("success") or not pages_resp.get("data"):
-                        continue
-                    for item in pages_resp["data"]:
-                        pname = (item.get("page_name") or "").strip().upper()
-                        if pname in day_report_pages_to_sync:
-                            found_day_reports.add(pname)
-                for pname in sorted(found_day_reports):
-                    sync_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": pname}
-                    sync_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", sync_payload)
-                    if sync_res.get("success"):
-                        u.log(api_token, "4_cleanup.py", "info", "Day page upserted (sync from dataset_pages)", f"page_name: {pname}")
-                    else:
-                        u.log(api_token, "4_cleanup.py", "warning", "Day page sync upsert failed", f"{pname}: {sync_res.get('message', 'unknown')}")
+            sync_day_pages_from_events(api_token, class_name, project_id, date_norm)
             sys.exit(0)
         else:
             u.log(api_token, "4_cleanup.py", "warn", "Day cleanup completed with errors", str(u.dt.now()))

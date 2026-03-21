@@ -617,8 +617,8 @@ def _upsert_day_summary_page(api_token, class_name, project_id, date):
     """
     Upsert day_page for (project_id, date) to TRAINING SUMMARY or RACE SUMMARY
     so the day sidebar shows the correct report. Uses same logic as 4_cleanup:
-    GET date/races; if any row is an actual race (numeric Race_number > 0, no HOUR)
-    set RACE SUMMARY, else TRAINING SUMMARY. POST to :8059/api/datasets/day-page.
+    GET date/races (races = LEG events with Leg_number > 0, not track-only RACE rows);
+    if any Race_number > 0 without training HOUR shape, RACE SUMMARY else TRAINING SUMMARY.
     Does not raise; logs success/failure only.
     """
     try:
@@ -645,6 +645,12 @@ def _upsert_day_summary_page(api_token, class_name, project_id, date):
         has_training_only = has_data and all(r.get("HOUR") is not None for r in data)
         has_actual_races = has_data and not has_training_only and any(_safe_race_number(r) > 0 for r in data)
         summary_page = "RACE SUMMARY" if has_actual_races else "TRAINING SUMMARY"
+        other_summary = "TRAINING SUMMARY" if summary_page == "RACE SUMMARY" else "RACE SUMMARY"
+        u.delete_api_data(
+            api_token,
+            ":8059/api/datasets/day-page",
+            {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": other_summary},
+        )
         day_page_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": summary_page}
         day_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", day_page_payload)
         if day_res and day_res.get("success"):

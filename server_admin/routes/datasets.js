@@ -58,6 +58,22 @@ router.post(
 );
 
 /**
+ * @route DELETE /api/datasets/day-page
+ * @desc Remove a row from day_pages (day/reports page by name)
+ */
+router.delete(
+  '/day-page',
+  authenticate,
+  [
+    body('class_name').exists().withMessage('class_name is required').bail().custom((value) => {if (!isValidateName(value)) { throw new Error('Invalid class name');} return true;}).customSanitizer((value) => String(value).trim()),
+    body('project_id').exists().withMessage('project_id is required').bail().isInt().withMessage('project_id must be an integer').toInt(),
+    body('date').exists().withMessage('date is required').bail().matches(/^(\d{4}-\d{2}-\d{2}|\d{8})$/).withMessage('date must be YYYY-MM-DD or YYYYMMDD').customSanitizer((value) => String(value).trim()),
+    body('page_name').exists().withMessage('page_name is required').bail().customSanitizer(value => String(value).trim()),
+  ],
+  controller.removeDayPage
+);
+
+/**
  * @route DELETE /api/datasets/page
  * @desc Delete Dataset Page
  */

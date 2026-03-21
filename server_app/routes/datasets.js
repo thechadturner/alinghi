@@ -8,7 +8,7 @@ const { handleValidation } = require('../../shared/middleware/validation');
 
 /**
  * @route GET /api/datasets/date/races
- * @desc Get races for a given date
+ * @desc Distinct race numbers for a date from LEG events (Leg_number > 0), plus training-hour fallback
  */
 
 router.get(
@@ -22,6 +22,7 @@ router.get(
     .bail()
     .matches(/^(\d{4}-\d{2}-\d{2}|\d{8})$/).withMessage('date must be YYYY-MM-DD or YYYYMMDD')
     .customSanitizer(value => String(value).trim()),
+    query('dataset_id').optional().isInt().withMessage('dataset_id must be an integer').toInt(),
   ],
   controller.getRaces
 );
@@ -465,6 +466,7 @@ router.get(
       .matches(/^(\d{4}-\d{2}-\d{2}|\d{8})$/).withMessage('date must be YYYY-MM-DD or YYYYMMDD')
       .customSanitizer(value => String(value).trim()),
     query('data_source').optional().isIn(['FILE', 'INFLUX', 'UNIFIED']).withMessage('data_source must be FILE, INFLUX, or UNIFIED'),
+    query('dataset_id').optional().isInt().withMessage('dataset_id must be an integer').toInt(),
   ],
   handleValidation,
   controller.getChannels

@@ -162,6 +162,47 @@ exports.addDayPage = async (req, res) => {
     }
 };
 
+// REMOVE DAY PAGE (day_pages: project_id, date, page_id from day/reports)
+exports.removeDayPage = async (req, res) => {
+    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/datasets', "function": 'removeDayPage'}
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+    }
+
+    try {
+        const { class_name, project_id, date, page_name } = req.body;
+
+        const hasPermission = await check_permissions(req, 'write', project_id);
+        if (!hasPermission) {
+            return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
+        }
+
+        const dateNorm = (date && typeof date === 'string') ? date.replace(/[-/]/g, '').trim() : String(date).replace(/[-/]/g, '').trim();
+        if (dateNorm.length !== 8) {
+            return sendResponse(res, info, 400, false, 'date must be YYYY-MM-DD or YYYYMMDD', null, true);
+        }
+
+        const pageNameNorm = (page_name && String(page_name).trim()) ? String(page_name).trim().toUpperCase() : '';
+        let query = `SELECT page_id "value" FROM ${class_name}.pages WHERE page_type = 'day/reports' AND UPPER(TRIM(page_name)) = $1`;
+        const page_id = await GetValue(query, [pageNameNorm]);
+
+        if (page_id > 0) {
+            const sql = `DELETE FROM ${class_name}.day_pages WHERE project_id = $1 AND date = $2 AND page_id = $3`;
+            const success = await ExecuteCommand(sql, [project_id, dateNorm, page_id]);
+
+            if (success) {
+                return sendResponse(res, info, 200, true, 'Delete successful', false);
+            }
+            return sendResponse(res, info, 500, false, 'Delete failed', null, true);
+        }
+        return sendResponse(res, info, 400, false, 'No day/reports page found for that page_name', null, true);
+    } catch (error) {
+        return sendResponse(res, info, 500, false, error.message, null, true);
+    }
+};
+
 //REMOVE DATASET PAGE
 exports.removeDatasetPage = async (req, res) => {
     const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/datasets', "function": 'removeDatasetPage'}
