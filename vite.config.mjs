@@ -1,9 +1,17 @@
 import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 import { resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { visualizer } from 'rollup-plugin-visualizer';
 
 import { loadEnv } from 'vite';
+
+// Repo root (directory containing this config); avoids hardcoded machine paths
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const repoRoot = resolve(__dirname);
+const repoParent = resolve(repoRoot, '..');
+const syncstoreExternal = resolve(repoParent, 'WebApps', 'SolidJs', 'syncstore');
+const webappsRoot = resolve(repoParent, 'WebApps');
 
 // Plugin to ensure solid-icons JSX is transformed correctly
 const transformSolidIconsPlugin = () => {
@@ -225,13 +233,12 @@ export default defineConfig(({ mode }) => {
     // This is needed for @solidjs/sync package that may be referenced from external directories
     fs: {
       allow: [
-        // Workspace root (default)
         process.cwd(),
-        // Allow access to external syncstore directory if it exists
-        'C:/MyGit/WebApps/SolidJs/syncstore',
-        // Also allow parent directories for node_modules resolution
-        'C:/MyGit/WebApps',
-        'C:/MyGit',
+        repoRoot,
+        // Optional: local @solidjs/sync / syncstore checkout next to this repo (../WebApps/SolidJs/syncstore)
+        syncstoreExternal,
+        webappsRoot,
+        repoParent,
       ],
     },
     // Optimize file watching - exclude unnecessary directories

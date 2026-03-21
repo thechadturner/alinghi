@@ -2,7 +2,7 @@
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\MyGit\\RaceSight"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\MyGit\\Alinghi"]
     },
     "hunico-solid": {
       "command": "node",
