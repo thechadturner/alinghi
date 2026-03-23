@@ -689,7 +689,7 @@ export default function Window() {
     });
 
     return (
-        <div id="window" style="width: 100%; height: 100vh; display: flex; flex-direction: column; overflow: hidden;">
+        <div id="window">
             <Show when={!hideHeader()}>
                 <header class="header" style="flex-shrink: 0;">
                     <Show when={headerInfo().className && (headerInfo().sourceName || sidebarState() === 'live' || streamingStore.isInitialized)}>

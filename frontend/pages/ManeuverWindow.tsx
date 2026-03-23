@@ -1,4 +1,4 @@
-import { createSignal, onMount, createEffect, Show, on, untrack, onCleanup, createMemo } from "solid-js";
+import { createSignal, onMount, createEffect, Show, Switch, Match, on, untrack, onCleanup, createMemo } from "solid-js";
 
 import DataTable_Big from "../components/maneuvers/standard/DataTable_Big";
 import Map from "../components/maneuvers/standard/Map";
@@ -22,7 +22,7 @@ import { TAKEOFF_CHANNELS } from "../utils/maneuversConfig";
 import { persistantStore } from "../store/persistantStore";
 import { sourcesStore } from "../store/sourcesStore";
 import { apiEndpoints } from "@config/env";
-import { selectedGradesManeuvers, selectedStatesManeuvers, selectedRacesManeuvers, selectedLegsManeuvers, setSelectedGradesManeuvers, setSelectedStatesManeuvers, setSelectedRacesManeuvers, setSelectedLegsManeuvers, raceOptions, legOptions, gradeOptions, setRaceOptions, setLegOptions, setGradeOptions } from "../store/filterStore";
+import { selectedGradesManeuvers, selectedStatesManeuvers, selectedRacesManeuvers, selectedLegsManeuvers, setSelectedGradesManeuvers, setSelectedStatesManeuvers, setSelectedRacesManeuvers, setSelectedLegsManeuvers, raceOptions, legOptions, gradeOptions, setRaceOptions, setLegOptions, setGradeOptions, maneuverTrainingRacing, maneuverTimeseriesDescription } from "../store/filterStore";
 import { persistentSettingsService } from "../services/persistentSettingsService";
 import { user } from "../store/userStore";
 import { debug as logDebug } from "../utils/console";
@@ -89,6 +89,11 @@ interface ManeuverWindowProps {
 export default function ManeuverWindow(props: ManeuverWindowProps) {
   // Solo window: render a single view full screen, configured via props or query params
   // Props: view (required), eventType, phase, tws, grade, color (optional)
+
+  const maneuverLayoutInstanceId =
+    typeof window !== "undefined"
+      ? `ml-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`
+      : "ml-ssr";
   
   // Determine context from URL/props first (fleet-history scatter: context=fleet, no date), then store
   // Historical: source_id > 0 and no dataset_id (from ManeuversHistory)
@@ -133,6 +138,9 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
   // Local state for state options (extracted from data)
   const [stateOptions, setStateOptions] = createSignal<string[]>([]);
 
+  const [maneuversTableLoading, setManeuversTableLoading] = createSignal(true);
+  const [maneuversTableFetchError, setManeuversTableFetchError] = createSignal(false);
+
   // React to prop changes
   createEffect(() => {
     if (props.view) {
@@ -151,7 +159,11 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
       tableDataController.abort();
     }
 
-    tableDataController = new AbortController();
+    const requestController = new AbortController();
+    tableDataController = requestController;
+    const requestSignal = requestController.signal;
+    setManeuversTableLoading(true);
+    setManeuversTableFetchError(false);
 
     try {
       const currentContext = context();
@@ -198,12 +210,13 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
           url += `&filters=${encodeURIComponent(JSON.stringify(filters))}`;
         }
 
-        const result_json = await getData(url, tableDataController.signal);
+        const result_json = await getData(url, requestSignal);
 
         if (result_json.success && result_json.data && Array.isArray(result_json.data)) {
           data = result_json.data;
         } else {
           logError('ManeuverWindow: Failed to fetch historical maneuvers:', result_json.message || 'Unknown error');
+          setManeuversTableFetchError(true);
           setManeuvers([]);
           setTableData([]);
           setFiltered([]);
@@ -240,7 +253,7 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
           const fetchPromises = sources.map(async (source) => {
             try {
               const url = `${baseUrl}&source_names=${encodeURIComponent(JSON.stringify([source.source_name]))}`;
-              const result = await getData(url, tableDataController?.signal);
+              const result = await getData(url, requestSignal);
               
               if (result.success && result.data && Array.isArray(result.data)) {
                 // Add source_name to each item
@@ -288,13 +301,14 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
             url += `&filters=${encodeURIComponent(JSON.stringify(filters))}`;
           }
 
-          const result_json = await getData(url, tableDataController.signal);
+          const result_json = await getData(url, requestSignal);
 
           if (result_json.success && result_json.data && Array.isArray(result_json.data)) {
             data = result_json.data;
             logDebug('ManeuverWindow: Fleet (no date) maneuvers-history returned', data.length, 'rows');
           } else {
             logError('ManeuverWindow: Failed to fetch fleet maneuvers (maneuvers-history):', result_json.message || 'Unknown error');
+            setManeuversTableFetchError(true);
             setManeuvers([]);
             setTableData([]);
             setFiltered([]);
@@ -314,10 +328,17 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
 
         const channels = (eventType() || '').toUpperCase() === 'TAKEOFF' ? TAKEOFF_CHANNELS : MANEUVERS_CHANNELS;
         const url = `${apiEndpoints.app.data}/maneuvers-table-data?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&dataset_id=${encodeURIComponent(datasetId)}&event_type=${encodeURIComponent(eventType())}&channels=${encodeURIComponent(JSON.stringify(channels))}`;
-        const result_json = await getData(url, tableDataController.signal);
+        const result_json = await getData(url, requestSignal);
 
         if (result_json.success && result_json.data && Array.isArray(result_json.data)) {
           data = result_json.data;
+        } else {
+          logError('ManeuverWindow: Failed to fetch dataset maneuvers:', result_json.message || 'Unknown error');
+          setManeuversTableFetchError(true);
+          setManeuvers([]);
+          setTableData([]);
+          setFiltered([]);
+          return;
         }
       }
 
@@ -409,21 +430,40 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         logError('ManeuverWindow: Error fetching table data:', error);
+        setManeuversTableFetchError(true);
       }
       setManeuvers([]);
       setTableData([]);
       setFiltered([]);
     } finally {
-      tableDataController = null;
+      if (tableDataController === requestController) {
+        tableDataController = null;
+        setManeuversTableLoading(false);
+      }
     }
   };
 
   const applyFilters = () => {
-    let filteredByTws = [];
+    const maneuversData = maneuvers();
+    let filteredByTws: typeof maneuversData = [];
     if (tws() == 'ALL') {
-      filteredByTws = maneuvers();
+      filteredByTws = maneuversData;
     } else {
-      filteredByTws = maneuvers().filter(item => item.tws_bin == tws());
+      const selectedTws = Number(tws());
+      if (!isNaN(selectedTws)) {
+        filteredByTws = maneuversData.filter((item: any) => {
+          const itemTws = item.tws_bin ?? item.tws_avg;
+          if (itemTws === null || itemTws === undefined || isNaN(Number(itemTws))) {
+            return false;
+          }
+          const itemTwsNum = Number(itemTws);
+          const minTws = selectedTws - 2.5;
+          const maxTws = selectedTws + 2.5;
+          return itemTwsNum >= minTws && itemTwsNum < maxTws;
+        });
+      } else {
+        filteredByTws = [];
+      }
     }
 
     // Apply grade filter using selectedGrades array - use "greater than" logic
@@ -443,7 +483,6 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
         return numGrade > minGrade;
       });
     }
-    const dataAfterGrade = filteredData;
 
     // Apply state filter using selectedStates array
     // Use lowercase field names as primary with fallbacks for backward compatibility
@@ -478,12 +517,41 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
     // Apply leg filter using selectedLegs array
     // Use lowercase field names as primary with fallbacks for backward compatibility
     const legs = selectedLegsManeuvers();
-    if (legs.length > 0) {
+    const legNums = legs.map((l) => Number(l)).filter((n) => !isNaN(n));
+    if (legNums.length > 0) {
       filteredData = filteredData.filter((item: any) => {
         const legValue = item.leg_number ?? item.Leg_number ?? item.LEG;
         if (legValue == null || legValue === undefined) return false;
-        const legStr = String(legValue);
-        return legs.includes(legStr);
+        return legNums.includes(Number(legValue));
+      });
+    }
+
+    const trCtx = context();
+    const trainingRacing =
+      trCtx === 'historical' || (trCtx === 'fleet' && !selectedDate())
+        ? maneuverTrainingRacing()
+        : raceOptions().length === 0
+          ? null
+          : maneuverTrainingRacing();
+    if (trainingRacing === 'RACING') {
+      filteredData = filteredData.filter((item: any) => {
+        const raceValue = item.race_number ?? item.Race_number ?? item.race ?? item.Race;
+        if (raceValue == null || raceValue === undefined) return false;
+        const isTraining =
+          raceValue === -1 ||
+          raceValue === '-1' ||
+          (typeof raceValue === 'string' && String(raceValue).toUpperCase() === 'TRAINING');
+        return !isTraining;
+      });
+    } else if (trainingRacing === 'TRAINING') {
+      filteredData = filteredData.filter((item: any) => {
+        const raceValue = item.race_number ?? item.Race_number ?? item.race ?? item.Race;
+        if (raceValue == null || raceValue === undefined) return false;
+        const isTraining =
+          raceValue === -1 ||
+          raceValue === '-1' ||
+          (typeof raceValue === 'string' && String(raceValue).toUpperCase() === 'TRAINING');
+        return isTraining;
       });
     }
 
@@ -509,12 +577,6 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
         // This handles edge cases where cutEvents might be in an unexpected format
         log('🪟 ManeuverWindow: No valid event IDs found in cutEvents, showing all data', currentCutEvents);
       }
-    }
-
-    // Fallback: if state/race/leg filters (e.g. from another context) would empty the table but we have data after grade, show data after grade so the table is not empty
-    if (filteredData.length === 0 && dataAfterGrade.length > 0 && !(isCut() && cutEvents().length > 0)) {
-      log('🪟 ManeuverWindow: Filters would empty table; showing data without state/race/leg filters');
-      filteredData = dataAfterGrade;
     }
 
     const eventIds = filteredData.map(item => item.event_id);
@@ -599,12 +661,15 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
   createEffect(() => {
     isCut();
     cutEvents();
+    let t: ReturnType<typeof setTimeout> | undefined;
     if (!isInitialMount && untrack(() => maneuvers().length > 0)) {
-      const t = setTimeout(() => {
+      t = setTimeout(() => {
         applyFilters();
       }, 80);
-      return () => clearTimeout(t);
     }
+    return () => {
+      if (t !== undefined) clearTimeout(t);
+    };
   });
 
   // React to filter changes - refetch data when grades change (for API-based filtering in historical/fleet contexts)
@@ -636,6 +701,14 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
       applyFilters();
     }
   }));
+
+  createEffect(() => {
+    maneuverTrainingRacing();
+    raceOptions();
+    if (!isInitialMount && untrack(() => maneuvers().length > 0)) {
+      applyFilters();
+    }
+  });
 
   // Filter toggle handlers
   const toggleRaceFilter = (race: number | string) => {
@@ -748,7 +821,25 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
   });
 
   // Load filters from persistent settings (fallback if not synced from parent)
-  const loadFiltersFromPersistentSettings = async () => {
+  // When skipHardcodedManeuverDefaults: do not write ['1'] / ['H0'] to filterStore — those sync via
+  // @solidjs/sync to the opener and overwrite the main maneuver page (see Sidebar REQUEST_FILTER_STATE).
+  const loadFiltersFromPersistentSettings = async (opts?: { skipHardcodedManeuverDefaults?: boolean }) => {
+    const skipHardcoded = opts?.skipHardcodedManeuverDefaults === true;
+    const applyHardcodedGradeStateDefaults = () => {
+      if (skipHardcoded) {
+        logDebug('🪟 ManeuverWindow: Skipping hardcoded grade/state defaults (popup — keep parent filterStore)');
+        return;
+      }
+      if (selectedGradesManeuvers().length === 0) {
+        setSelectedGradesManeuvers(['1']);
+        logDebug('🪟 ManeuverWindow: Set default grade filter to [1] (>1)');
+      }
+      if (selectedStatesManeuvers().length === 0) {
+        setSelectedStatesManeuvers(['H0']);
+        logDebug('🪟 ManeuverWindow: Set default state filter to [H0]');
+      }
+    };
+
     const currentUser = user();
     if (currentUser?.user_id) {
       try {
@@ -792,37 +883,31 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
           
           // Set default grade >1 (shows grades 2 and 3) if no grades were loaded from persistent settings or synced
           if (!gradesLoaded && selectedGradesManeuvers().length === 0) {
-            setSelectedGradesManeuvers(['1']);
-            logDebug('🪟 ManeuverWindow: Set default grade filter to [1] (>1)');
+            if (!skipHardcoded) {
+              setSelectedGradesManeuvers(['1']);
+              logDebug('🪟 ManeuverWindow: Set default grade filter to [1] (>1)');
+            } else {
+              logDebug('🪟 ManeuverWindow: Skipping default grade [1] (popup)');
+            }
           }
           // Set default state H0 if no states were loaded from persistent settings or synced
           if (!statesLoaded && selectedStatesManeuvers().length === 0) {
-            setSelectedStatesManeuvers(['H0']);
-            logDebug('🪟 ManeuverWindow: Set default state filter to [H0]');
+            if (!skipHardcoded) {
+              setSelectedStatesManeuvers(['H0']);
+              logDebug('🪟 ManeuverWindow: Set default state filter to [H0]');
+            } else {
+              logDebug('🪟 ManeuverWindow: Skipping default state H0 (popup)');
+            }
           }
         }
       } catch (error) {
         logDebug('🪟 ManeuverWindow: Error loading filters from persistent settings:', error);
         // Set default grade and state even if there was an error loading settings
-        if (selectedGradesManeuvers().length === 0) {
-          setSelectedGradesManeuvers(['1']);
-          logDebug('🪟 ManeuverWindow: Set default grade filter to [1] (>1) after error');
-        }
-        if (selectedStatesManeuvers().length === 0) {
-          setSelectedStatesManeuvers(['H0']);
-          logDebug('🪟 ManeuverWindow: Set default state filter to [H0] after error');
-        }
+        applyHardcodedGradeStateDefaults();
       }
     } else {
       // No user logged in - set default grade and state
-      if (selectedGradesManeuvers().length === 0) {
-        setSelectedGradesManeuvers(['1']);
-        logDebug('🪟 ManeuverWindow: Set default grade filter to [1] (>1) (no user)');
-      }
-      if (selectedStatesManeuvers().length === 0) {
-        setSelectedStatesManeuvers(['H0']);
-        logDebug('🪟 ManeuverWindow: Set default state filter to [H0] (no user)');
-      }
+      applyHardcodedGradeStateDefaults();
     }
   };
 
@@ -883,7 +968,28 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
     };
     
     // Check if this is a popup window or same-window
-    const isPopupWindow = window.opener && !window.opener.closed;
+    const isPopupWindow = Boolean(window.opener && !window.opener.closed);
+    /** Fires once when opener sends FILTER_STORE_UPDATE so init can wait before fetch (avoids racing IDB sync). */
+    let resolveFirstParentFilterSync: (() => void) | undefined;
+    const firstParentFilterSyncPromise: Promise<void> | null = isPopupWindow
+      ? new Promise<void>((r) => {
+          resolveFirstParentFilterSync = r;
+        })
+      : null;
+    /** applyFilters() uses tws/eventType/phase from globalStore — wait for parent GLOBAL_STORE_UPDATE before first fetch. */
+    let resolveFirstParentGlobalSync: (() => void) | undefined;
+    const firstParentGlobalSyncPromise: Promise<void> | null = isPopupWindow
+      ? new Promise<void>((r) => {
+          resolveFirstParentGlobalSync = r;
+        })
+      : null;
+    /** applyFilters() uses isCut/cutEvents — wait for parent SELECTION_STORE_UPDATE before first fetch. */
+    let resolveFirstParentSelectionSync: (() => void) | undefined;
+    const firstParentSelectionSyncPromise: Promise<void> | null = isPopupWindow
+      ? new Promise<void>((r) => {
+          resolveFirstParentSelectionSync = r;
+        })
+      : null;
     let focusHandlerToRemove: (() => void) | null = null;
     log('🪟 ManeuverWindow: onMount', {
       isPopupWindow,
@@ -981,6 +1087,10 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
         window.dispatchEvent(new CustomEvent('globalStoreUpdate', {
           detail: payload
         }));
+        if (resolveFirstParentGlobalSync) {
+          resolveFirstParentGlobalSync();
+          resolveFirstParentGlobalSync = undefined;
+        }
       } else if (messageType === 'SELECTION_STORE_UPDATE') {
         // Handle selection store updates (selectedEvents, selection, etc.)
         const payload = event.data.payload || {};
@@ -990,6 +1100,10 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
         window.dispatchEvent(new CustomEvent('selectionStoreUpdate', {
           detail: payload
         }));
+        if (resolveFirstParentSelectionSync) {
+          resolveFirstParentSelectionSync();
+          resolveFirstParentSelectionSync = undefined;
+        }
       } else if (messageType === 'FILTER_STORE_UPDATE') {
         // Handle filter store updates (selectedStates, selectedRaces, etc.)
         const payload = event.data.payload || {};
@@ -998,6 +1112,10 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
         window.dispatchEvent(new CustomEvent('filterStoreUpdate', {
           detail: payload
         }));
+        if (resolveFirstParentFilterSync) {
+          resolveFirstParentFilterSync();
+          resolveFirstParentFilterSync = undefined;
+        }
       }
     };
     
@@ -1106,8 +1224,30 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
         windowName: window.name
       }, window.location.origin);
       
-      // Wait longer for filter sync to complete (filters are critical for data fetching)
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Wait for parent's replies (or timeout). Only waiting for FILTER_STORE_UPDATE was a race: applyFilters()
+      // uses tws() from globalStore and cut state from selectionStore; if FILTER arrived first, the first
+      // fetch used ALL/default TWS and wrong cut → timeseries did not match the parent window.
+      if (
+        firstParentFilterSyncPromise &&
+        firstParentGlobalSyncPromise &&
+        firstParentSelectionSyncPromise
+      ) {
+        await Promise.race([
+          Promise.all([
+            firstParentFilterSyncPromise,
+            firstParentGlobalSyncPromise,
+            firstParentSelectionSyncPromise,
+          ]),
+          new Promise<void>((res) => setTimeout(res, 2000)),
+        ]);
+      } else if (firstParentFilterSyncPromise) {
+        await Promise.race([
+          firstParentFilterSyncPromise,
+          new Promise<void>((res) => setTimeout(res, 1500)),
+        ]);
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
       
       // Check if values were synced from parent (even if they match defaults, if we requested state, they were synced)
       const colorAfterSync = color();
@@ -1225,17 +1365,18 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
         setManeuvers([]);
         setTableData([]);
         setFiltered([]);
+        setManeuversTableLoading(false);
         return;
       }
     }
     
-    // Load filters from persistent settings as fallback (only if not already set from parent sync)
-    // This ensures we have filters even if parent window doesn't respond or filters aren't synced yet
-    await loadFiltersFromPersistentSettings();
-    
-    // Wait a bit more to ensure filter sync from parent has completed
-    // (parent sync might override persistent settings, which is fine)
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Popup: filters come from parent REQUEST_FILTER_STATE + Sidebar broadcasts; skip IDB/user defaults here.
+    if (!isPopupWindow) {
+      await loadFiltersFromPersistentSettings({
+        skipHardcodedManeuverDefaults: false,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
     
     // Initialize data - fetch table data with filters applied
     await fetchTableData();
@@ -1268,7 +1409,17 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
     const currentView = view();
     const hasMediaContainer = currentView === 'SCATTER' || currentView === 'TIME SERIES' || currentView === 'TABLE';
     if (!hasMediaContainer) return;
-    const cleanupScaling = setupMediaContainerScaling({ logPrefix: 'ManeuverWindow' });
+    const cleanupScaling = setupMediaContainerScaling({
+      logPrefix: "ManeuverWindow",
+      headerHeight: 0,
+      soloManeuverWindow: true,
+      // TIME SERIES: scaling math still behaved as if a main-window toolbar reserved space; add layout height.
+      maneuverWindowExtraLayoutHeightPx: currentView === "TIME SERIES" ? 75 : 0,
+      getMediaContainer: () =>
+        document.querySelector(
+          `[data-maneuver-media-container="${maneuverLayoutInstanceId}"]`
+        ) as HTMLElement | null,
+    });
     onCleanup(cleanupScaling);
   });
 
@@ -1278,19 +1429,39 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
       <Show when={!hasManeuvers()}>
         <div class="flex items-center justify-center h-screen">
           <div class="text-center">
-            <p class="text-xl text-gray-600">No maneuvers are available</p>
+            <Switch
+              fallback={
+                <p class="text-xl text-gray-600">No maneuvers available...</p>
+              }
+            >
+              <Match when={maneuversTableLoading()}>
+                <p class="text-xl text-gray-600">Loading maneuvers...</p>
+              </Match>
+              <Match when={maneuversTableFetchError()}>
+                <p class="text-xl text-gray-600">An error occurred while fetching maneuvers.</p>
+              </Match>
+            </Switch>
           </div>
         </div>
       </Show>
       <Show when={hasManeuvers()}>
+        <div class="maneuver-window-fill-root" data-maneuver-solo-window="true">
         <Show when={view() === 'MAP'}>
           <div class="maneuver-window-map-container">
             <div id="map-area" class="maneuver-window-view">
               <Show when={!grouped()}>
-                <Map context={context() as "dataset" | "historical" | "fleet"} onDataUpdate={fetchTableData} />
+                <Map
+                  context={context() as "dataset" | "historical" | "fleet"}
+                  onDataUpdate={fetchTableData}
+                  instanceId={maneuverLayoutInstanceId}
+                />
               </Show>
               <Show when={grouped()}>
-                <MapGrouped context={context() as "dataset" | "historical" | "fleet"} onDataUpdate={fetchTableData} />
+                <MapGrouped
+                  context={context() as "dataset" | "historical" | "fleet"}
+                  onDataUpdate={fetchTableData}
+                  instanceId={maneuverLayoutInstanceId}
+                />
               </Show>
             </div> 
           </div>
@@ -1305,7 +1476,11 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
         </Show>
 
         <Show when={view() === 'SCATTER' || view() === 'TIME SERIES' || view() === 'TABLE'}>
-          <div id="media-container" class="maneuvers-page">
+          <div
+            id="media-container"
+            class="maneuvers-page maneuver-window-media-container"
+            data-maneuver-media-container={maneuverLayoutInstanceId}
+          >
             <div class="container">
               <Show when={view() === 'SCATTER'}>
                 <div id="scatter-area" class="maneuver-window-view">
@@ -1319,12 +1494,27 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
               </Show>
 
               <Show when={view() === 'TIME SERIES'}>
-                <div id="timeseries-area" class="maneuver-window-view">
+                <div
+                  id="timeseries-area"
+                  class="maneuver-window-view"
+                  data-maneuver-ts-area={maneuverLayoutInstanceId}
+                >
                   <Show when={!grouped()}>
-                    <TimeSeries context={context() as "dataset" | "historical" | "fleet"} onDataUpdate={fetchTableData} />
+                    <TimeSeries
+                      context={context() as "dataset" | "historical" | "fleet"}
+                      description={maneuverTimeseriesDescription()}
+                      onDataUpdate={fetchTableData}
+                      instanceId={maneuverLayoutInstanceId}
+                    />
                   </Show>
                   <Show when={grouped()}>
-                    <TimeSeriesGrouped context={context() as "dataset" | "historical" | "fleet"} onDataUpdate={fetchTableData} onLegendClick={handleLegendClick} />
+                    <TimeSeriesGrouped
+                      context={context() as "dataset" | "historical" | "fleet"}
+                      description={maneuverTimeseriesDescription()}
+                      onDataUpdate={fetchTableData}
+                      onLegendClick={handleLegendClick}
+                      instanceId={maneuverLayoutInstanceId}
+                    />
                   </Show>
                 </div>
               </Show>
@@ -1342,6 +1532,7 @@ export default function ManeuverWindow(props: ManeuverWindowProps) {
             </div>
           </div>
         </Show>
+        </div>
       </Show>
     </>
   );

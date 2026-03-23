@@ -30,7 +30,25 @@ import PerformanceFilterSummary from "../../../../components/legends/Performance
 import { persistentSettingsService } from "../../../../services/persistentSettingsService";
 import { getProjectManeuverFilters } from "../../../../services/projectFiltersService";
 import { user } from "../../../../store/userStore";
-import { selectedGradesManeuvers, selectedStatesManeuvers, selectedRacesManeuvers, selectedLegsManeuvers, setSelectedGradesManeuvers, setSelectedStatesManeuvers, setSelectedRacesManeuvers, setSelectedLegsManeuvers } from "../../../../store/filterStore";
+import {
+  selectedGradesManeuvers,
+  selectedStatesManeuvers,
+  selectedRacesManeuvers,
+  selectedLegsManeuvers,
+  setSelectedGradesManeuvers,
+  setSelectedStatesManeuvers,
+  setSelectedRacesManeuvers,
+  setSelectedLegsManeuvers,
+  maneuverTrainingRacing,
+  setManeuverTrainingRacing,
+  setManeuverTimeseriesDescription,
+  raceOptions as storeRaceOptions,
+  legOptions as storeLegOptions,
+  gradeOptions as storeGradeOptions,
+  setRaceOptions as pushRaceOptionsToFilterStore,
+  setLegOptions as pushLegOptionsToFilterStore,
+  setGradeOptions as pushGradeOptionsToFilterStore,
+} from "../../../../store/filterStore";
 import { legendTextToGroupKeyTable } from "../../../../utils/colorGrouping";
 import { mediaAvailabilityService } from "../../../../services/mediaAvailabilityService";
 import { MANEUVER_VIDEO_START_OFFSET_SECONDS } from "../../../../store/playbackStore";
@@ -113,7 +131,6 @@ export default function ManeuversPage() {
   const [selectedLegs, setSelectedLegs] = createSignal<number[]>([]);
   const [selectedGrades, setSelectedGrades] = createSignal<number[]>([]);
   const [selectedStates, setSelectedStates] = createSignal<string[]>([]);
-  const [selectedTrainingRacing, setSelectedTrainingRacing] = createSignal<'TRAINING' | 'RACING' | null>(null);
 
   // Timeline visibility state
   const [showTimeline, setShowTimeline] = createSignal<boolean>(true);
@@ -126,13 +143,13 @@ export default function ManeuversPage() {
   // Aggregate data for timeline (maneuvers pages may need to fetch this separately)
   const [aggregatesAVG, setAggregatesAVG] = createSignal<any[]>([]);
   
-  // Memoize view options to prevent SolidJS computation warnings. Include VIDEO when video is available.
+  // Memoize view options to prevent SolidJS computation warnings. VIDEO only when group is OFF and video menu is available.
   const viewOptions = createMemo<string[]>(() => {
     const base = grouped() ? ['MAP','TABLE','BOXES','TIME SERIES'] : views();
-    if (hasVideoMenu()) {
-      return [...base, 'VIDEO'];
+    if (grouped() || !hasVideoMenu()) {
+      return base;
     }
-    return base;
+    return [...base, 'VIDEO'];
   });
 
   // Abort controllers for canceling requests
@@ -157,27 +174,32 @@ export default function ManeuversPage() {
       if (result?.success && result?.data?.data && Array.isArray(result.data.data)) {
         const options = result.data.data.map((opt: string) => String(opt).toUpperCase());
         setDescriptionOptions(options);
-        // Set default to first option if current selection is not in options
-        if (options.length > 0 && !options.includes(selectedDescription())) {
-          setSelectedDescription(options[0]);
+        let nextDesc = selectedDescription();
+        if (options.length > 0 && !options.includes(nextDesc)) {
+          nextDesc = options[0];
+          setSelectedDescription(nextDesc);
         }
+        setManeuverTimeseriesDescription(nextDesc);
         logDebug('Maneuvers: Loaded timeseries description options:', options);
       } else {
         logWarning('Maneuvers: Failed to fetch timeseries options or invalid response:', result);
         // Default fallback
         setDescriptionOptions(['BASICS']);
         setSelectedDescription('BASICS');
+        setManeuverTimeseriesDescription('BASICS');
       }
     } catch (error: any) {
       logError('Maneuvers: Error fetching timeseries options:', error);
       // Default fallback
       setDescriptionOptions(['BASICS']);
       setSelectedDescription('BASICS');
+      setManeuverTimeseriesDescription('BASICS');
     }
   };
 
   const handleDescription = (val: string) => {
     setSelectedDescription(val);
+    setManeuverTimeseriesDescription(val);
     setTriggerUpdate(true);
   };
 
@@ -204,7 +226,7 @@ export default function ManeuversPage() {
       if (states.length > 0) {
         filters.STATE = states;
       }
-      const trainingRacingVal = raceOptions().length === 0 ? null : selectedTrainingRacing();
+      const trainingRacingVal = raceOptions().length === 0 ? null : maneuverTrainingRacing();
       if (trainingRacingVal === 'TRAINING' || trainingRacingVal === 'RACING') {
         filters.TRAINING_RACING = [trainingRacingVal];
       }
@@ -486,7 +508,7 @@ export default function ManeuversPage() {
     }
 
     // Apply Training/Racing filter only when we have race options; when no races, do not apply this filter
-    const trainingRacing = raceOptions().length === 0 ? null : selectedTrainingRacing();
+    const trainingRacing = raceOptions().length === 0 ? null : maneuverTrainingRacing();
     if (trainingRacing === 'RACING') {
       filteredData = filteredData.filter(item => {
         const raceValue = item.race_number ?? item.Race_number ?? item.race ?? item.Race;
@@ -568,6 +590,13 @@ export default function ManeuversPage() {
     setTriggerUpdate(true)
   }
 
+  createEffect(() => {
+    if (grouped() && view() === 'VIDEO') {
+      setView('MAP');
+      filterData();
+    }
+  });
+
   const handleTws = async (val: string) => {
     setTws(val)
     const { project_id, dataset_id } = await getCurrentProjectDatasetIds();
@@ -612,6 +641,26 @@ export default function ManeuversPage() {
     setSelectedStates(next);
     setSelectedStatesManeuvers(next);
   };
+
+  // Keep filterStore race/leg/grade options in sync with local signals so Sidebar can broadcast them to maneuver popups
+  // (e.g. Filters.tsx updates local options without going through ManeuverSettings’ filterStore writes).
+  createEffect(() => {
+    const rLocal = raceOptions().map((x) => String(x));
+    const lLocal = legOptions().map((x) => String(x));
+    const gLocal = gradeOptions().map((x) => String(x));
+    const rs = storeRaceOptions().map((x) => String(x));
+    const ls = storeLegOptions().map((x) => String(x));
+    const gs = storeGradeOptions().map((x) => String(x));
+    if (JSON.stringify([...rLocal].sort()) !== JSON.stringify([...rs].sort())) {
+      pushRaceOptionsToFilterStore(rLocal);
+    }
+    if (JSON.stringify([...lLocal].sort()) !== JSON.stringify([...ls].sort())) {
+      pushLegOptionsToFilterStore(lLocal);
+    }
+    if (JSON.stringify([...gLocal].sort()) !== JSON.stringify([...gs].sort())) {
+      pushGradeOptionsToFilterStore(gLocal);
+    }
+  });
 
   // Calculate VMG intervals (same logic as Scatter component)
   const calculateVmgIntervals = (rows: any[]) => {
@@ -884,7 +933,7 @@ export default function ManeuversPage() {
     }
   };
 
-  // React to eventType changes - untrack(fetchTableData) so we don't track selectedTrainingRacing etc. (prevents loop)
+  // React to eventType changes - untrack(fetchTableData) so we don't track maneuverTrainingRacing etc. (prevents loop)
   // Use normalized value so we still fetch when eventType is empty (treat as TACK)
   createEffect(async () => {
     const et = (eventType() || 'TACK').trim() || 'TACK';
@@ -910,7 +959,7 @@ export default function ManeuversPage() {
   // React to training/racing filter - refetch so API applies TRAINING_RACING in SQL, or shows all when null (All)
   createEffect(
     on(
-      () => (raceOptions().length === 0 ? null : selectedTrainingRacing()),
+      () => (raceOptions().length === 0 ? null : maneuverTrainingRacing()),
       (tr) => {
         if (untrack(() => selectedDatasetId() && eventType())) {
           untrack(() => fetchTableData());
@@ -1228,7 +1277,7 @@ export default function ManeuversPage() {
               logDebug('Maneuvers: Loaded leg filters from persistent settings', filters.legs);
             }
             if (filters.trainingRacing === 'TRAINING' || filters.trainingRacing === 'RACING') {
-              setSelectedTrainingRacing(filters.trainingRacing);
+              setManeuverTrainingRacing(filters.trainingRacing);
               logDebug('Maneuvers: Loaded trainingRacing filter from persistent settings', filters.trainingRacing);
             }
           } else {
@@ -1538,10 +1587,10 @@ export default function ManeuversPage() {
                     selectedLegs={selectedLegs()}
                     selectedGrades={selectedGrades()}
                     selectedStates={selectedStates()}
-                    selectedTrainingRacing={selectedTrainingRacing()}
-                    onTrainingRacingFilterChange={setSelectedTrainingRacing}
+                    selectedTrainingRacing={maneuverTrainingRacing()}
+                    onTrainingRacingFilterChange={setManeuverTrainingRacing}
                     onRaceLegOptionsLoaded={(count) => {
-                      if (count === 0 && selectedTrainingRacing() === 'RACING') setSelectedTrainingRacing(null);
+                      if (count === 0 && maneuverTrainingRacing() === 'RACING') setManeuverTrainingRacing(null);
                     }}
                     setRaceOptions={setRaceOptions}
                     setLegOptions={setLegOptions}
@@ -1592,7 +1641,7 @@ export default function ManeuversPage() {
                   <PerformanceFilterSummary
                     filterGrades={selectedGrades().join(",")}
                     filterState={selectedStates().join(",")}
-                    trainingRacing={selectedTrainingRacing()}
+                    trainingRacing={maneuverTrainingRacing()}
                     gradeAsGreaterThan
                   />
                 </div>

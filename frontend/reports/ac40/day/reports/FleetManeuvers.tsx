@@ -32,7 +32,21 @@ import { persistentSettingsService } from "../../../../services/persistentSettin
 import { getProjectManeuverFilters } from "../../../../services/projectFiltersService";
 import { user } from "../../../../store/userStore";
 import { debug } from "../../../../utils/console";
-import { setSelectedGradesManeuvers, setSelectedStatesManeuvers, setSelectedRacesManeuvers, setSelectedLegsManeuvers } from "../../../../store/filterStore";
+import {
+  setSelectedGradesManeuvers,
+  setSelectedStatesManeuvers,
+  setSelectedRacesManeuvers,
+  setSelectedLegsManeuvers,
+  maneuverTrainingRacing,
+  setManeuverTrainingRacing,
+  setManeuverTimeseriesDescription,
+  raceOptions as storeRaceOptions,
+  legOptions as storeLegOptions,
+  gradeOptions as storeGradeOptions,
+  setRaceOptions as pushRaceOptionsToFilterStore,
+  setLegOptions as pushLegOptionsToFilterStore,
+  setGradeOptions as pushGradeOptionsToFilterStore,
+} from "../../../../store/filterStore";
 import { setCurrentDataset, getCurrentDatasetTimezone } from "../../../../store/datasetTimezoneStore";
 import { legendTextToGroupKeyTable } from "../../../../utils/colorGrouping";
 import { mediaAvailabilityService } from "../../../../services/mediaAvailabilityService";
@@ -118,14 +132,16 @@ export default function FleetManeuversPage() {
   const [selectedLegs, setSelectedLegs] = createSignal<number[]>([]);
   const [selectedGrades, setSelectedGrades] = createSignal<number[]>([]);
   const [selectedStates, setSelectedStates] = createSignal<string[]>([]);
-  const [selectedTrainingRacing, setSelectedTrainingRacing] = createSignal<'TRAINING' | 'RACING' | null>(null);
   
   // Source selection state
   const [selectedSources, setSelectedSources] = createSignal<Set<number>>(new Set());
 
-  // Memoize view options. Always include VIDEO; if no video for selected time/source, chart Video shows "No video available".
+  // Memoize view options. VIDEO only when group is OFF (not ON/MIX).
   const viewOptions = createMemo<string[]>(() => {
     const base = grouped() ? ['MAP','TABLE','BOXES','TIME SERIES'] : views();
+    if (grouped()) {
+      return base;
+    }
     return [...base, 'VIDEO'];
   });
 
@@ -151,27 +167,32 @@ export default function FleetManeuversPage() {
       if (result?.success && result?.data?.data && Array.isArray(result.data.data)) {
         const options = result.data.data.map((opt: string) => String(opt).toUpperCase());
         setDescriptionOptions(options);
-        // Set default to first option if current selection is not in options
-        if (options.length > 0 && !options.includes(selectedDescription())) {
-          setSelectedDescription(options[0]);
+        let nextDesc = selectedDescription();
+        if (options.length > 0 && !options.includes(nextDesc)) {
+          nextDesc = options[0];
+          setSelectedDescription(nextDesc);
         }
+        setManeuverTimeseriesDescription(nextDesc);
         logDebug('FleetManeuvers: Loaded timeseries description options:', options);
       } else {
         logDebug('FleetManeuvers: Failed to fetch timeseries options or invalid response:', result);
         // Default fallback
         setDescriptionOptions(['BASICS']);
         setSelectedDescription('BASICS');
+        setManeuverTimeseriesDescription('BASICS');
       }
     } catch (error: any) {
       logError('FleetManeuvers: Error fetching timeseries options:', error);
       // Default fallback
       setDescriptionOptions(['BASICS']);
       setSelectedDescription('BASICS');
+      setManeuverTimeseriesDescription('BASICS');
     }
   };
 
   const handleDescription = (val: string) => {
     setSelectedDescription(val);
+    setManeuverTimeseriesDescription(val);
     setTriggerUpdate(true);
   };
 
@@ -225,7 +246,7 @@ export default function FleetManeuversPage() {
         filters.GRADE = grades.map(g => Number(g)).filter(n => !isNaN(n));
       }
       // Training/Racing filter: pass to API so SQL can filter (racing = exclude training, training = only training)
-      const trainingRacingVal = raceOptions().length === 0 ? null : selectedTrainingRacing();
+      const trainingRacingVal = raceOptions().length === 0 ? null : maneuverTrainingRacing();
       if (trainingRacingVal === 'TRAINING' || trainingRacingVal === 'RACING') {
         filters.TRAINING_RACING = [trainingRacingVal];
       }
@@ -559,7 +580,7 @@ export default function FleetManeuversPage() {
     }
 
     // Apply Training/Racing filter only when we have race options; when no races, do not apply this filter
-    const trainingRacing = raceOptions().length === 0 ? null : selectedTrainingRacing();
+    const trainingRacing = raceOptions().length === 0 ? null : maneuverTrainingRacing();
     if (trainingRacing === 'RACING') {
       filteredData = filteredData.filter((item: any) => {
         const raceValue = item.race_number ?? item.Race_number ?? item.race ?? item.Race;
@@ -626,6 +647,13 @@ export default function FleetManeuversPage() {
 
     setTriggerUpdate(true)
   }
+
+  createEffect(() => {
+    if (grouped() && view() === 'VIDEO') {
+      setView('MAP');
+      filterData();
+    }
+  });
 
   const handleTws = async (val: string): Promise<void> => {
     setTws(val)
@@ -956,7 +984,7 @@ export default function FleetManeuversPage() {
   // React to training/racing filter - refetch so API applies TRAINING_RACING in SQL, or shows all when null (All)
   createEffect(
     on(
-      () => (raceOptions().length === 0 ? null : selectedTrainingRacing()),
+      () => (raceOptions().length === 0 ? null : maneuverTrainingRacing()),
       (tr) => {
         const ready = untrack(() => sourcesStore.isReady() && sourcesStore.sources()?.length && selectedDate() && ((eventType() || 'TACK').trim() || 'TACK'));
         if (ready) {
@@ -1224,7 +1252,7 @@ export default function FleetManeuversPage() {
               logDebug('FleetManeuvers: Loaded leg filters from persistent settings', filters.legs);
             }
             if (filters.trainingRacing === 'TRAINING' || filters.trainingRacing === 'RACING') {
-              setSelectedTrainingRacing(filters.trainingRacing);
+              setManeuverTrainingRacing(filters.trainingRacing);
               logDebug('FleetManeuvers: Loaded trainingRacing filter from persistent settings', filters.trainingRacing);
             }
           } else {
@@ -1482,6 +1510,24 @@ export default function FleetManeuversPage() {
     setSelectedStatesManeuvers(next);
   };
 
+  createEffect(() => {
+    const rLocal = raceOptions().map((x) => String(x));
+    const lLocal = legOptions().map((x) => String(x));
+    const gLocal = gradeOptions().map((x) => String(x));
+    const rs = storeRaceOptions().map((x) => String(x));
+    const ls = storeLegOptions().map((x) => String(x));
+    const gs = storeGradeOptions().map((x) => String(x));
+    if (JSON.stringify([...rLocal].sort()) !== JSON.stringify([...rs].sort())) {
+      pushRaceOptionsToFilterStore(rLocal);
+    }
+    if (JSON.stringify([...lLocal].sort()) !== JSON.stringify([...ls].sort())) {
+      pushLegOptionsToFilterStore(lLocal);
+    }
+    if (JSON.stringify([...gLocal].sort()) !== JSON.stringify([...gs].sort())) {
+      pushGradeOptionsToFilterStore(gLocal);
+    }
+  });
+
   // Create dataSourcesOptions from sourcesStore
   const dataSourcesOptions = createMemo(() => {
     return sourcesStore.sources().map(source => ({
@@ -1523,10 +1569,10 @@ export default function FleetManeuversPage() {
                     selectedLegs={() => selectedLegs()}
                     selectedGrades={() => selectedGrades()}
                     selectedStates={() => selectedStates()}
-                    selectedTrainingRacing={selectedTrainingRacing()}
-                    onTrainingRacingFilterChange={setSelectedTrainingRacing}
+                    selectedTrainingRacing={maneuverTrainingRacing()}
+                    onTrainingRacingFilterChange={setManeuverTrainingRacing}
                     onRaceLegOptionsLoaded={(count) => {
-                      if (count === 0 && selectedTrainingRacing() === 'RACING') setSelectedTrainingRacing(null);
+                      if (count === 0 && maneuverTrainingRacing() === 'RACING') setManeuverTrainingRacing(null);
                     }}
                     setRaceOptions={setRaceOptions}
                     setLegOptions={setLegOptions}
@@ -1576,7 +1622,7 @@ export default function FleetManeuversPage() {
                   <PerformanceFilterSummary
                     filterGrades={selectedGrades().join(",")}
                     filterState={selectedStates().join(",")}
-                    trainingRacing={selectedTrainingRacing()}
+                    trainingRacing={maneuverTrainingRacing()}
                     gradeAsGreaterThan
                   />
                 </div>

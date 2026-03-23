@@ -1524,6 +1524,18 @@ export function setupMediaContainerScaling(options: {
   scaleToWidth?: boolean;
   logPrefix?: string;
   onScale?: (scaleFactor: number, containerWidth: number, containerHeight: number) => void;
+  /** When set, used instead of document.getElementById('media-container') (e.g. multiple panels). */
+  getMediaContainer?: () => HTMLElement | null;
+  /**
+   * Headerless ManeuverWindow popup: use #main-content client box (not window.innerHeight) and do not
+   * apply maneuvers-page vertical reserves meant for the main dashboard (control bar + table strip).
+   */
+  soloManeuverWindow?: boolean;
+  /**
+   * Added to maneuvers-page layout height when `.maneuver-window-media-container` (e.g. TIME SERIES
+   * in solo window) so charts aren’t short by a phantom toolbar band.
+   */
+  maneuverWindowExtraLayoutHeightPx?: number;
 } = {}): () => void {
   const {
     baseWidth = 1620,
@@ -1533,15 +1545,20 @@ export function setupMediaContainerScaling(options: {
     sidebarCollapsedWidth = 64,
     scaleToWidth = false,
     logPrefix = 'MediaContainer',
-    onScale
+    onScale,
+    getMediaContainer,
+    soloManeuverWindow = false,
+    maneuverWindowExtraLayoutHeightPx = 0
   } = options;
 
   const updateScale = () => {
-    const mediaContainer = document.getElementById('media-container');
+    const mediaContainer = getMediaContainer?.() ?? document.getElementById('media-container');
     if (!mediaContainer) return;
     
     const parentContainer = mediaContainer.parentElement;
     if (!parentContainer) return;
+
+    const isManeuverWindowMedia = mediaContainer.classList.contains('maneuver-window-media-container');
     
     // Check if we're inside a split-panel
     const splitPanel = mediaContainer.closest('.split-panel');
@@ -1574,41 +1591,63 @@ export function setupMediaContainerScaling(options: {
     } else {
       // Normal view: use main-content dimensions directly (it already accounts for sidebar)
       const mainContent = document.getElementById('main-content') || parentContainer;
-      
-      // Get viewport height for height calculation
-      const isMobile = window.innerWidth <= 1000;
-      let viewportHeight: number;
-      
-      if (window.visualViewport && isMobile) {
-        // On mobile, prefer visualViewport for accurate visible dimensions
-        viewportHeight = window.visualViewport.height || window.innerHeight || (mainContent.clientHeight > 0 ? mainContent.clientHeight : 1280);
-      } else {
-        // On desktop or when visualViewport unavailable, use window dimensions
-        viewportHeight = window.innerHeight || (mainContent.clientHeight > 0 ? mainContent.clientHeight : 1280);
-      }
-      
-      // Use main-content's clientWidth (excludes padding/borders, gives inner width)
-      // This is more accurate than getBoundingClientRect which includes padding/borders
-      if (mainContent.clientWidth > 0) {
-        availableWidth = mainContent.clientWidth;
-      } else {
-        // Fallback: use getBoundingClientRect if clientWidth not available
-        const mainContentRect = mainContent.getBoundingClientRect();
-        if (mainContentRect.width > 0) {
-          availableWidth = mainContentRect.width;
+      const windowRoot = document.getElementById('window');
+
+      // ManeuverWindow #media-container: use #window (or visualViewport when narrow) — not #main-content,
+      // which scaling-page caps at 100vh-60px and under-fills the popup.
+      if (isManeuverWindowMedia && windowRoot && windowRoot.clientHeight >= 100) {
+        const narrow = window.innerWidth <= 1000;
+        const vv = window.visualViewport;
+        if (narrow && vv && (vv.height || 0) >= 100) {
+          availableWidth = Math.max(100, Math.round(vv.width || windowRoot.clientWidth));
+          availableHeight = Math.max(100, Math.round(vv.height) - headerHeight);
         } else {
-          // Final fallback: use parent container width
-          const parentRect = parentContainer.getBoundingClientRect();
-          availableWidth = parentRect.width > 0 ? parentRect.width : Math.max(100, window.innerWidth - 275);
+          availableWidth = Math.max(100, windowRoot.clientWidth);
+          availableHeight = Math.max(100, windowRoot.clientHeight - headerHeight);
         }
+      } else if (soloManeuverWindow && mainContent.clientHeight > 0 && mainContent.clientWidth > 0) {
+        availableWidth = mainContent.clientWidth;
+        availableHeight = Math.max(100, mainContent.clientHeight - headerHeight);
+      } else {
+        // Get viewport height for height calculation
+        const isMobile = window.innerWidth <= 1000;
+        let viewportHeight: number;
+
+        if (window.visualViewport && isMobile) {
+          // On mobile, prefer visualViewport for accurate visible dimensions
+          viewportHeight = window.visualViewport.height || window.innerHeight || (mainContent.clientHeight > 0 ? mainContent.clientHeight : 1280);
+        } else {
+          // On desktop or when visualViewport unavailable, use window dimensions
+          viewportHeight = window.innerHeight || (mainContent.clientHeight > 0 ? mainContent.clientHeight : 1280);
+        }
+
+        // Use main-content's clientWidth (excludes padding/borders, gives inner width)
+        // This is more accurate than getBoundingClientRect which includes padding/borders
+        if (mainContent.clientWidth > 0) {
+          availableWidth = mainContent.clientWidth;
+        } else {
+          // Fallback: use getBoundingClientRect if clientWidth not available
+          const mainContentRect = mainContent.getBoundingClientRect();
+          if (mainContentRect.width > 0) {
+            availableWidth = mainContentRect.width;
+          } else {
+            // Final fallback: use parent container width
+            const parentRect = parentContainer.getBoundingClientRect();
+            availableWidth = parentRect.width > 0 ? parentRect.width : Math.max(100, window.innerWidth - 275);
+          }
+        }
+
+        // Subtract header height from available height
+        availableHeight = Math.max(100, viewportHeight - headerHeight);
       }
-      
-      // Subtract header height from available height
-      availableHeight = Math.max(100, viewportHeight - headerHeight);
     }
 
     // Maneuvers page: reserve minimal height so table + Clear Formatting isn't cut off in big table mode
-    if (mediaContainer.classList.contains('maneuvers-page')) {
+    if (
+      mediaContainer.classList.contains('maneuvers-page') &&
+      !soloManeuverWindow &&
+      !isManeuverWindowMedia
+    ) {
       availableHeight = Math.max(100, availableHeight - 60);
     }
 
@@ -1711,12 +1750,24 @@ export function setupMediaContainerScaling(options: {
 		mediaContainer.style.setProperty('min-width', `${effectiveBaseWidth}px`, 'important');
 		mediaContainer.style.setProperty('height', `${availableHeight}px`, 'important');
 		mediaContainer.style.setProperty('min-height', `${availableHeight}px`, 'important');
-	} else if (mediaContainer.classList.contains('maneuvers-page')) {
+    } else if (mediaContainer.classList.contains('maneuvers-page')) {
+		// Same as timeseries-page: #media-container uses transform: scale(widthScale). Layout height must be
+		// larger when scale < 1 so the painted height ≈ availableHeight (narrow windows were visibly too short).
+		const maneuversLayoutScale = Math.min(availableWidth / effectiveBaseWidth, 1.5);
+		const safeManeuversScale = Math.max(maneuversLayoutScale, 0.1);
+		const maneuverWindowLayoutBoost =
+			isManeuverWindowMedia && maneuverWindowExtraLayoutHeightPx > 0
+				? maneuverWindowExtraLayoutHeightPx
+				: 0;
+		const maneuversLayoutHeight = Math.max(
+			200,
+			Math.round((availableHeight + maneuverWindowLayoutBoost) / safeManeuversScale)
+		);
 		mediaContainer.style.setProperty('width', `${effectiveBaseWidth}px`, 'important');
 		mediaContainer.style.setProperty('min-width', `${effectiveBaseWidth}px`, 'important');
-		mediaContainer.style.setProperty('height', `${availableHeight}px`, 'important');
-		mediaContainer.style.setProperty('min-height', `${availableHeight}px`, 'important');
-    } else if (isRaceSummaryPage || isPrestartPage) {
+		mediaContainer.style.setProperty('height', `${maneuversLayoutHeight}px`, 'important');
+		mediaContainer.style.setProperty('min-height', `${maneuversLayoutHeight}px`, 'important');
+	} else if (isRaceSummaryPage || isPrestartPage) {
 		mediaContainer.style.removeProperty('width');
 		mediaContainer.style.removeProperty('height');
 		mediaContainer.style.removeProperty('min-height');

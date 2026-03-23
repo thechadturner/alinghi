@@ -289,8 +289,14 @@ body:not(.index-page) #dashboard {
   /* IE/Edge */
 }
 
+/* Standalone /window route (ManeuverWindow, etc.): full viewport column; no dashboard sidebar inset */
 #window {
-  padding-left: 50px;
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 #window .header {
@@ -4207,6 +4213,124 @@ html::-webkit-scrollbar-corner {
   /* 60px top + 80px bottom so total min = 100vh - 60px */
   padding-bottom: 80px !important;
   /* Extra padding when timeseries is present to ensure last chart is fully visible */
+}
+
+/*
+ * ManeuverWindow popup #media-container: class hooks layout separately from report Maneuvers.
+ * Beats generic #media-container.maneuvers-page min-height/padding that assume dashboard + 100vh.
+ */
+#window .maneuver-window-fill-root #media-container.maneuver-window-media-container.maneuvers-page {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  align-self: stretch !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  padding-bottom: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+#window .maneuver-window-fill-root #media-container.maneuver-window-media-container.maneuvers-page:has(#timeseries-area) {
+  min-height: 0 !important;
+  padding-bottom: 12px !important;
+}
+
+/* ManeuverWindow (solo popup, header hidden): fill #main-content flex chain; drop 100vh min-height */
+.maneuver-window-fill-root {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+/* Descendant match: ManeuverWindow sits under Switch/Dynamic, not a direct child of #main-content */
+#window #main-content:has(.maneuver-window-fill-root) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* Let flex child (.maneuver-window-fill-root) receive a bounded height (default min-height:auto breaks the chain) */
+  flex: 1 1 0 !important;
+  /* Override inline overflow:auto so inner .time-series owns scrolling */
+  overflow: hidden !important;
+}
+
+/*
+ * Solo maneuver popup: hideHeader — full #window flex height (scaling-page #main-content uses 100vh-60px).
+ */
+body.scaling-page #window #main-content:has([data-maneuver-solo-window]),
+html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
+  height: 100% !important;
+  max-height: none !important;
+  min-height: 0 !important;
+}
+
+/* Strip main-maneuvers-page chrome (extra bottom padding / vh min-heights) from scaled #media-container */
+#window .maneuver-window-fill-root[data-maneuver-solo-window] #media-container.maneuvers-page {
+  min-height: 0 !important;
+  padding-bottom: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+#window .maneuver-window-fill-root[data-maneuver-solo-window] #media-container.maneuvers-page:has(#timeseries-area) {
+  min-height: 0 !important;
+  padding-bottom: 12px !important;
+}
+
+#window .maneuver-window-fill-root[data-maneuver-solo-window] #timeseries-area.maneuver-window-view {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.maneuver-window-fill-root #media-container.maneuvers-page:has(#timeseries-area) {
+  min-height: 0 !important;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.maneuver-window-fill-root #media-container.maneuvers-page:has(#timeseries-area) .container {
+  flex: 1 1 0;
+  min-height: 0 !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.maneuver-window-fill-root #timeseries-area.maneuver-window-view {
+  flex: 1 1 0;
+  min-height: 0 !important;
+  overflow: hidden;
+}
+
+/* Scroll lives inside the chart column; legend stays visible */
+/* Beat #media-container.maneuvers-page .time-series (2 ids) so solo window layout wins */
+#window .maneuver-window-fill-root #media-container.maneuvers-page #timeseries-area .time-series {
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: none !important;
+  overflow: hidden !important;
+}
+
+/* Plots stack fills space below legend; scroll here (not on whole .time-series) */
+#window .maneuver-window-fill-root #media-container.maneuvers-page #timeseries-area .maneuver-time-series.maneuver-ts-plots-root {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
 }
 
 /* Override container width constraints for maneuvers page */
@@ -11893,6 +12017,11 @@ html body #main-content>#media-container.targets-page,
   width: 475px;
   height: auto;
   margin-top: 5px;
+}
+
+/* Vertical scroll container for maneuver charts; hints the browser that pan-y is intended (may reduce scroll-blocking listener noise with nested D3 brushes). */
+.maneuver-time-series.maneuver-ts-plots-root {
+  touch-action: pan-y;
 }
 
 .maneuver-time-series {

@@ -1124,14 +1124,16 @@ let setTriggerSelectionState: any;
 let _syncTriggerSelection: any;
 
 createRoot(() => {
+  // Local-only pulses: avoid cross-window races when multiple maneuver windows each clear the same bit.
+  // Data (selection, filtered in each doc) still syncs via other signals / postMessage; views react to filtered().
   [triggerUpdateState, setTriggerUpdateState, _syncTriggerUpdate] = createSyncSignal(false, {
     key: "triggerUpdate",
-    autoSync: true
+    autoSync: false
   });
   
   [triggerSelectionState, setTriggerSelectionState, _syncTriggerSelection] = createSyncSignal(false, {
     key: "triggerSelection",
-    autoSync: true
+    autoSync: false
   });
 });
 

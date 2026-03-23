@@ -1,6 +1,6 @@
-import { createSignal, createEffect, onCleanup, onMount, untrack } from "solid-js";
+import { createSignal, createEffect, onCleanup, onMount, untrack, on } from "solid-js";
 import * as d3 from "d3";
-import L from "leaflet"
+import L from "leaflet";
 
 import Loading from "../../utilities/Loading";
 
@@ -8,22 +8,88 @@ import { persistantStore } from "../../../store/persistantStore";
 const { selectedClassIcon } = persistantStore;
 
 import { filtered, tooltip, setTooltip, phase, color, normalized, eventType, tws, groupDisplayMode } from "../../../store/globalStore";
-import { selectedGroupKeys, setSelectedGroupKeys, selectedEvents, triggerUpdate, setTriggerUpdate, triggerSelection, setTriggerSelection, isEventHidden } from "../../../store/selectionStore";
+import { selectedGroupKeys, setSelectedGroupKeys, selectedEvents, setSelectedEvents, setHasSelection, setSelection, triggerUpdate, setTriggerUpdate, triggerSelection, setTriggerSelection, isEventHidden } from "../../../store/selectionStore";
 import { selectedGradesManeuvers, setSelectedGradesManeuvers, selectedStatesManeuvers, selectedRacesManeuvers, selectedLegsManeuvers, startDate, endDate, selectedSources } from "../../../store/filterStore";
 
 import { putData } from "../../../utils/global";
-import { error as logError, debug, log } from "../../../utils/console";
+import { error as logError, debug, log, warn } from "../../../utils/console";
 import { buildColorGrouping, getGroupKeyFromItem, groupKeyEquals } from "../../../utils/colorGrouping";
 import { fetchMapData } from "../../../services/maneuversDataService";
 import { getManeuversConfig } from "../../../utils/maneuversConfig";
-import { isDark } from "../../../store/themeStore";
 import { apiEndpoints } from "../../../config/env";
 import { user } from "../../../store/userStore";
 import { sourcesStore } from "../../../store/sourcesStore";
 
 import "../../../styles/thirdparty/mapbox-gl.css";
-import "leaflet/dist/leaflet.css"
-import { logWarning } from "@/utils/logging";
+import "leaflet/dist/leaflet.css";
+
+function escapeSelectorId(id: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(id);
+  }
+  return id.replace(/([!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
+}
+
+export interface ManeuverMapGroupedProps {
+  context?: "dataset" | "historical" | "fleet";
+  onDataUpdate?: () => void;
+  instanceId?: string;
+  /** Optional CSV or single value; may be a string or accessor (fleet/history parents). */
+  filterYear?: string | (() => string);
+  filterEvent?: string | (() => string);
+  filterConfig?: string | (() => string);
+  filterState?: string | (() => string);
+}
+
+/** Point along a maneuver track (map + metadata). */
+export interface MapTrackPoint {
+  event_id?: number;
+  time?: number;
+  LatLng?: { lat: number; lng: number };
+  tws_bin?: number;
+  vmg_perc_avg?: number;
+  tack?: string;
+  State?: string;
+  Config?: string;
+  source_name?: string;
+  race?: string | number;
+  date?: string;
+  hdg?: number;
+  lat?: number;
+  lng?: number;
+  twa?: number;
+  json?: { values: Record<string, unknown>[] };
+  [key: string]: unknown;
+}
+
+type ManeuverPathRecord = {
+  eventId: number;
+  firstPoint: MapTrackPoint;
+  points: MapTrackPoint[];
+};
+
+type LeafletMap = {
+  getContainer(): HTMLElement;
+  getPanes(): { overlayPane: HTMLElement };
+  latLngToLayerPoint(latlng: { lat: number; lng: number }): { x: number; y: number };
+  getZoom(): number;
+  fitBounds(bounds: unknown): void;
+  on(type: string, fn: (e: unknown) => void): unknown;
+  once(type: string, fn: (e: unknown) => void): unknown;
+  remove(): void;
+  invalidateSize(): void;
+  getBounds(): {
+    getSouth(): number;
+    getNorth(): number;
+    getWest(): number;
+    getEast(): number;
+  };
+  _loaded?: boolean;
+  _container?: HTMLElement | null;
+  _crosstrackListenersAttached?: boolean;
+};
+
+type GetItemColorFn = (item: MapTrackPoint) => string;
 
 // Helper function to sanitize time values for use in CSS selectors
 // Replaces problematic characters (negative signs, dots, etc.) with safe alternatives
@@ -33,8 +99,8 @@ import { logWarning } from "@/utils/logging";
 const BOAT_INTERVAL_SEC = 5;
 
 /** Returns [prevPoint, point] pairs for drawing boats at most every BOAT_INTERVAL_SEC, based on point.time (seconds). */
-function getBoatPositionsByTime(points: { time?: string | number; LatLng?: unknown }[]): [typeof points[0], typeof points[0]][] {
-  const result: [typeof points[0], typeof points[0]][] = [];
+function getBoatPositionsByTime(points: MapTrackPoint[]): [MapTrackPoint, MapTrackPoint][] {
+  const result: [MapTrackPoint, MapTrackPoint][] = [];
   if (!points?.length) return result;
   let lastBoatTime = -Infinity;
   for (let idx = 0; idx < points.length; idx++) {
@@ -135,42 +201,52 @@ const getBoatPathForZoom = (zoomLevel: number): string => {
   return ""; // Empty path for very low zoom
 };
 
-export default function ManeuverMap(props) {
+export default function ManeuverMap(props: ManeuverMapGroupedProps) {
   // Get context from props, default to 'dataset' for backward compatibility
   const context = props?.context || 'dataset';
-  const config = getManeuversConfig(context);
-  const [mapdata, setMapData] = createSignal([]);
-  const [colorGroups, setColorGroups] = createSignal([]);
-  const [groupRepIds, setGroupRepIds] = createSignal(new Set());
+  const maneuverMapElementId = () =>
+    props.instanceId ? `${props.instanceId}-maneuver-map` : "maneuver-map";
+  const d3MapPane = () => d3.select(`#${escapeSelectorId(maneuverMapElementId())}`);
+  void getManeuversConfig(context);
+  const [mapdata, setMapData] = createSignal<MapTrackPoint[][]>([]);
+  type ColorGroup = { key: string | number; items: MapTrackPoint[] };
+  const [, setColorGroups] = createSignal<ColorGroup[]>([]);
+  const [, setGroupRepIds] = createSignal<Set<number>>(new Set<number>());
   const [description, setDescription] = createSignal("");
   const [loading, setLoading] = createSignal(true);
   const [firstload, setFirstLoad] = createSignal(true);
   const [mapInitialized, setMapInitialized] = createSignal(false);
 
-  let map, tt, svg, g;
+  let map: LeafletMap | null = null;
+  /** D3 selections from Leaflet overlay; typed loosely — strict D3 generics don't match overlay parent typing. */
+  let svg: d3.Selection<SVGSVGElement, unknown, any, any> | undefined;
+  let g: d3.Selection<SVGGElement, unknown, any, any> | undefined;
   let updateInProgress = false;
-  let zoom_level = 13
-  let latlngarray = []
+  let lastFilteredCount = 0;
+  let filteredWatcherTriggered = false;
+  let zoom_level = 13;
+  let latlngarray: { lat: number; lng: number }[] = [];
   let firstDraw = true;
-  let lastEventType = null;
-  let lastPhase = null;
+  let lastEventType: string | null = null;
+  let lastPhase: string | null = null;
   let shouldCenterOnNextDraw = false;
   // Track all boat fade timeouts so we can clear them on phase change
   let boatFadeTimeouts: NodeJS.Timeout[] = [];
 
   let mapWidth = 910;
   let mapHeight = 600; // Default height, will be updated to fill container
-  let maneuverPathsData: { eventId: number; firstPoint: any; points: any[] }[] = [];
+  let maneuverPathsData: ManeuverPathRecord[] = [];
 
   // Using global color scale for consistency
-  let myColorScale: any = d3.scaleLinear()
-  let getItemColor = null; // Store getItemColor function for SOURCE coloring
+  let myColorScale: any = d3.scaleLinear();
+  let getItemColor: GetItemColorFn | null = null; // Store getItemColor function for SOURCE coloring
   let minVal = 9999999
   let maxVal = -9999999
 
-  const isFiltered = (id) => filtered().includes(id);
-  const getPathGroupKey = (firstPoint) => firstPoint ? getGroupKeyFromItem(firstPoint, color()) : null;
-  const isPathSelected = (firstPoint) => {
+  const isFiltered = (id: number): boolean => (filtered() as unknown[]).includes(id);
+  const getPathGroupKey = (firstPoint: MapTrackPoint | null | undefined) =>
+    firstPoint ? getGroupKeyFromItem(firstPoint, color()) : null;
+  const isPathSelected = (firstPoint: MapTrackPoint | null | undefined) => {
     const pathKey = getPathGroupKey(firstPoint);
     return pathKey != null && selectedGroupKeys().some((k) => groupKeyEquals(k, pathKey));
   };
@@ -330,7 +406,7 @@ export default function ManeuverMap(props) {
         const filterYearValue = props?.filterYear ? (typeof props.filterYear === 'function' ? props.filterYear() : props.filterYear) : '';
         log(`[Map] fetchData - filterYear prop value: "${filterYearValue}"`);
         if (filterYearValue && filterYearValue.trim()) {
-          const years = filterYearValue.split(',').map(y => parseInt(y.trim())).filter(y => !isNaN(y));
+          const years = filterYearValue.split(',').map((y: string) => parseInt(y.trim(), 10)).filter((y: number) => !isNaN(y));
           if (years.length > 0) {
             filters.YEAR = years;
             log(`[Map] fetchData - Added YEAR filter: ${JSON.stringify(filters.YEAR)}`);
@@ -341,7 +417,7 @@ export default function ManeuverMap(props) {
         const filterEventValue = props?.filterEvent ? (typeof props.filterEvent === 'function' ? props.filterEvent() : props.filterEvent) : '';
         log(`[Map] fetchData - filterEvent prop value: "${filterEventValue}"`);
         if (filterEventValue && filterEventValue.trim()) {
-          const events = filterEventValue.split(',').map(e => e.trim()).filter(e => e.length > 0);
+          const events = filterEventValue.split(',').map((e: string) => e.trim()).filter((e: string) => e.length > 0);
           if (events.length > 0) {
             filters.EVENT = events;
             log(`[Map] fetchData - Added EVENT filter: ${JSON.stringify(filters.EVENT)}`);
@@ -352,7 +428,7 @@ export default function ManeuverMap(props) {
         const filterConfigValue = props?.filterConfig ? (typeof props.filterConfig === 'function' ? props.filterConfig() : props.filterConfig) : '';
         log(`[Map] fetchData - filterConfig prop value: "${filterConfigValue}"`);
         if (filterConfigValue && filterConfigValue.trim()) {
-          const configs = filterConfigValue.split(',').map(c => c.trim()).filter(c => c.length > 0);
+          const configs = filterConfigValue.split(',').map((c: string) => c.trim()).filter((c: string) => c.length > 0);
           if (configs.length > 0) {
             filters.CONFIG = configs;
             log(`[Map] fetchData - Added CONFIG filter: ${JSON.stringify(filters.CONFIG)}`);
@@ -363,7 +439,7 @@ export default function ManeuverMap(props) {
         const filterStateValue = props?.filterState ? (typeof props.filterState === 'function' ? props.filterState() : props.filterState) : '';
         log(`[Map] fetchData - filterState prop value: "${filterStateValue}"`);
         if (filterStateValue && filterStateValue.trim()) {
-          const states = filterStateValue.split(',').map(s => s.trim().toUpperCase()).filter(s => s === 'H0' || s === 'H1' || s === 'H2');
+          const states = filterStateValue.split(',').map((s: string) => s.trim().toUpperCase()).filter((s: string) => s === 'H0' || s === 'H1' || s === 'H2');
           if (states.length > 0) {
             filters.STATE = states;
             log(`[Map] fetchData - Added STATE filter from props: ${JSON.stringify(filters.STATE)}`);
@@ -379,7 +455,8 @@ export default function ManeuverMap(props) {
         }
 
         // SOURCE_NAME filter for fleet context - pass to API via sourceNames parameter
-        if (context === 'fleet') {
+        // Use props.context so TS does not narrow away "fleet" inside the useTimeRange branch.
+        if ((props?.context ?? "dataset") === "fleet") {
           const selectedSourceNames = selectedSources(); // filterStore returns string[] of source names
           if (selectedSourceNames && Array.isArray(selectedSourceNames) && selectedSourceNames.length > 0) {
             fetchParams.sourceNames = selectedSourceNames;
@@ -392,10 +469,10 @@ export default function ManeuverMap(props) {
                 fetchParams.sourceNames = allSources.map((s: any) => s.source_name).filter((name: string) => name);
                 log(`[Map] fetchData - No sources selected, using all available sources: ${JSON.stringify(fetchParams.sourceNames)}`);
               } else {
-                logWarning(`[Map] fetchData - No sources available in sourcesStore for fleet context`);
+                warn(`[Map] fetchData - No sources available in sourcesStore for fleet context`);
               }
             } else {
-              logWarning(`[Map] fetchData - sourcesStore not ready, cannot get source names for fleet context`);
+              warn(`[Map] fetchData - sourcesStore not ready, cannot get source names for fleet context`);
             }
           }
         }
@@ -447,7 +524,7 @@ export default function ManeuverMap(props) {
 
       if (json_data && json_data.length > 0) {
         latlngarray = [];
-        let dataArray: any[][] = [];
+        const dataArray: MapTrackPoint[][] = [];
         
         // Log map data counts for debugging
         const uniqueEventIds = new Set(json_data.map((d: any) => d.event_id));
@@ -506,7 +583,7 @@ export default function ManeuverMap(props) {
           filtered_data = filtered_data.filter((item: any) => {
             const legValue = item.leg_number ?? item.Leg_number ?? item.LEG;
             if (legValue == null || legValue === undefined) return false;
-            return legs.includes(Number(legValue));
+            return legs.some((leg: string) => Number(leg) === Number(legValue));
           });
           const afterLegCount = filtered_data.length;
           log(`[Map] fetchData - After LEG filter: ${beforeLegCount} -> ${afterLegCount} records`);
@@ -514,7 +591,7 @@ export default function ManeuverMap(props) {
         
         // Apply isFiltered() check as final validation to ensure consistency with table (exclude hidden events)
         const beforeIsFilteredCount = filtered_data.length;
-        filtered_data = filtered_data.filter(function (d) {
+        filtered_data = filtered_data.filter(function (d: { event_id: number }) {
           return isFiltered(d.event_id) && !isEventHidden(d.event_id);
         });
         const afterIsFilteredCount = filtered_data.length;
@@ -529,7 +606,7 @@ export default function ManeuverMap(props) {
         const evt = (eventType() || '').toUpperCase();
         const usePortStbd = evt === 'TAKEOFF' || evt === 'BEARAWAY' || evt === 'ROUNDUP';
         filtered_data.forEach((item) => {
-          const processedData = item.json.values.map((d) => {
+          const processedData = item.json.values.map((d: Record<string, string | undefined>) => {
             let tackValue: string | undefined;
             if (usePortStbd) {
               const twa = item.twa_entry ?? item.twa_build ?? item.Twa_start ?? 0;
@@ -546,24 +623,24 @@ export default function ManeuverMap(props) {
             const raceValue = item.Race_number ?? item.race_number ?? item.race ?? item.Race;
             const convertedRace = (raceValue === -1 || raceValue === '-1') ? 'TRAINING' : raceValue;
 
-            const newItem = {
+            const newItem: MapTrackPoint = {
               event_id: item.event_id,
               tws_bin: item.tws_bin,
-              tack: tackValue, 
+              tack: tackValue,
               vmg_perc_avg: item.vmg_perc_avg,
               race: convertedRace,
-              source_name: item.source_name || '', 
-              State: item.State, 
-              Config: item.Config, 
-              time: parseFloat(d.time),
-              hdg: parseFloat(d.hdg),
-              lat: parseFloat(d.lat),
-              lng: parseFloat(d.lng),
-              twa: parseFloat(d.twa),
-              LatLng: new L.LatLng(parseFloat(d.lng), parseFloat(d.lat))
+              source_name: item.source_name || '',
+              State: item.State,
+              Config: item.Config,
+              time: parseFloat(String(d.time)),
+              hdg: parseFloat(String(d.hdg)),
+              lat: parseFloat(String(d.lat)),
+              lng: parseFloat(String(d.lng)),
+              twa: parseFloat(String(d.twa)),
+              LatLng: new L.LatLng(parseFloat(String(d.lng)), parseFloat(String(d.lat))),
             };
 
-            latlngarray.push(newItem.LatLng);
+            if (newItem.LatLng) latlngarray.push(newItem.LatLng);
             return newItem; 
           });
         
@@ -576,8 +653,8 @@ export default function ManeuverMap(props) {
         const { groups } = buildColorGrouping(flat, color());
         setColorGroups(groups);
         // Compute representative event_id per group for grouped rendering
-        const reps = new Set();
-        groups.forEach(g => {
+        const reps = new Set<number>();
+        groups.forEach((g: ColorGroup) => {
           const first = g.items && g.items.length > 0 ? g.items[0] : null;
           if (first && first.event_id !== undefined && first.event_id !== null) reps.add(first.event_id);
         });
@@ -587,35 +664,46 @@ export default function ManeuverMap(props) {
 
         return { dataArray, reps };
       } else {
-        return { dataArray: [], reps: new Set() };
+        return { dataArray: [], reps: new Set<number>() };
       }
     } catch (error: any) {
       logError("Error fetching data:", error);
-      return { dataArray: [], reps: new Set() };
+      return { dataArray: [], reps: new Set<number>() };
     }
   };
 
   function reinitMap() {
     try {
-      if (d3.select('#map-area') != undefined) {
-        const mapArea = d3.select('#map-area').node();
-        const mapAreaRect = mapArea.getBoundingClientRect();
-        mapWidth = mapAreaRect.width;
-        mapHeight = mapAreaRect.height; // Use full container height
+      if (!map) return;
+      const mc = map.getContainer() as HTMLElement | null;
+      const layoutEl =
+        (mc && mc.closest(".maneuver-map-container")) ||
+        d3.select("#map-area").node() ||
+        mc;
+      if (!layoutEl || typeof (layoutEl as Element).getBoundingClientRect !== "function") return;
+      const mapAreaRect = (layoutEl as HTMLElement).getBoundingClientRect();
+      mapWidth = mapAreaRect.width;
+      mapHeight = mapAreaRect.height;
 
+      const root = mc?.closest(".maneuver-map-container");
+      if (root) {
+        d3.select(root)
+          .style("width", "100%")
+          .style("height", "100%");
+        if (mc) d3.select(mc).style("width", "100%").style("height", "100%");
+      } else {
         d3.selectAll(".maneuver-map-container")
           .style("width", "100%")
           .style("height", "100%");
-
         d3.selectAll(".maneuver-map")
           .style("width", "100%")
           .style("height", "100%");
-      
-        svg = d3.select(map.getPanes().overlayPane).select("svg");
-        svg.selectAll("g").remove();
-
-        g = svg.append("g").attr("width", mapWidth).attr("height", mapHeight)
       }
+
+      svg = d3.select(map.getPanes().overlayPane).select("svg");
+      svg.selectAll("g").remove();
+
+      g = svg.append("g").attr("width", mapWidth).attr("height", mapHeight);
     } catch (error: any) {
       logError('🗺️ Map.jsx: reinitMap error', error);
     }
@@ -623,67 +711,66 @@ export default function ManeuverMap(props) {
 
   function initMap() {
     try {
-      // Try to find either #map-area (for full Maneuvers page) or #maneuver-map (for ManeuverWindow)
-      const mapAreaSelector = d3.select('#map-area');
-      const maneuverMapSelector = d3.select('#maneuver-map');
-      
-      let containerElement = null;
-      if (mapAreaSelector.node()) {
-        containerElement = mapAreaSelector.node();
-      } else if (maneuverMapSelector.node()) {
-        containerElement = maneuverMapSelector.node();
-      }
-      
-      if (containerElement) {
-        const containerRect = containerElement.getBoundingClientRect();
-        mapWidth = containerRect.width;
-        mapHeight = containerRect.height; // Use full container height
-    
-        const mapboxTiles = L.tileLayer('', {
-          attribution: ''
-        });
-    
+      const elId = maneuverMapElementId();
+      const maneuverMapElement = document.getElementById(elId);
+      if (!maneuverMapElement) return;
+
+      const layoutEl =
+        maneuverMapElement.closest(".maneuver-map-container") ||
+        d3.select("#map-area").node() ||
+        maneuverMapElement;
+      const containerRect = (layoutEl as HTMLElement).getBoundingClientRect();
+      mapWidth = containerRect.width;
+      mapHeight = containerRect.height;
+
+      const mapboxTiles = L.tileLayer('', {
+        attribution: ''
+      });
+
+      const root = maneuverMapElement.closest(".maneuver-map-container");
+      if (root) {
+        d3.select(root)
+          .style("width", "100%")
+          .style("height", "100%");
+        d3.select(maneuverMapElement)
+          .style("width", "100%")
+          .style("height", "100%");
+      } else {
         d3.selectAll(".maneuver-map-container")
           .style("width", "100%")
           .style("height", "100%");
-    
         d3.selectAll(".maneuver-map")
           .style("width", "100%")
           .style("height", "100%");
-      
-        // Check if #maneuver-map exists before initializing
-        const maneuverMapElement = document.getElementById('maneuver-map');
-        if (!maneuverMapElement) {
-          return;
-        }
-      
-        map = L.map('maneuver-map', { minZoom: 0, maxZoom: 24, zoomControl: true })
-          .addLayer(mapboxTiles)
-          .setView([0, 0], zoom_level);
-      
-        L.svg({ interactive: true }).addTo(map);
-    
-        svg = d3.select(map.getPanes().overlayPane).select("svg");
-        
-        svg.attr("pointer-events", "auto")
-          .attr("z-index", 900);
-    
-        svg.selectAll("g").remove();
-        g = svg.append("g").attr("width", mapWidth).attr("height", mapHeight)
-          .attr("z-index", 1000);
-    
-        d3.selectAll(".leaflet-attribution-flag").remove();
-    
-        map.on("dblclick", function(e) {
-          centerMap(latlngarray)
-        });
       }
+
+      map = L.map(elId, { minZoom: 0, maxZoom: 24, zoomControl: true })
+        .addLayer(mapboxTiles)
+        .setView([0, 0], zoom_level) as unknown as LeafletMap;
+
+      L.svg({ interactive: true }).addTo(map);
+
+      svg = d3.select(map.getPanes().overlayPane).select("svg");
+
+      svg.attr("pointer-events", "auto")
+        .attr("z-index", 900);
+
+      svg.selectAll("g").remove();
+      g = svg.append("g").attr("width", mapWidth).attr("height", mapHeight)
+        .attr("z-index", 1000);
+
+      d3.selectAll(".leaflet-attribution-flag").remove();
+
+      map.on("dblclick", function (_e: unknown) {
+        centerMap(latlngarray);
+      });
     } catch (error: any) {
     }
   }
 
-  let toMapLinePath = d3.line()
-    .defined(function(d) {
+  const toMapLinePath = d3
+    .line<MapTrackPoint>()
+    .defined(function (d) {
       if (!d || !d.LatLng) return false;
       if (!map) return false;
       try {
@@ -693,7 +780,7 @@ export default function ManeuverMap(props) {
         return false;
       }
     })
-    .x(function(d) {
+    .x(function (d) {
       if (!map || !d || !d.LatLng) return 0;
       try {
         const point = map.latLngToLayerPoint(d.LatLng);
@@ -702,7 +789,7 @@ export default function ManeuverMap(props) {
         return 0;
       }
     })
-    .y(function(d) {
+    .y(function (d) {
       if (!map || !d || !d.LatLng) return 0;
       try {
         const point = map.latLngToLayerPoint(d.LatLng);
@@ -710,9 +797,9 @@ export default function ManeuverMap(props) {
       } catch {
         return 0;
       }
-  });
+    });
 
-  function applyLatLngToLayer(d) {
+  function applyLatLngToLayer(d: { lat: number; lng: number }) {
     if (!map || !d) {
       return { x: 0, y: 0 };
     }
@@ -727,14 +814,14 @@ export default function ManeuverMap(props) {
     }
   }
 
-  function centerMap(arr) {
+  function centerMap(arr: { lat: number; lng: number }[]) {
     try {
-      if (arr != undefined && arr.length > 0) {
-        var bounds = new L.LatLngBounds(arr)
-        map.fitBounds(bounds)
+      if (arr != undefined && arr.length > 0 && map) {
+        const bounds = new L.LatLngBounds(arr);
+        map.fitBounds(bounds);
       }
-    }
-    catch(err) {
+    } catch {
+      // ignore invalid bounds
     }
   }
 
@@ -746,10 +833,10 @@ export default function ManeuverMap(props) {
 
     minVal = 9999999
     maxVal = -9999999
-    mapdata().forEach(function(item) {
+    mapdata().forEach(function (item: MapTrackPoint[]) {
       try {
-        let d = item[0]
-        let val = parseFloat(d[channel])
+        const d = item[0];
+        const val = parseFloat(String(d[channel as keyof MapTrackPoint] ?? ""));
         if (val > maxVal) {maxVal = val}
         if (val < minVal) {minVal = val} 
       } catch {
@@ -764,186 +851,187 @@ export default function ManeuverMap(props) {
     {
         // Fixed TWS bins: 10, 15, 20, 25, 30, 35, 40, 45, 50
         // Use scaleThreshold with 8 thresholds to create 9 color ranges (one for each bin)
-        myColorScale = d3.scaleThreshold()
+        myColorScale = d3.scaleThreshold();
         myColorScale.domain([12.5, 17.5, 22.5, 27.5, 32.5, 37.5, 42.5, 47.5]);
-        myColorScale.range(["blue","lightblue","cyan","lightgreen","yellow","orange","red","darkred","purple"])
+        myColorScale.range(["blue", "lightblue", "cyan", "lightgreen", "yellow", "orange", "red", "darkred", "purple"]);
     }
     else if (color() === 'VMG') //VMG
     {
-        myColorScale = d3.scaleLinear()
-        myColorScale.domain([minVal, (minVal + maxVal) / 2, maxVal])
-        myColorScale.range(["blue","lightgrey","red"])
+        myColorScale = d3.scaleLinear();
+        myColorScale.domain([minVal, (minVal + maxVal) / 2, maxVal]);
+        myColorScale.range(["blue", "lightgrey", "red"]);
     }
     else if (color() === 'TACK') //TACK
     {
-        myColorScale = d3.scaleThreshold()
-        myColorScale.domain([-180,-1,1,180])
-        myColorScale.range(["red","red","#64ed64","#64ed64"])
+        myColorScale = d3.scaleThreshold();
+        myColorScale.domain([-180, -1, 1, 180]);
+        myColorScale.range(["red", "red", "#64ed64", "#64ed64"]);
     }
     else if (color() === 'MAINSAIL') //MAINSAIL
     {
       // Use buildColorGrouping for consistency with DataTable and Scatter
-      let data = []
-      mapdata().forEach(item => {
-        data.push(item[0])
-      })
+      const data: MapTrackPoint[] = [];
+      mapdata().forEach((item) => {
+        data.push(item[0]);
+      });
       const { scale, getItemColor: getItemColorFn } = buildColorGrouping(data, 'MAINSAIL');
       myColorScale = scale;
-      getItemColor = getItemColorFn; // Store the function for use in getColor
+      getItemColor = getItemColorFn as GetItemColorFn;
     }
     else if (color() === 'HEADSAIL') //HEADSAIL
     {
       // Use buildColorGrouping for consistency with DataTable and Scatter
-      let data = []
-      mapdata().forEach(item => {
-        data.push(item[0])
-      })
+      const data: MapTrackPoint[] = [];
+      mapdata().forEach((item) => {
+        data.push(item[0]);
+      });
       const { scale, getItemColor: getItemColorFn } = buildColorGrouping(data, 'HEADSAIL');
       myColorScale = scale;
-      getItemColor = getItemColorFn; // Store the function for use in getColor
+      getItemColor = getItemColorFn as GetItemColorFn;
     }
     else if (color() === 'RACE') //RACE
     {
       // Use buildColorGrouping for consistency with DataTable and Scatter
-      let data = []
-      mapdata().forEach(item => {
-        data.push(item[0])
-      })
+      const data: MapTrackPoint[] = [];
+      mapdata().forEach((item) => {
+        data.push(item[0]);
+      });
       const { scale, getItemColor: getItemColorFn } = buildColorGrouping(data, 'RACE');
       myColorScale = scale;
-      getItemColor = getItemColorFn; // Store the function for use in getColor
+      getItemColor = getItemColorFn as GetItemColorFn;
     }
     else if (color() === 'SOURCE') //SOURCE (fleet context)
     {
       // Use buildColorGrouping for SOURCE to get fleet colors
-      let data = []
-      mapdata().forEach(item => {
-        data.push(item[0])
-      })
+      const data: MapTrackPoint[] = [];
+      mapdata().forEach((item) => {
+        data.push(item[0]);
+      });
       const { scale, getItemColor: getItemColorFn } = buildColorGrouping(data, 'SOURCE');
       myColorScale = scale;
-      getItemColor = getItemColorFn; // Store the function for use in getColor
+      getItemColor = getItemColorFn as GetItemColorFn;
     }
     else if (color() === 'STATE') //STATE
     {
       // Use buildColorGrouping for consistency with DataTable and Scatter
-      let data = []
-      mapdata().forEach(item => {
-        data.push(item[0])
-      })
+      const data: MapTrackPoint[] = [];
+      mapdata().forEach((item) => {
+        data.push(item[0]);
+      });
       const { scale, getItemColor: getItemColorFn } = buildColorGrouping(data, 'STATE');
       myColorScale = scale;
-      getItemColor = getItemColorFn; // Store the function for use in getColor
+      getItemColor = getItemColorFn as GetItemColorFn;
     }
     else if (color() === 'CONFIG') //CONFIG
     {
       // Use buildColorGrouping for consistency with DataTable and Scatter
-      let data = []
-      mapdata().forEach(item => {
-        data.push(item[0])
-      })
+      const data: MapTrackPoint[] = [];
+      mapdata().forEach((item) => {
+        data.push(item[0]);
+      });
       const { scale, getItemColor: getItemColorFn } = buildColorGrouping(data, 'CONFIG');
       myColorScale = scale;
-      getItemColor = getItemColorFn; // Store the function for use in getColor
+      getItemColor = getItemColorFn as GetItemColorFn;
     }
     else
     {
-      myColorScale = d3.scaleLinear()
+      myColorScale = d3.scaleLinear();
       //myColorScale.domain([4, 8, 14, 18, 22])
       myColorScale.domain([8, 16, 28, 36, 44]);
-      myColorScale.range(["yellow","orange","red"])
+      myColorScale.range(["yellow", "orange", "red"]);
     }
   }
 
   // Get the original color based on current color-by setting (without selection-based coloring)
-  function getOriginalColor(d) {
-    if (color() === 'TWS') 
-    {
+  function getOriginalColor(d: MapTrackPoint | undefined): string {
+    if (color() === 'TWS') {
       if (d != undefined) {
-        let val = d.tws_bin;
-        return myColorScale(val);
+        const val = d.tws_bin;
+        return (myColorScale as (v: number) => string)(Number(val));
       }
+      return "grey";
     }
-    else if (color() === 'VMG') 
-    {
+    if (color() === 'VMG') {
       if (d != undefined) {
-        let val = d.vmg_perc_avg
-        return myColorScale(val)
+        const val = d.vmg_perc_avg;
+        return (myColorScale as (v: number) => string)(Number(val));
       }
+      return "grey";
     }
-    else if (color() === 'TACK') 
-    {
+    if (color() === 'TACK') {
       if (d != undefined) {
         if (d.tack == 'PORT') {
-          return "red"
+          return "red";
         } else if (d.tack == 'STBD') {
-          return "#64ed64"
+          return "#64ed64";
         } else if (d.tack == 'P - S') {
-          return "#64ed64"
-        } else {
-          return "red"
+          return "#64ed64";
         }
+        return "red";
       }
+      return "grey";
     }
-    else if (color() === 'MAINSAIL') 
-    {
+    if (color() === 'MAINSAIL') {
       if (d != undefined && getItemColor) {
         // Use stored getItemColor function for consistent coloring
         return getItemColor(d);
       }
       return "grey";
     }
-    else if (color() === 'HEADSAIL') 
-    {
+    if (color() === 'HEADSAIL') {
       if (d != undefined && getItemColor) {
         // Use stored getItemColor function for consistent coloring
         return getItemColor(d);
       }
       return "grey";
     }
-    else if (color() === 'RACE') 
-    {
+    if (color() === 'RACE') {
       if (d != undefined && getItemColor) {
         // Use stored getItemColor function for consistent coloring
         return getItemColor(d);
       }
       return "grey";
     }
-    else if (color() === 'SOURCE') 
-    {
+    if (color() === 'SOURCE') {
       if (d != undefined && getItemColor) {
         // Use stored getItemColor function for efficient coloring
         return getItemColor(d);
       }
       return "grey";
     }
-    else if (color() === 'STATE') 
-    {
+    if (color() === 'STATE') {
       if (d != undefined && getItemColor) {
         // Use stored getItemColor function for consistent coloring
         return getItemColor(d);
       }
       return "grey";
     }
-    else if (color() === 'CONFIG') 
-    {
+    if (color() === 'CONFIG') {
       if (d != undefined && getItemColor) {
         // Use stored getItemColor function for consistent coloring
         return getItemColor(d);
       }
       return "grey";
     }
-    else
-    {
-      return "grey"
-    }
+    return "grey";
   }
 
-  function getColor(d) {
-    return getOriginalColor(d);
+  function getColor(d: MapTrackPoint | null | undefined): string {
+    return getOriginalColor(d ?? undefined);
   }
 
-  function DrawMap(maneuvers, groupedManeuvers = null) {
+  /** Stroke/fill color for grouped .mapPath and boats — keeps boats aligned with track (MIX, selection, etc.) */
+  function groupedTrackStrokeColor(firstPoint: MapTrackPoint | null | undefined): string {
+    const sel = selectedGroupKeys().length > 0;
+    const mix = groupDisplayMode() === 'MIX';
+    const styleSel = sel || mix;
+    const pt = firstPoint ?? undefined;
+    if (!styleSel) return getColor(pt);
+    if (isPathSelected(firstPoint)) return getColor(pt);
+    return mix && !sel ? getColor(pt) : "lightgrey";
+  }
+
+  function DrawMap(maneuvers: MapTrackPoint[][], groupedManeuvers: MapTrackPoint[][] | null = null) {
     // Verify map is initialized before drawing
     if (!mapInitialized() || !map) {
       debug('🗺️ Map.jsx: DrawMap - Map is not initialized!');
@@ -976,20 +1064,26 @@ export default function ManeuverMap(props) {
         return;
       }
     }
-    
+
+    if (!g) {
+      logError('🗺️ Map.jsx: DrawMap - G element is missing');
+      return;
+    }
+    const plotG = g;
+
     // Clear all pending boat fade timeouts when starting a new draw
     boatFadeTimeouts.forEach(timeout => clearTimeout(timeout));
     boatFadeTimeouts = [];
     
-    d3.select("#maneuver-map").select("svg").selectAll(".line").remove()
-    d3.select("#maneuver-map").select("svg").selectAll(".solid_line").remove()  
-    d3.select("#maneuver-map").select("svg").selectAll(".map_dash_line").remove()
-    d3.select("#maneuver-map").select("svg").selectAll(".mapPath").remove()
-    d3.select("#maneuver-map").select("svg").selectAll(".boat").interrupt().remove()
-    d3.select("#maneuver-map").select("svg").selectAll(".boat-circle").interrupt().remove()
-    d3.select("#maneuver-map").select("svg").selectAll(".hover-circle").remove()
+    d3MapPane().select("svg").selectAll(".line").remove()
+    d3MapPane().select("svg").selectAll(".solid_line").remove()
+    d3MapPane().select("svg").selectAll(".map_dash_line").remove()
+    d3MapPane().select("svg").selectAll(".mapPath").remove()
+    d3MapPane().select("svg").selectAll(".boat").interrupt().remove()
+    d3MapPane().select("svg").selectAll(".boat-circle").interrupt().remove()
+    d3MapPane().select("svg").selectAll(".hover-circle").remove()
 
-    let click = function(event, d) {
+    const click = function (event: MouseEvent, d: MapTrackPoint) {
       // Handle case where d might be undefined or doesn't have event_id
       if (!d) return;
       
@@ -1005,7 +1099,7 @@ export default function ManeuverMap(props) {
     // Mouse event handlers
     // Offset tooltip left of cursor so it stays left on any monitor (e.g. big display)
     const TOOLTIP_LEFT_OFFSET_PX = 500;
-    const mouseover = (event, d) => {
+    const mouseover = (event: MouseEvent, d: MapTrackPoint) => {
       const tooltipContent = getTooltipContent(d); 
 
       setTooltip({
@@ -1016,7 +1110,7 @@ export default function ManeuverMap(props) {
       });
     };
 
-    const mousemove = (event, d) => {
+    const mousemove = (event: MouseEvent, d: MapTrackPoint) => {
       const tooltipContent = getTooltipContent(d); 
 
       setTooltip({
@@ -1036,7 +1130,7 @@ export default function ManeuverMap(props) {
       });
     }; 
 
-    const getTooltipContent = (point) => {
+    const getTooltipContent = (point: MapTrackPoint | undefined) => {
       if (!point) return "";
   
       // Check if we have State/Config (GP50)
@@ -1072,7 +1166,7 @@ export default function ManeuverMap(props) {
       }
       
       // TIME should be in the data - use it directly
-      if (point.time !== undefined && point.time !== null && point.time !== '') {
+      if (point.time !== undefined && point.time !== null && String(point.time) !== '') {
         tooltipRows += `
               <tr><td>TIME:</td><td>${point.time}</td></tr>`;
       }
@@ -1084,15 +1178,14 @@ export default function ManeuverMap(props) {
       return `<table class='table-striped'>${tooltipRows}</table>`;  
     };
 
-    let linePaths = []
-    maneuverPathsData = []
-    let boatdataArray = []
+    maneuverPathsData = [];
+    let boatdataArray: [MapTrackPoint, MapTrackPoint][] = [];
 
     // MIX MODE: First draw individual tracks as background layer (dimmed, no events)
     if (mixMode && maneuvers != undefined) {
-      const individualPaths = [];
-      
-      maneuvers.forEach(function(maneuver) {
+      const individualPaths: ManeuverPathRecord[] = [];
+
+      maneuvers.forEach(function (maneuver: MapTrackPoint[]) {
         if (!maneuver || maneuver.length === 0) return;
         const eventId = maneuver[0].event_id;
         if (!eventId) return;
@@ -1116,24 +1209,25 @@ export default function ManeuverMap(props) {
       });
       
       // Individual (ungrouped) tracks in MIX mode: always light grey. Use literal so initial draw when switching to mix mode is never undefined.
-      const individualSelection = g.selectAll(".mapPath-individual")
-        .data(individualPaths, d => d.eventId);
+      const individualSelection = plotG
+        .selectAll(".mapPath-individual")
+        .data(individualPaths, (d: unknown) => (d as ManeuverPathRecord).eventId);
       
       individualSelection
         .enter()
         .append("path")
         .attr("class", "mapPath-individual")
-        .attr("data-event-id", d => d.eventId)
+        .attr("data-event-id", (d: ManeuverPathRecord) => d.eventId)
         .style("stroke", "lightgrey")
-        .merge(individualSelection)
-        .attr("data-event-id", d => d.eventId)
+        .merge(individualSelection as unknown as d3.Selection<SVGPathElement, ManeuverPathRecord, SVGGElement, unknown>)
+        .attr("data-event-id", (d: ManeuverPathRecord) => d.eventId)
         .style("stroke", "lightgrey")
         .style("stroke-width", 0.5)
         .style("stroke-opacity", 0.3)
         .style("stroke-linecap", "round")
         .style("fill", "none")
         .style("pointer-events", "none")
-        .attr("d", d => {
+        .attr("d", (d: ManeuverPathRecord) => {
           if (!map || !d || !d.points) return "";
           const pathString = toMapLinePath(d.points);
           if (pathString && !pathString.includes("NaN")) {
@@ -1149,19 +1243,19 @@ export default function ManeuverMap(props) {
         const boatPairs = getBoatPositionsByTime(maneuver.points);
         const circleData = boatPairs.map(([, p]) => p);
         
-        const circles = g.selectAll(`.individual-circle-${maneuver.eventId}`)
-          .data(circleData);
-        
-        circles.enter()
+        const circles = plotG.selectAll(`.individual-circle-${maneuver.eventId}`).data(circleData);
+
+        circles
+          .enter()
           .append("circle")
           .attr("class", `individual-circle individual-circle-${maneuver.eventId}`)
-          .merge(circles)
-          .attr("cx", d => {
+          .merge(circles as unknown as d3.Selection<SVGCircleElement, MapTrackPoint, SVGGElement, unknown>)
+          .attr("cx", (d: MapTrackPoint) => {
             if (!d || !d.LatLng || !map) return 0;
             const point = applyLatLngToLayer(d.LatLng);
             return isNaN(point.x) ? 0 : point.x;
           })
-          .attr("cy", d => {
+          .attr("cy", (d: MapTrackPoint) => {
             if (!d || !d.LatLng || !map) return 0;
             const point = applyLatLngToLayer(d.LatLng);
             return isNaN(point.y) ? 0 : point.y;
@@ -1176,8 +1270,8 @@ export default function ManeuverMap(props) {
       });
     } else {
       // ON mode: remove individual layer so only grouped tracks show
-      g.selectAll(".mapPath-individual").remove();
-      g.selectAll(".individual-circle").remove();
+      plotG.selectAll(".mapPath-individual").remove();
+      plotG.selectAll(".individual-circle").remove();
     }
 
     // Now draw grouped tracks (or all tracks in ON mode)
@@ -1185,9 +1279,9 @@ export default function ManeuverMap(props) {
     
     if (tracksToDrawAsGrouped != undefined) {
       // Convert maneuvers to single paths per maneuver
-      const maneuverPaths = [];
-      
-      tracksToDrawAsGrouped.forEach(function(maneuver) {
+      const maneuverPaths: ManeuverPathRecord[] = [];
+
+      tracksToDrawAsGrouped.forEach(function (maneuver: MapTrackPoint[]) {
         if (!maneuver || maneuver.length === 0) return;
         
         const eventId = maneuver[0].event_id;
@@ -1214,10 +1308,10 @@ export default function ManeuverMap(props) {
       });
       
       // Separate selected and non-selected paths
-      const selectedPaths = [];
-      const nonSelectedPaths = [];
-      
-      maneuverPaths.forEach(maneuver => {
+      const selectedPaths: ManeuverPathRecord[] = [];
+      const nonSelectedPaths: ManeuverPathRecord[] = [];
+
+      maneuverPaths.forEach((maneuver) => {
         if (isPathSelected(maneuver.firstPoint)) {
           selectedPaths.push(maneuver);
         } else {
@@ -1230,36 +1324,29 @@ export default function ManeuverMap(props) {
       const mixMode = groupDisplayMode() === 'MIX';
       // In MIX mode treat all tracks as having "selection" for styling: unselected = dimmed, selected = normal
       const hasSelectionForStyle = hasSelection || mixMode;
-      const darkMode = isDark();
-      
+
       // Bind to paths using eventId as key
-      const pathsSelection = g.selectAll(".mapPath")
-        .data(orderedPaths, d => d.eventId);
+      const pathsSelection = plotG
+        .selectAll(".mapPath")
+        .data(orderedPaths, (d: unknown) => (d as ManeuverPathRecord).eventId);
       
       pathsSelection
         .enter()
         .append("path")
         .attr("class", "mapPath solid_line") // Grouped mode: draw all maneuvers as solid lines
         .attr("data-event-id", d => d.eventId) // Store eventId as attribute for lookup
-        .merge(pathsSelection)
+        .merge(pathsSelection as unknown as d3.Selection<SVGPathElement, ManeuverPathRecord, SVGGElement, unknown>)
         .attr("class", "mapPath solid_line") // Grouped mode: all maneuvers solid
-        .attr("data-event-id", d => d.eventId) // Ensure update selection also has the attribute
-        .style("stroke", d => {
-          if (!hasSelectionForStyle) return getColor(d.firstPoint);
-          const isSelected = isPathSelected(d.firstPoint);
-          if (isSelected) return getColor(d.firstPoint);
-          // MIX: always use group color for grouped layer (so first render shows colored tracks)
-          // ON with selection: unselected dimmed as lightgrey
-          return mixMode ? getColor(d.firstPoint) : "lightgrey";
-        })
-        .style("stroke-width", d => {
+        .attr("data-event-id", (d: ManeuverPathRecord) => d.eventId) // Ensure update selection also has the attribute
+        .style("stroke", (d: ManeuverPathRecord) => groupedTrackStrokeColor(d.firstPoint))
+        .style("stroke-width", (d: ManeuverPathRecord) => {
           if (!hasSelectionForStyle) return 1;
           // MIX with no selection: full width so grouped tracks are visible
           if (mixMode && !hasSelection) return 1;
           const isSelected = isPathSelected(d.firstPoint);
           return isSelected ? 3 : 0.5;
         })
-        .style("stroke-opacity", d => {
+        .style("stroke-opacity", (d: ManeuverPathRecord) => {
           if (!hasSelectionForStyle) return 1;
           // MIX with no selection: full opacity so grouped tracks are visible
           if (mixMode && !hasSelection) return 1;
@@ -1269,7 +1356,7 @@ export default function ManeuverMap(props) {
         .style("stroke-linecap", "round")
         .style("fill", "none")
         .style("pointer-events", "none") // Disable pointer events on path, circles will handle it
-        .attr("d", d => {
+        .attr("d", (d: ManeuverPathRecord) => {
           if (!map || !d || !d.points) return "";
           const pathString = toMapLinePath(d.points);
           // Validate path string doesn't contain NaN
@@ -1278,25 +1365,23 @@ export default function ManeuverMap(props) {
           }
           return "";
         });
-      
+
       // Reorder paths in DOM so selected paths render on top
       // In SVG, elements that appear later in DOM are rendered on top
       if (hasSelectionForStyle && selectedPaths.length > 0) {
-        const parent = g.node();
+        const parent = plotG.node();
         if (parent) {
-          // Collect all path nodes with their selection status
           const pathNodes: { node: Element; isSelected: boolean }[] = [];
-          pathsSelection.each(function(d) {
-            const node = this;
-            const isSelected = isPathSelected(d.firstPoint);
+          pathsSelection.each(function (d: unknown) {
+            const rec = d as ManeuverPathRecord;
+            const node = this as SVGPathElement;
+            const isSelected = isPathSelected(rec.firstPoint);
             pathNodes.push({ node, isSelected });
           });
-          
-          // Separate selected and non-selected
-          const nonSelected = pathNodes.filter(p => !p.isSelected);
-          const selected = pathNodes.filter(p => p.isSelected);
-          
-          // Reorder: non-selected first, then selected (selected will render on top)
+
+          const nonSelected = pathNodes.filter((p) => !p.isSelected);
+          const selected = pathNodes.filter((p) => p.isSelected);
+
           [...nonSelected, ...selected].forEach(({ node }) => {
             parent.appendChild(node);
           });
@@ -1305,28 +1390,27 @@ export default function ManeuverMap(props) {
       
       // Store path data for updates
       maneuverPathsData = orderedPaths;
-      linePaths = pathsSelection;
-      
+
       // Remove any existing outlines (we don't want outlines)
-      g.selectAll(".mapPath-outline").remove();
-      
+      plotG.selectAll(".mapPath-outline").remove();
+
       // Add invisible circles for hover detection and tooltips (MIX: no mouse events on unselected)
       orderedPaths.forEach(maneuver => {
         const isSelected = isPathSelected(maneuver.firstPoint);
         const noPointerEvents = mixMode && !isSelected;
-        const hoverCircles = g.selectAll(`.hover-circle-${maneuver.eventId}`)
-          .data(maneuver.points);
-        
-        const circlesMerge = hoverCircles.enter()
+        const hoverCircles = plotG.selectAll(`.hover-circle-${maneuver.eventId}`).data(maneuver.points);
+
+        const circlesMerge = hoverCircles
+          .enter()
           .append("circle")
           .attr("class", `hover-circle hover-circle-${maneuver.eventId}`)
-          .merge(hoverCircles)
-          .attr("cx", d => {
+          .merge(hoverCircles as unknown as d3.Selection<SVGCircleElement, MapTrackPoint, SVGGElement, unknown>)
+          .attr("cx", (d: MapTrackPoint) => {
             if (!d || !d.LatLng || !map) return 0;
             const point = applyLatLngToLayer(d.LatLng);
             return isNaN(point.x) ? 0 : point.x;
           })
-          .attr("cy", d => {
+          .attr("cy", (d: MapTrackPoint) => {
             if (!d || !d.LatLng || !map) return 0;
             const point = applyLatLngToLayer(d.LatLng);
             return isNaN(point.y) ? 0 : point.y;
@@ -1358,11 +1442,12 @@ export default function ManeuverMap(props) {
       // Boats will be drawn in doUpdates function
 
       function doUpdates() {
-        zoom_level = map.getZoom()
+        if (!map) return;
+        zoom_level = map.getZoom();
 
         // Verify g still exists and is in DOM before drawing
         const currentGNode = g && g.node ? g.node() : null;
-        
+
         if (!g || !currentGNode) {
           logError('🗺️ Map.jsx: doUpdates - G element is missing!');
           return;
@@ -1374,17 +1459,18 @@ export default function ManeuverMap(props) {
         
         // Update all paths - select directly from DOM to ensure we get all paths
         if (!map || !g) return; // Ensure map is ready
-        
+        const layer = g!;
+
         const pathNodes: { node: Element; isSelected: boolean }[] = [];
-        
-        g.selectAll(".mapPath").each(function(d) {
-          const node = this;
-          
-          let maneuver = d;
+
+        layer.selectAll(".mapPath").each(function (d: unknown) {
+          const node = this as SVGPathElement;
+
+          let maneuver: ManeuverPathRecord | undefined = d as ManeuverPathRecord | undefined;
           if (!maneuver || !maneuver.points) {
             const eventIdAttr = d3.select(node).attr("data-event-id");
             if (eventIdAttr && maneuverPathsData.length > 0) {
-              maneuver = maneuverPathsData.find(m => m.eventId == eventIdAttr);
+              maneuver = maneuverPathsData.find((m) => String(m.eventId) === eventIdAttr);
             }
           }
           
@@ -1400,9 +1486,7 @@ export default function ManeuverMap(props) {
             d3.select(node).attr("d", pathString);
           }
           
-          // MIX with no selection: show all grouped tracks in group color; MIX with selection / ON with selection: dim unselected
-          const unselectedStroke = !hasSelectionForStyle ? getColor(firstPoint) : (mixModeDoUpdates && !hasSelection ? getColor(firstPoint) : "lightgrey");
-          node.style.setProperty("stroke", isSelected ? getColor(firstPoint) : unselectedStroke, "important");
+          node.style.setProperty("stroke", groupedTrackStrokeColor(firstPoint), "important");
           const unselectedWidth = hasSelectionForStyle && !(mixModeDoUpdates && !hasSelection) ? "0.5" : "1";
           const unselectedOpacity = hasSelectionForStyle && !(mixModeDoUpdates && !hasSelection) ? "0.2" : "1";
           node.style.setProperty("stroke-width", isSelected ? "3" : unselectedWidth, "important");
@@ -1414,7 +1498,7 @@ export default function ManeuverMap(props) {
         // Reorder paths in DOM so selected paths render on top
         // In SVG, elements that appear later in DOM are rendered on top
         if (hasSelectionForStyle && pathNodes.length > 0) {
-          const parent = g.node();
+          const parent = layer.node();
           if (parent) {
             // Separate selected and non-selected
             const nonSelected = pathNodes.filter(p => !p.isSelected);
@@ -1429,23 +1513,23 @@ export default function ManeuverMap(props) {
 
         //DRAW BOATS
         // Always remove all boats and circles first to ensure clean state (especially when phase changes)
-        g.selectAll(".boat").interrupt().remove();
-        g.selectAll(".boat-circle").interrupt().remove();
+        layer.selectAll(".boat").interrupt().remove();
+        layer.selectAll(".boat-circle").interrupt().remove();
         
-        boatdataArray.forEach(function(boatData) {
+        boatdataArray.forEach(function (boatData: [MapTrackPoint, MapTrackPoint]) {
           if (!boatData || boatData.length < 2) return;
-          
-          let d = boatData[1]
+
+          let d = boatData[1];
           if (!d || !d.LatLng || !map) return;
           
           // Validate coordinates before drawing boat
           const testPoint = applyLatLngToLayer(d.LatLng);
           if (isNaN(testPoint.x) || isNaN(testPoint.y)) return;
           
-          const boatGroupKey = getGroupKeyFromItem(d, color());
-          const isBoatSelected = hasSelection && selectedGroupKeys().some((k) => groupKeyEquals(k, boatGroupKey));
-          const mixModeBoat = groupDisplayMode() === 'MIX';
-          const trackColor = !hasSelection ? getColor(d) : (isBoatSelected ? getColor(d) : (mixModeBoat && hasSelection ? getColor(d) : "lightgrey"));
+          const maneuverForBoat = maneuverPathsData.find(m => m.eventId == d.event_id);
+          const trackFirstPoint = maneuverForBoat?.firstPoint ?? d;
+          const trackColor = groupedTrackStrokeColor(trackFirstPoint);
+          const isBoatSelected = hasSelection && isPathSelected(trackFirstPoint);
           // Grouped tracks layer always shows boat icons (same as ON mode); selection only affects opacity and pointer-events
           const noBoatEvents = false;
           
@@ -1471,14 +1555,14 @@ export default function ManeuverMap(props) {
           }
           
           // Check if boat already exists
-          const existingBoat = g.select(`#${boatId}`);
-          
+          const existingBoat = layer.select(`#${boatId}`);
+
           // MIX unselected: draw only a circle (no boat icon), no mouse events
           if (noBoatEvents) {
             const circleId = `boat-circle-${sanitizedEventId}-${sanitizedTime}`;
-            const existingCircle = g.select(`#${circleId}`);
+            const existingCircle = layer.select(`#${circleId}`);
             if (existingCircle.empty()) {
-              g.append("circle")
+              layer.append("circle")
                 .datum(d)
                 .attr("id", circleId)
                 .attr("class", "boat-circle boat-circle-unselected")
@@ -1495,13 +1579,14 @@ export default function ManeuverMap(props) {
             return;
           }
           
-          let boat;
+          let boat: d3.Selection<SVGPathElement, MapTrackPoint, SVGGElement, unknown>;
           if (existingBoat.empty()) {
             // Get current phase to store on boat element
             const currentPhase = phase();
-            
+
             // Create new boat (grouped selected tracks only when not MIX unselected)
-            boat = g.append("path")
+            boat = layer.append("path") as d3.Selection<SVGPathElement, MapTrackPoint, SVGGElement, unknown>;
+            boat
               .datum(d) // Bind the point data so event handlers can access it
               .attr("id", boatId)
               .attr("class", "boat")
@@ -1513,7 +1598,7 @@ export default function ManeuverMap(props) {
               .style("pointer-events", "visiblePainted")
               .on("mouseover", mouseover).on("mouseout", mouseout).on("mousemove", mousemove).on("click", click);
             
-            let hdg = d.hdg - 180
+            let hdg = Number(d.hdg ?? 0) - 180;
 
             // Get boat path based on icon type and zoom level
             const boatPath = getBoatPathForZoom(zoom_level);
@@ -1522,7 +1607,7 @@ export default function ManeuverMap(props) {
             
             // Create circle that will replace the boat (initially hidden)
             const circleId = `boat-circle-${sanitizedEventId}-${sanitizedTime}`;
-            const circle = g.append("circle")
+            layer.append("circle")
               .datum(d)
               .attr("id", circleId)
               .attr("class", "boat-circle")
@@ -1535,19 +1620,19 @@ export default function ManeuverMap(props) {
               .style("opacity", 0)
               .style("pointer-events", "visiblePainted")
               .on("mouseover", mouseover).on("mouseout", mouseout).on("mousemove", mousemove).on("click", click);
-            
+
             // Start fade transition after delay
             const timeoutId = setTimeout(() => {
-              const boatNode = boat.node();
+              const boatNode = boat.node() as SVGPathElement | null;
               if (!boatNode || !boatNode.parentNode) return;
-              
+
               // Check if phase has changed - if so, don't start fade
               const boatPhase = boat.attr("data-phase");
               const currentPhaseNow = phase();
               if (boatPhase !== currentPhaseNow) {
                 // Phase changed, remove boat and circle
                 d3.select(boatNode).remove();
-                const circleNode = g.select(`#${circleId}`).node();
+                const circleNode = layer.select(`#${circleId}`).node();
                 if (circleNode) d3.select(circleNode).remove();
                 return;
               }
@@ -1564,26 +1649,26 @@ export default function ManeuverMap(props) {
                 .transition()
                 .duration(1000) // Fade out over 1 second
                 .style("opacity", 0)
-                .on("end", function() {
+                .on("end", function () {
                   // Check phase again before completing fade
-                  const boatPhaseEnd = d3.select(this).attr("data-phase");
+                  const boatPhaseEnd = d3.select(this as SVGPathElement).attr("data-phase");
                   const currentPhaseEnd = phase();
                   if (boatPhaseEnd !== currentPhaseEnd) {
                     // Phase changed during fade, just remove
-                    d3.select(this).remove();
-                    const circleNode = g.select(`#${circleId}`).node();
+                    d3.select(this as SVGPathElement).remove();
+                    const circleNode = layer.select(`#${circleId}`).node();
                     if (circleNode) d3.select(circleNode).remove();
                     return;
                   }
-                  
+
                   // Remove boat after fade completes
-                  const boatNode = this;
+                  const boatNode = this as SVGPathElement;
                   if (boatNode && boatNode.parentNode) {
                     d3.select(boatNode).remove();
                   }
-                  
+
                   // Fade in circle
-                  const circleNode = g.select(`#${circleId}`).node();
+                  const circleNode = layer.select(`#${circleId}`).node() as SVGCircleElement | null;
                   if (circleNode && circleNode.parentNode) {
                     // Check phase one more time
                     const circlePhase = d3.select(circleNode).attr("data-phase");
@@ -1606,9 +1691,9 @@ export default function ManeuverMap(props) {
             boatFadeTimeouts.push(timeoutId);
           } else {
             // Boat already exists, just update its position, transform, and color
-            existingBoat.each(function() {
-              const existingBoatSel = d3.select(this);
-              let hdg = d.hdg - 180;
+            existingBoat.each(function () {
+              const existingBoatSel = d3.select(this as SVGPathElement);
+              let hdg = Number(d.hdg ?? 0) - 180;
               const boatPath = getBoatPathForZoom(zoom_level);
               existingBoatSel.attr("d", boatPath);
               existingBoatSel.attr("transform", "translate(" + x + "," + y + ") rotate(" + hdg + ")");
@@ -1631,10 +1716,10 @@ export default function ManeuverMap(props) {
               circleId = 'b' + circleId;
             }
             
-            const existingCircle = g.select(`#${circleId}`);
-            
+            const existingCircle = layer.select(`#${circleId}`);
+
             if (existingCircle.empty()) {
-              const circle = g.append("circle")
+              layer.append("circle")
                 .datum(d)
                 .attr("id", circleId)
                 .attr("class", "boat-circle")
@@ -1645,7 +1730,7 @@ export default function ManeuverMap(props) {
                 .style("stroke", "none")
                 .style("opacity", 0)
                 .style("pointer-events", "visiblePainted")
-                .on("mouseover", mouseover)                  
+                .on("mouseover", mouseover)
                 .on("mouseout", mouseout)
                 .on("mousemove", mousemove)
                 .on("click", click);
@@ -1660,51 +1745,55 @@ export default function ManeuverMap(props) {
 
         // MIX mode: move unselected circles behind all paths so grouped (selected) tracks draw on top
         if (mixModeDoUpdates) {
-          const firstPath = g.select(".mapPath").node();
-          const unselectedCircleNodes = g.selectAll(".boat-circle-unselected").nodes();
-          if (firstPath && unselectedCircleNodes.length > 0) {
-            unselectedCircleNodes.reverse().forEach((node: Element) => {
-              g.node().insertBefore(node, firstPath);
+          const firstPath = layer.select(".mapPath").node() as SVGPathElement | null;
+          const unselectedCircleNodes = layer.selectAll(".boat-circle-unselected").nodes() as Element[];
+          const gParent = layer.node();
+          if (firstPath && gParent && unselectedCircleNodes.length > 0) {
+            unselectedCircleNodes.reverse().forEach((node) => {
+              gParent.insertBefore(node, firstPath);
             });
           }
         }
-        
+
         // Update hover circle positions on zoom/pan
-        g.selectAll(".hover-circle").each(function(d) {
-          if (d && d.LatLng && map) {
-            const point = applyLatLngToLayer(d.LatLng);
+        layer.selectAll(".hover-circle").each(function (d: unknown) {
+          const pt = d as MapTrackPoint | undefined;
+          if (pt && pt.LatLng && map) {
+            const point = applyLatLngToLayer(pt.LatLng);
             if (!isNaN(point.x) && !isNaN(point.y)) {
-              d3.select(this)
+              d3.select(this as SVGCircleElement)
                 .attr("cx", point.x)
                 .attr("cy", point.y);
             }
           }
         });
-        
+
         // Update boat circle positions on zoom/pan
-        g.selectAll(".boat-circle").each(function(d) {
-          if (d && d.LatLng && map) {
-            const point = applyLatLngToLayer(d.LatLng);
+        layer.selectAll(".boat-circle").each(function (d: unknown) {
+          const pt = d as MapTrackPoint | undefined;
+          if (pt && pt.LatLng && map) {
+            const point = applyLatLngToLayer(pt.LatLng);
             if (!isNaN(point.x) && !isNaN(point.y)) {
-              d3.select(this)
+              d3.select(this as SVGCircleElement)
                 .attr("cx", point.x)
                 .attr("cy", point.y);
             }
           }
         });
-        
+
         // Update individual circle positions on zoom/pan (MIX mode)
-        g.selectAll(".individual-circle").each(function(d) {
-          if (d && d.LatLng && map) {
-            const point = applyLatLngToLayer(d.LatLng);
+        layer.selectAll(".individual-circle").each(function (d: unknown) {
+          const pt = d as MapTrackPoint | undefined;
+          if (pt && pt.LatLng && map) {
+            const point = applyLatLngToLayer(pt.LatLng);
             if (!isNaN(point.x) && !isNaN(point.y)) {
-              d3.select(this)
+              d3.select(this as SVGCircleElement)
                 .attr("cx", point.x)
                 .attr("cy", point.y);
             }
           }
         });
-      } 
+      }
 
       map.on("zoomend", doUpdates);
       doUpdates();
@@ -1890,29 +1979,28 @@ export default function ManeuverMap(props) {
     if (!g || !g.node()) {
       return;
     }
+    const ug = g;
 
     const hasSelection = selectedGroupKeys().length > 0;
     const mixModeUpdate = groupDisplayMode() === 'MIX';
     const pathNodes: { node: Element; isSelected: boolean }[] = [];
     
-    g.selectAll(".mapPath").each(function(d) {
-      if (!d) return;
-      const node = this;
-      const maneuver = d;
+    ug.selectAll(".mapPath").each(function (d: unknown) {
+      const maneuver = d as ManeuverPathRecord | undefined;
+      if (!maneuver) return;
+      const node = this as SVGPathElement;
       const firstPoint = maneuver.firstPoint;
       const isSelected = hasSelection && isPathSelected(firstPoint);
       if (!firstPoint) return;
       
-      // With selection: dim unselected paths (MIX and ON); with no selection: use group color
-      const unselectedStroke = hasSelection ? "lightgrey" : getColor(firstPoint);
-      node.style.setProperty("stroke", isSelected ? getColor(firstPoint) : unselectedStroke, "important");
+      node.style.setProperty("stroke", groupedTrackStrokeColor(firstPoint), "important");
       node.style.setProperty("stroke-width", isSelected ? "3" : (hasSelection ? "0.5" : "1"), "important");
       node.style.setProperty("stroke-opacity", isSelected ? "1" : (hasSelection ? "0.2" : "1"), "important");
       pathNodes.push({ node, isSelected });
     });
     
     if (hasSelection && pathNodes.length > 0) {
-      const parent = g.node();
+      const parent = ug.node();
       if (parent) {
         const nonSelected = pathNodes.filter(p => !p.isSelected);
         const selected = pathNodes.filter(p => p.isSelected);
@@ -1924,35 +2012,41 @@ export default function ManeuverMap(props) {
 
     // MIX mode: individual layer is always light grey
     if (mixModeUpdate) {
-      g.selectAll(".mapPath-individual").each(function() {
-        this.style.setProperty("stroke", "lightgrey", "important");
+      ug.selectAll(".mapPath-individual").each(function () {
+        (this as SVGPathElement).style.setProperty("stroke", "lightgrey", "important");
       });
-      g.selectAll(".individual-circle").each(function() {
-        this.style.setProperty("fill", "lightgrey", "important");
+      ug.selectAll(".individual-circle").each(function () {
+        (this as SVGCircleElement).style.setProperty("fill", "lightgrey", "important");
       });
     }
-    
-    g.selectAll(".boat").each(function(d) {
-      if (!d) return;
-      const node = this;
-      const boatGroupKey = getGroupKeyFromItem(d, color());
+
+    ug.selectAll(".boat").each(function (d: unknown) {
+      const pt = d as MapTrackPoint | undefined;
+      if (!pt) return;
+      const node = this as SVGPathElement;
+      const fp = maneuverPathsData.find((m) => m.eventId === pt.event_id)?.firstPoint ?? pt;
+      const boatGroupKey = getGroupKeyFromItem(pt, color());
       const isBoatSelected = hasSelection && selectedGroupKeys().some((k) => groupKeyEquals(k, boatGroupKey));
       const noBoatEvents = groupDisplayMode() === 'MIX' && !isBoatSelected;
       d3.select(node)
+        .style("fill", groupedTrackStrokeColor(fp))
         .style("opacity", hasSelection ? (isBoatSelected ? 1 : 0.2) : 1)
         .style("pointer-events", noBoatEvents ? "none" : "visiblePainted");
       if (noBoatEvents) {
         d3.select(node).on("mouseover", null).on("mouseout", null).on("mousemove", null).on("click", null);
       }
     });
-    
-    g.selectAll(".boat-circle").each(function(d) {
-      if (!d) return;
-      const node = this;
-      const boatGroupKey = getGroupKeyFromItem(d, color());
+
+    ug.selectAll(".boat-circle").each(function (d: unknown) {
+      const pt = d as MapTrackPoint | undefined;
+      if (!pt) return;
+      const node = this as SVGCircleElement;
+      const fp = maneuverPathsData.find((m) => m.eventId === pt.event_id)?.firstPoint ?? pt;
+      const boatGroupKey = getGroupKeyFromItem(pt, color());
       const isBoatSelected = hasSelection && selectedGroupKeys().some((k) => groupKeyEquals(k, boatGroupKey));
       const noBoatEvents = groupDisplayMode() === 'MIX' && !isBoatSelected;
       d3.select(node)
+        .style("fill", groupedTrackStrokeColor(fp))
         .style("opacity", hasSelection ? (isBoatSelected ? 1 : 0.2) : 1)
         .style("pointer-events", noBoatEvents ? "none" : "visiblePainted");
       if (noBoatEvents) {
@@ -1963,10 +2057,10 @@ export default function ManeuverMap(props) {
     // MIX mode: update hover circles pointer-events and remove handlers when non-interactive
     const mixMode = groupDisplayMode() === 'MIX';
     if (maneuverPathsData && maneuverPathsData.length > 0) {
-      maneuverPathsData.forEach((maneuver: { eventId: number; firstPoint: any }) => {
+      maneuverPathsData.forEach((maneuver: ManeuverPathRecord) => {
         const isSelected = isPathSelected(maneuver.firstPoint);
         const noPointerEvents = mixMode && !isSelected;
-        const sel = g.selectAll(`.hover-circle-${maneuver.eventId}`);
+        const sel = ug.selectAll(`.hover-circle-${maneuver.eventId}`);
         sel.style("pointer-events", noPointerEvents ? "none" : "all").style("cursor", noPointerEvents ? "default" : "pointer");
         if (noPointerEvents) {
           sel.on("mouseover", null).on("mouseout", null).on("mousemove", null).on("click", null);
@@ -1977,16 +2071,56 @@ export default function ManeuverMap(props) {
     setTriggerSelection(false);
   }
 
-  let containerRef;
-  let resizeObserver;
+  /** One map track per legend group: same key as selection (getGroupKeyFromItem). VMG matches grouped TimeSeries (groupByKeyName → tws_bin). */
+  function mapGroupedTrackKey(firstPoint: MapTrackPoint | undefined, colorMode: string): string | number {
+    const mode = String(colorMode).toUpperCase();
+    if (mode === 'VMG') {
+      const v = firstPoint?.tws_bin;
+      return v === undefined || v === null ? '' : v;
+    }
+    if (!firstPoint) return '';
+    return getGroupKeyFromItem(firstPoint, colorMode);
+  }
+
+  let containerRef: HTMLDivElement | undefined;
+  let resizeObserver: ResizeObserver | undefined;
+
+  function redrawFromCachedMapdata() {
+    if (!map || updateInProgress || mapdata().length === 0) return;
+    const data = mapdata();
+    const mixMode = groupDisplayMode() === 'MIX';
+    let allTracks: MapTrackPoint[][] = data || [];
+    let groupedTracks: MapTrackPoint[][] | null = null;
+
+    if (data && data.length > 0) {
+      const byGroup = new Map<string | number, MapTrackPoint[]>();
+      const colorMode = color();
+      data.forEach((track: MapTrackPoint[]) => {
+        if (!track || track.length === 0) return;
+        const gval = mapGroupedTrackKey(track[0], colorMode);
+        if (gval === undefined || gval === null || gval === '') return;
+        if (!byGroup.has(gval)) byGroup.set(gval, track);
+      });
+      const onePerGroup = Array.from(byGroup.values());
+      if (onePerGroup.length > 0) {
+        if (mixMode) {
+          groupedTracks = onePerGroup;
+        } else {
+          allTracks = onePerGroup;
+        }
+      }
+    }
+
+    DrawMap(allTracks, groupedTracks);
+    updateSelection();
+  }
 
   function resizeChart() {
-    if (map) {
-      reinitMap();
-      map.invalidateSize(); // Notify Leaflet to adjust the map size
-      drawFeatures();
-      updateMap();
-    }
+    if (!map) return;
+    reinitMap();
+    map.invalidateSize();
+    drawFeatures();
+    untrack(() => redrawFromCachedMapdata());
   }
 
   const updateMap = () => {
@@ -2024,8 +2158,8 @@ export default function ManeuverMap(props) {
       
       // Completely remove all boats and boat circles when phase/eventType changes
       // Use direct SVG selection to ensure clearing works even if g is not available
-      d3.select("#maneuver-map").select("svg").selectAll(".boat").interrupt().remove();
-      d3.select("#maneuver-map").select("svg").selectAll(".boat-circle").interrupt().remove();
+      d3MapPane().select("svg").selectAll(".boat").interrupt().remove();
+      d3MapPane().select("svg").selectAll(".boat-circle").interrupt().remove();
       // Also clear via g if available
       if (g && g.node()) {
         g.selectAll(".boat").interrupt().remove();
@@ -2041,16 +2175,16 @@ export default function ManeuverMap(props) {
       if (result == null || !map) return;
       const data = Array.isArray(result) ? result : result.dataArray;
       const mixMode = groupDisplayMode() === 'MIX';
-      let allTracks = data || [];
-      let groupedTracks: any[][] | null = null;
+      let allTracks: MapTrackPoint[][] = data || [];
+      let groupedTracks: MapTrackPoint[][] | null = null;
 
-      const groupKey = color() === 'SOURCE' ? 'source_name' : color() === 'CONFIG' ? 'Config' : color() === 'STATE' ? 'State' : 'tws_bin';
       if (data && data.length > 0) {
-        const byGroup = new Map<any, any[]>();
-        data.forEach((track: any[]) => {
+        const byGroup = new Map<string | number, MapTrackPoint[]>();
+        const colorMode = color();
+        data.forEach((track: MapTrackPoint[]) => {
           if (!track || track.length === 0) return;
-          const gval = track[0][groupKey];
-          if (gval === undefined || gval === null) return;
+          const gval = mapGroupedTrackKey(track[0], colorMode);
+          if (gval === undefined || gval === null || gval === '') return;
           if (!byGroup.has(gval)) byGroup.set(gval, track);
         });
         const onePerGroup = Array.from(byGroup.values());
@@ -2067,20 +2201,44 @@ export default function ManeuverMap(props) {
       updateSelection();
       setFirstLoad(false);
       updateInProgress = false;
+      if (props.instanceId) {
+        setLoading(false);
+      } else {
+        setTimeout(() => {
+          if (!map) return;
+          setLoading(false);
+        }, 500);
+      }
       if (triggerUpdate()) {
         setTriggerUpdate(false);
-        queueMicrotask(() => setTriggerUpdate(true));
+        const fc = filtered().length;
+        lastFilteredCount = fc;
+        if (fc > 0) {
+          filteredWatcherTriggered = true;
+        }
+        queueMicrotask(() => {
+          if (untrack(() => updateInProgress)) return;
+          untrack(() => updateMap());
+        });
       }
-      setTimeout(() => {
-        if (!map) return;
-        setLoading(false);
-      }, 500);
     }).catch((error) => {
       if (map) {
         logError('🗺️ Map.jsx: Error in updateMap fetchData', error);
         setLoading(false);
       }
       updateInProgress = false;
+      if (triggerUpdate()) {
+        setTriggerUpdate(false);
+        const fc = filtered().length;
+        lastFilteredCount = fc;
+        if (fc > 0) {
+          filteredWatcherTriggered = true;
+        }
+        queueMicrotask(() => {
+          if (untrack(() => updateInProgress)) return;
+          untrack(() => updateMap());
+        });
+      }
     });
   };
 
@@ -2089,8 +2247,7 @@ export default function ManeuverMap(props) {
     // Only initialize once
     if (mapInitialized()) return;
     
-    // Wait for the maneuver-map element to exist in the DOM
-    const maneuverMapElement = document.getElementById('maneuver-map');
+    const maneuverMapElement = document.getElementById(maneuverMapElementId());
     
     if (maneuverMapElement && !map) {
       // DOM is ready, initialize map
@@ -2122,13 +2279,11 @@ export default function ManeuverMap(props) {
   });
 
   // Function to perform the GRADE update
-  const performGradeUpdate = async (gradeValue, selected) => {
+  const performGradeUpdate = async (gradeValue: string, selected: number[]) => {
     // Get required values from persistent store
-    const { selectedClassName, selectedProjectId, selectedDatasetId, selectedSourceId } = persistantStore;
+    const { selectedClassName, selectedProjectId } = persistantStore;
     const className = selectedClassName();
     const projectId = selectedProjectId();
-    const datasetId = selectedDatasetId();
-    const sourceId = selectedSourceId();
     
     if (!className || !projectId) {
       logError('Cannot update GRADE: missing class_name or project_id');
@@ -2188,7 +2343,7 @@ export default function ManeuverMap(props) {
   onMount(() => {
     requestAnimationFrame(() => {
       if (mapInitialized() || map) return;
-      const el = document.getElementById('maneuver-map');
+      const el = document.getElementById(maneuverMapElementId());
       if (!el) return;
       initMap();
       if (!map) return;
@@ -2207,7 +2362,7 @@ export default function ManeuverMap(props) {
       }
     });
 
-    resizeObserver = new ResizeObserver((entries) => {
+    resizeObserver = new ResizeObserver((_entries) => {
       resizeChart();
     });
 
@@ -2218,10 +2373,10 @@ export default function ManeuverMap(props) {
     window.addEventListener('resize', resizeChart);
     
     // Add keyboard listener for GRADE updates (0-5 keys)
-    const handleKeyPress = (event) => {
+    const handleKeyPress = (event: KeyboardEvent) => {
       try {
         // Don't trigger if user is typing in an input field or textarea
-        const target = event.target;
+        const target = event.target as HTMLElement | null;
         if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
           return;
         }
@@ -2286,7 +2441,7 @@ export default function ManeuverMap(props) {
         // User confirmed - proceed with the update
         // Call asynchronously to avoid blocking the keydown handler
         setTimeout(() => {
-          performGradeUpdate(gradeValue, selected).catch(error => {
+          performGradeUpdate(String(gradeValue), selected).catch((error: unknown) => {
             logError('Error in performGradeUpdate:', error);
           });
         }, 0);
@@ -2316,8 +2471,15 @@ export default function ManeuverMap(props) {
     const inProgress = untrack(() => updateInProgress);
 
     if (!hasUpdate || !isReady) return;
+    if (inProgress) {
+      return;
+    }
     setTriggerUpdate(false);
-    if (inProgress) return;
+    const fc = filtered().length;
+    lastFilteredCount = fc;
+    if (fc > 0) {
+      filteredWatcherTriggered = true;
+    }
     queueMicrotask(() => {
       if (untrack(() => updateInProgress)) return;
       untrack(() => updateMap());
@@ -2327,8 +2489,6 @@ export default function ManeuverMap(props) {
   // Watch for filtered data changes - update map when data becomes available and map is ready
   // This serves as a backup in case triggerUpdate doesn't fire or gets cleared
   // BUT: Only use this if triggerUpdate is NOT set, to avoid duplicate updates
-  let lastFilteredCount = 0;
-  let filteredWatcherTriggered = false;
   createEffect(() => {
     const currentFilteredCount = filtered().length;
     const isReady = untrack(() => mapInitialized() && map);
@@ -2422,25 +2582,30 @@ export default function ManeuverMap(props) {
     }
   });
 
-  // Watch for color changes (all color types) - update map when color changes
-  // This ensures the maneuver window updates when color changes in the main window
-  createEffect(() => {
-    const currentColor = color();
-    const isReady = untrack(() => mapInitialized() && map && svg && g);
-    
-    // Update selection and rebuild color scale when color changes and map is ready
-    if (isReady && mapdata().length > 0) {
-      debug('Map: Color changed, rebuilding color scale and updating selection');
-      // Use untrack to prevent InitScales and updateSelection from creating reactive dependencies
-      untrack(() => {
-        InitScales();
-        updateSelection();
-      });
-    }
-  });
+  createEffect(
+    on(
+      color,
+      () => {
+        const isReady = untrack(() => mapInitialized() && map && svg && g);
+        if (isReady && untrack(() => mapdata().length > 0)) {
+          debug('Map: Color changed, rebuilding color scale and updating selection');
+          untrack(() => {
+            InitScales();
+            updateSelection();
+          });
+        }
+      },
+      { defer: true }
+    )
+  );
 
   onCleanup(() => {
     setMapInitialized(false);
+    try {
+      d3MapPane().select("svg").selectAll("*").remove();
+    } catch {
+      // SVG might not exist
+    }
     if (map) {
       try {
         map.remove();
@@ -2461,7 +2626,7 @@ export default function ManeuverMap(props) {
   return (
     <>
       {firstload() && <Loading />}
-      <div ref={el => containerRef = el} class="maneuver-map-container" style={{
+      <div ref={(el) => { containerRef = el ?? undefined; }} class="maneuver-map-container" style={{
           "opacity": loading() ? 0.2 : 1, 
           "pointer-events": loading() ? "none" : "auto", 
           "transition": "opacity 0.5s ease",
@@ -2471,7 +2636,7 @@ export default function ManeuverMap(props) {
           "flex-direction": "column",
           "padding-right": "25px",
         }}>
-        <div id="maneuver-map" class="maneuver-map" style={{
+        <div id={maneuverMapElementId()} class="maneuver-map" style={{
             "flex": "1",
             "width": "100%",
             "height": "100%",

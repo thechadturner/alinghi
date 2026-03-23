@@ -21,11 +21,22 @@ import { sourcesStore } from "../../../store/sourcesStore";
 import ManeuverLegend from "../../legends/Maneuver";
 import { createMemo } from "solid-js";
 
+function escapeSelectorId(id: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(id);
+  }
+  return id.replace(/([!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
+}
+
 interface TimeSeriesProps {
   context?: 'dataset' | 'fleet' | 'historical';
   description?: string;
   onDataUpdate?: () => void;
   onLegendClick?: (legendItem: string) => void;
+  /** Prefix for chart DOM ids when multiple TimeSeries instances exist (e.g. maneuver window). */
+  instanceId?: string;
+  /** Override default legend anchor id (defaults to maneuver-legend-timeseries or maneuver-legend-timeseries-{instanceId}). */
+  legendElementId?: string;
 }
 
 interface TimeSeriesDataPoint {
@@ -59,6 +70,10 @@ export default function TimeSeries(props: TimeSeriesProps) {
     return chartHeightWithMargin * 3; // 3 charts above and below viewport
   };
   let intersectionObservers = new Map<string, IntersectionObserver>();
+  /** Coalesce rapid effect/onMount paths into one fetch (avoids fetch + console spam). */
+  let updateTimeSeriesDebounce: ReturnType<typeof setTimeout> | null = null;
+  /** Dedupe noisy debug when chart list unchanged across refetches. */
+  let lastExtractedChartsLogKey = '';
   let storedMouseHandlers = new Map<string, {
     mouseover: ((event: MouseEvent, d: TimeSeriesDataPoint[]) => void) | null;
     mouseout: (() => void) | null;
@@ -73,6 +88,16 @@ export default function TimeSeries(props: TimeSeriesProps) {
   let chartHeight = 200
   let chartWidth = 1280
   let containerRef: HTMLDivElement | null = null
+  let plotsEl: HTMLDivElement | null = null
+
+  const domIdPrefix = () => (props.instanceId ? `${props.instanceId}-` : "");
+  const resolvedLegendElementId = () =>
+    props.legendElementId ??
+    (props.instanceId ? `maneuver-legend-timeseries-${props.instanceId}` : "maneuver-legend-timeseries");
+
+  let lastResizeObservedWidth = 0;
+  let lastAppliedLayoutHeightPx = 0;
+  let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Using global color scale for consistency
   let myColorScale: d3.ScaleLinear<number, string> | d3.ScaleThreshold<number, string> | d3.ScaleOrdinal<string | number, string> = d3.scaleLinear<number, string>()
@@ -179,7 +204,11 @@ export default function TimeSeries(props: TimeSeriesProps) {
             if (firstJson.charts && Array.isArray(firstJson.charts)) {
               charts = firstJson.charts;
               setChartsFromData(charts);
-              debug('TimeSeries: Extracted charts from first item:', charts);
+              const digest = charts.join('\0');
+              if (digest !== lastExtractedChartsLogKey) {
+                lastExtractedChartsLogKey = digest;
+                debug('TimeSeries: Extracted charts from first item:', charts);
+              }
             }
           } catch (parseError) {
             debug('TimeSeries: Error parsing json from first item:', parseError);
@@ -192,7 +221,11 @@ export default function TimeSeries(props: TimeSeriesProps) {
         if (responseObj.charts && Array.isArray(responseObj.charts)) {
           charts = responseObj.charts;
           setChartsFromData(charts);
-          debug('TimeSeries: Using charts from top-level response:', charts);
+          const digestTop = charts.join('\0');
+          if (digestTop !== lastExtractedChartsLogKey) {
+            lastExtractedChartsLogKey = digestTop;
+            debug('TimeSeries: Using charts from top-level response:', charts);
+          }
         } else if (json_data.length > 0 && json_data[0].json) {
           // Fallback: extract from first item's json field
           try {
@@ -202,7 +235,11 @@ export default function TimeSeries(props: TimeSeriesProps) {
             if (firstJson.charts && Array.isArray(firstJson.charts)) {
               charts = firstJson.charts;
               setChartsFromData(charts);
-              debug('TimeSeries: Extracted charts from first item (fallback):', charts);
+              const digest = charts.join('\0');
+              if (digest !== lastExtractedChartsLogKey) {
+                lastExtractedChartsLogKey = digest;
+                debug('TimeSeries: Extracted charts from first item (fallback):', charts);
+              }
             }
           } catch (parseError) {
             debug('TimeSeries: Error parsing json from first item:', parseError);
@@ -465,7 +502,13 @@ export default function TimeSeries(props: TimeSeriesProps) {
   }
 
   function buildTimeSeries(data: TimeSeriesDataPoint[][]) {
-    d3.select("#plots").selectAll("*").remove()
+    if (!plotsEl) {
+      debug("TimeSeries: plots container not ready, skip buildTimeSeries");
+      return;
+    }
+    const idp = domIdPrefix();
+    const plotsSelection = d3.select(plotsEl);
+    plotsSelection.selectAll("*").remove();
 
     // Clean up existing observers
     intersectionObservers.forEach((observer) => {
@@ -524,11 +567,13 @@ export default function TimeSeries(props: TimeSeriesProps) {
       eidArray = []
 
       for (let c = 1; c < ts_columns.length + 1; c++) {
-        const channel = ts_columns[c - 1]
-        const chartId = `timeseries-chart-${channel}`;
+        const channel = ts_columns[c - 1];
+        const channelSlug = String(channel).replace(/[^a-zA-Z0-9_-]/g, "_");
+        const chartId = `${idp}timeseries-chart-${channelSlug}`;
+        const svgPlotId = `${idp}ts${c}`;
 
         // Create a wrapper div for each chart with fixed width and unique ID
-        const chartWrapper = d3.select("#plots")
+        const chartWrapper = plotsSelection
           .append("div")
           .attr("class", "timeseries-chart-wrapper")
           .attr("id", chartId)
@@ -539,7 +584,7 @@ export default function TimeSeries(props: TimeSeriesProps) {
 
         // Create SVG container (will be populated when visible)
         chartWrapper.append("svg")
-          .attr("id", "ts"+c) 
+          .attr("id", svgPlotId)
           .attr("class", "ts")
           .attr("width", chartWidth)
           .attr("height", chartHeight);
@@ -553,33 +598,36 @@ export default function TimeSeries(props: TimeSeriesProps) {
                 const currentVisibility = chartVisibility();
                 const wasVisible = currentVisibility.get(chartId) || false;
                 const isVisible = entry.isIntersecting;
-                
-                // Update visibility state
-                const newVisibility = new Map(currentVisibility);
-                newVisibility.set(chartId, isVisible);
-                setChartVisibility(newVisibility);
 
                 // Manual viewport check to verify actual visibility
                 const rect = chartElement.getBoundingClientRect();
                 const isActuallyVisible = rect && rect.top < window.innerHeight && rect.bottom > 0 && rect.width > 0 && rect.height > 0;
 
+                // Avoid signal churn on every IO callback when intersection state did not change
+                if (wasVisible !== isVisible) {
+                  const newVisibility = new Map(currentVisibility);
+                  newVisibility.set(chartId, isVisible);
+                  setChartVisibility(newVisibility);
+                }
+
                 // Key fix: Render if EITHER IntersectionObserver says visible OR manual check says visible
                 // This handles cases where observer hasn't fired yet or missed the chart
                 if (isVisible || isActuallyVisible) {
-                  const plot = d3.select(`#ts${c}`);
-                  const hasBody = !plot.select("#body"+c).empty();
+                  const plot = d3.select(plotsEl!).select(`#${escapeSelectorId(svgPlotId)}`);
+                  const bodyId = `${idp}body${c}`;
+                  const hasBody = !plot.select(`#${escapeSelectorId(bodyId)}`).empty();
                   
                   if (!hasBody) {
                     // Chart needs to be rendered
                     plot.append("g")
-                      .attr("id", "body"+c)
+                      .attr("id", bodyId)
                       .attr("transform", "translate(20, 5)");
-                    const body = plot.select("#body"+c);
+                    const body = plot.select(`#${escapeSelectorId(bodyId)}`);
                     drawTimeSeries(c - 1, body, data, channel);
                   }
                 } else if (!isVisible && wasVisible && !isActuallyVisible) {
                   // Chart left viewport - only remove if actually not visible (double-check)
-                  const plot = d3.select(`#ts${c}`);
+                  const plot = d3.select(plotsEl!).select(`#${escapeSelectorId(svgPlotId)}`);
                   plot.selectAll("*").remove();
                   // Remove stored handlers for this chart
                   storedMouseHandlers.delete(chartId);
@@ -602,17 +650,18 @@ export default function TimeSeries(props: TimeSeriesProps) {
             const rect = chartElement.getBoundingClientRect();
             const isInitiallyVisible = rect && rect.top < window.innerHeight && rect.bottom > 0 && rect.width > 0 && rect.height > 0;
             if (isInitiallyVisible) {
-              const plot = d3.select(`#ts${c}`);
-              const hasBody = !plot.select("#body"+c).empty();
+              const bodyId = `${idp}body${c}`;
+              const plot = d3.select(plotsEl!).select(`#${escapeSelectorId(svgPlotId)}`);
+              const hasBody = !plot.select(`#${escapeSelectorId(bodyId)}`).empty();
               if (!hasBody) {
                 // Set visibility BEFORE drawTimeSeries so tooltip hover circles are added on first paint
                 const newVisibility = new Map(chartVisibility());
                 newVisibility.set(chartId, true);
                 setChartVisibility(newVisibility);
                 plot.append("g")
-                  .attr("id", "body"+c)
+                  .attr("id", bodyId)
                   .attr("transform", "translate(20, 5)");
-                const body = plot.select("#body"+c);
+                const body = plot.select(`#${escapeSelectorId(bodyId)}`);
                 drawTimeSeries(c - 1, body, data, channel);
               }
             }
@@ -622,7 +671,7 @@ export default function TimeSeries(props: TimeSeriesProps) {
 
       // Add a fake chart at the end to ensure last chart is fully visible when scrolling
       // This matches the structure of real charts to improve scroll behavior
-      const fakeChartWrapper = d3.select("#plots")
+      const fakeChartWrapper = plotsSelection
         .append("div")
         .attr("class", "timeseries-chart-wrapper")
         .style("width", `${chartWidth}px`)
@@ -631,7 +680,7 @@ export default function TimeSeries(props: TimeSeriesProps) {
         .style("opacity", "0"); // Make it invisible but still take up space
 
       fakeChartWrapper.append("svg")
-        .attr("id", "ts-spacer")
+        .attr("id", `${idp}ts-spacer`)
         .attr("class", "ts")
         .attr("width", chartWidth)
         .attr("height", chartHeight * 0.5); // Reduced - container height now properly calculated
@@ -1568,11 +1617,16 @@ export default function TimeSeries(props: TimeSeriesProps) {
 
     // Batch DOM updates using requestAnimationFrame for better performance
     requestAnimationFrame(() => {
-      let charts = document.getElementsByClassName("ts");
+      const charts = plotsEl ? plotsEl.getElementsByClassName("ts") : [];
+      const idp = domIdPrefix();
 
       if (hasSelection) {
         for (let i = 1; i < charts.length + 1; i++) {
-          const chartBody = d3.select("#plots").select("#ts"+i).select("#body"+i);
+          const tsId = `${idp}ts${i}`;
+          const bodyId = `${idp}body${i}`;
+          const chartBody = plotsEl
+            ? d3.select(plotsEl).select(`#${escapeSelectorId(tsId)}`).select(`#${escapeSelectorId(bodyId)}`)
+            : d3.select(null);
           if (chartBody.empty()) continue;
           
           // Get all lines at once instead of filtering twice
@@ -1630,7 +1684,11 @@ export default function TimeSeries(props: TimeSeriesProps) {
       } else {
         // No selection - restore original colors
         for (let i = 1; i < charts.length + 1; i++) {
-          const chartBody = d3.select("#plots").select("#ts"+i).select("#body"+i);
+          const tsId = `${idp}ts${i}`;
+          const bodyId = `${idp}body${i}`;
+          const chartBody = plotsEl
+            ? d3.select(plotsEl).select(`#${escapeSelectorId(tsId)}`).select(`#${escapeSelectorId(bodyId)}`)
+            : d3.select(null);
           if (chartBody.empty()) continue;
           
           const allLines = chartBody.selectAll(".linePath");
@@ -1732,7 +1790,21 @@ export default function TimeSeries(props: TimeSeriesProps) {
   // Function to calculate and set container height
   const updateContainerHeight = () => {
     if (!containerRef) return;
-    
+
+    // Solo ManeuverWindow: flex + scaling use real #main-content box; inline px height fights CSS and
+    // double-subtracts space meant for the main maneuvers control bar.
+    if (props.instanceId) {
+      containerRef.style.removeProperty("height");
+      containerRef.style.removeProperty("max-height");
+      const tsArea = document.querySelector(`[data-maneuver-ts-area="${props.instanceId}"]`);
+      if (tsArea instanceof HTMLElement) {
+        tsArea.style.removeProperty("min-height");
+        tsArea.style.removeProperty("height");
+      }
+      lastAppliedLayoutHeightPx = 0;
+      return;
+    }
+
     // Find the media-container parent that has the scale transform
     let parent = containerRef.parentElement;
     let mediaContainer: HTMLElement | null = null;
@@ -1763,22 +1835,31 @@ export default function TimeSeries(props: TimeSeriesProps) {
       }
     }
     
-    // Get the legend element to account for its height
-    const legendElement = document.getElementById('maneuver-legend-timeseries');
+    // Get the legend element to account for its height (scoped id when instanceId is set)
+    const legendElement = document.getElementById(resolvedLegendElementId());
     const legendHeight = legendElement ? legendElement.getBoundingClientRect().height : 50; // Default to 50px if not found
     
     // In split view use the same height logic as fullscreen: fill the available space (match setupMediaContainerScaling formula)
     const splitPanel = mediaContainer?.closest('.split-panel') as HTMLElement | null;
     const headerHeight = 60; // Account for header (only in fullscreen); matches maneuvers-page reserve in global.ts
     const padding = 20; // Some padding for spacing
+    const inManeuverWindow = Boolean(props.instanceId);
     let availableViewportHeight: number;
     if (splitPanel) {
       // Use panel height minus 60px reserve (same as setupMediaContainerScaling for maneuvers-page) so we fill the panel regardless of timing
       availableViewportHeight = Math.max(200, splitPanel.clientHeight - 60);
+    } else if (inManeuverWindow) {
+      // Solo maneuver window: Window hides header; #main-content is the scroll/flex viewport
+      const mainContent = document.getElementById("main-content");
+      availableViewportHeight = Math.max(
+        200,
+        mainContent?.clientHeight ?? window.innerHeight
+      );
     } else {
       availableViewportHeight = window.innerHeight;
     }
-    const effectiveHeaderHeight = splitPanel ? 0 : headerHeight;
+    // ManeuverWindow uses hideHeader — do not subtract a phantom 60px header band
+    const effectiveHeaderHeight = splitPanel || inManeuverWindow ? 0 : headerHeight;
     const desiredVisibleHeight = availableViewportHeight - effectiveHeaderHeight - legendHeight - padding;
     
     // When content is scaled down, we need MORE layout height to achieve the desired visible height
@@ -1800,13 +1881,21 @@ export default function TimeSeries(props: TimeSeriesProps) {
       containerComputedHeight: getComputedStyle(containerRef).height
     });
     
+    const layoutPx = Math.max(400, layoutHeight);
+    if (lastAppliedLayoutHeightPx > 0 && Math.abs(layoutPx - lastAppliedLayoutHeightPx) < 3) {
+      return;
+    }
+    lastAppliedLayoutHeightPx = layoutPx;
+
     // Set height to fill available space (use !important to override CSS)
-    const heightValue = `${Math.max(400, layoutHeight)}px`;
+    const heightValue = `${layoutPx}px`;
     containerRef.style.setProperty('height', heightValue, 'important');
     containerRef.style.setProperty('max-height', heightValue, 'important');
     
-    // Also ensure the parent #timeseries-area can accommodate this height
-    const timeseriesArea = document.getElementById('timeseries-area');
+    // Parent timeseries region: prefer data attribute when instance-scoped
+    const timeseriesArea = props.instanceId
+      ? document.querySelector(`[data-maneuver-ts-area="${props.instanceId}"]`)
+      : document.getElementById('timeseries-area');
     if (timeseriesArea) {
       // Set min-height to ensure it can accommodate the child
       timeseriesArea.style.setProperty('min-height', heightValue, 'important');
@@ -1826,29 +1915,47 @@ export default function TimeSeries(props: TimeSeriesProps) {
 
   onMount(() => {
     const cleanupFns: (() => void)[] = [];
-    updateTimeSeries();
+    // Initial load: triggerUpdate + filtered() effects call updateTimeSeries (avoid triple fetch with onMount)
 
     // Calculate and set container height
     setTimeout(() => {
       updateContainerHeight();
     }, 100);
 
-    // Set up resize observer for responsive charts
-    const resizeObserver = new ResizeObserver(() => {
-      if (tsdata().length > 0) {
-        buildTimeSeries(tsdata());
+    const RESIZE_DEBOUNCE_MS = 120;
+    const WIDTH_EPS = 2;
+
+    const runDebouncedResize = () => {
+      if (resizeDebounceTimer) {
+        clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = null;
       }
-      // Update container height on resize
-      updateContainerHeight();
+      resizeDebounceTimer = setTimeout(() => {
+        resizeDebounceTimer = null;
+        const w = plotsEl?.clientWidth ?? containerRef?.clientWidth ?? 0;
+        const widthChanged = Math.abs(w - lastResizeObservedWidth) > WIDTH_EPS;
+        if (w > 0) {
+          lastResizeObservedWidth = w;
+        }
+        // Rebuild when width meaningfully changes. Previously we skipped ResizeObserver for instanceId
+        // (maneuver popup) to avoid scrollbar/flex oscillation — that blocked reflow when only the
+        // container grew (split drag or popup resize without a reliable window resize event).
+        if (tsdata().length > 0 && widthChanged) {
+          updateChartWidth();
+          buildTimeSeries(tsdata());
+        }
+        updateContainerHeight();
+      }, RESIZE_DEBOUNCE_MS);
+    };
+
+    // Set up resize observer for responsive charts (debounced; rebuild only on meaningful width change)
+    const resizeObserver = new ResizeObserver(() => {
+      runDebouncedResize();
     });
 
     // Window resize handler as fallback
     const handleWindowResize = () => {
-      if (tsdata().length > 0) {
-        buildTimeSeries(tsdata());
-      }
-      // Update container height on window resize
-      updateContainerHeight();
+      runDebouncedResize();
     };
 
     // Use setTimeout to ensure containerRef is available
@@ -1957,7 +2064,9 @@ export default function TimeSeries(props: TimeSeriesProps) {
     onCleanup(() => {
       // Clean up D3 selections and SVG elements
       try {
-        d3.select("#plots").selectAll("*").remove();
+        if (plotsEl) {
+          d3.select(plotsEl).selectAll("*").remove();
+        }
       } catch (error) {
         logError('TimeSeries: Error cleaning up D3 selections:', error);
       }
@@ -1971,6 +2080,11 @@ export default function TimeSeries(props: TimeSeriesProps) {
       resizeObserver.disconnect();
       window.removeEventListener('resize', handleWindowResize);
       window.removeEventListener('keydown', handleKeyPress);
+
+      if (resizeDebounceTimer) {
+        clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = null;
+      }
 
       // Clear any pending selection updates
       if (selectionUpdateTimeout) {
@@ -1993,27 +2107,80 @@ export default function TimeSeries(props: TimeSeriesProps) {
     });
   });
 
-  const updateTimeSeries = () => {
-    setLoading(true);
-    fetchData().then((data) => {
-      // buildTimeSeries will use charts from timeseries data if available
-      buildTimeSeries(data);
-      setFirstLoad(false)
-      setTimeout(() => {
-        setLoading(false);
-        // Ensure selection colors are applied after initial render
-        // This is important when switching from Scatter to TimeSeries
-        if (selectedEvents().length > 0 && tsdata().length > 0) {
-          updateSelection();
+  // Shared with trigger + filtered effects: backup must not schedule after trigger path cleared the flag (same commit).
+  let lastFilteredCount = 0;
+  let lastFilteredHash = '';
+  let filteredUpdateTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const getFilteredHash = (arr: unknown[]): string => {
+    if (!Array.isArray(arr) || arr.length === 0) return '';
+    if (typeof arr[0] === 'number') {
+      const sorted = [...(arr as number[])].sort((a, b) => a - b);
+      return sorted.slice(0, 10).join(',') + `_${arr.length}`;
+    }
+    const ids = (arr as { event_id?: number }[])
+      .map((o) => o?.event_id)
+      .filter((id): id is number => typeof id === 'number');
+    const sorted = [...ids].sort((a, b) => a - b);
+    return sorted.slice(0, 10).join(',') + `_${arr.length}`;
+  };
+
+  const flushUpdateTimeSeries = () => {
+    if (firstload()) {
+      setLoading(true);
+    }
+    fetchData()
+      .then((data) => {
+        // buildTimeSeries will use charts from timeseries data if available
+        buildTimeSeries(data);
+        setFirstLoad(false);
+      })
+      .catch((err: unknown) => {
+        logError("TimeSeries: Failed to refresh time series data", err);
+      })
+      .finally(() => {
+        // Always clear loading (buildTimeSeries throw or fetch failure left it stuck at 0.2 opacity before).
+        // Always sync line styles to current selection after refresh — clearing selection must restore full opacity like initial load.
+        const clearAfterLoad = () => {
+          setLoading(false);
+          if (tsdata().length > 0) {
+            updateSelection();
+          }
+        };
+        // ManeuverWindow: no 500ms fade hold — charts should go to full opacity as soon as data is built.
+        if (props.instanceId) {
+          queueMicrotask(clearAfterLoad);
+        } else {
+          setTimeout(clearAfterLoad, 500);
         }
-      }, 500);
-    });
+      });
+  };
+
+  /** Debounce: multiple effects (trigger, filtered backup, description) must not each start a full fetch. */
+  const updateTimeSeries = () => {
+    if (updateTimeSeriesDebounce) {
+      clearTimeout(updateTimeSeriesDebounce);
+    }
+    const ms = firstload() ? 0 : 48;
+    updateTimeSeriesDebounce = setTimeout(() => {
+      updateTimeSeriesDebounce = null;
+      flushUpdateTimeSeries();
+    }, ms);
   };
 
   createEffect(() => {
     if (triggerUpdate()) {
       setTriggerUpdate(false);
-      // Defer so filtered() is committed before we read it (avoids race with setFiltered in applyFilters)
+      if (filteredUpdateTimeout) {
+        clearTimeout(filteredUpdateTimeout);
+        filteredUpdateTimeout = null;
+      }
+      const arr = filtered();
+      const n = Array.isArray(arr) ? arr.length : 0;
+      if (n > 0) {
+        lastFilteredHash = getFilteredHash(arr);
+        lastFilteredCount = n;
+      }
       queueMicrotask(() => {
         updateTimeSeries();
       });
@@ -2023,23 +2190,12 @@ export default function TimeSeries(props: TimeSeriesProps) {
   // Watch for filtered data changes - update timeseries when data becomes available
   // This serves as a backup in case triggerUpdate doesn't fire or gets cleared
   // Use debouncing to handle rapid re-renders during initial load
-  let lastFilteredCount = 0;
-  let lastFilteredHash = '';
-  let filteredUpdateTimeout: NodeJS.Timeout | null = null;
   createEffect(() => {
     const currentFiltered = filtered();
     const currentFilteredCount = currentFiltered?.length || 0;
     const hasTriggerUpdate = untrack(() => triggerUpdate());
-    
-    // Build a stable hash: support both number[] (event IDs) and object[] (ManeuverData with event_id)
-    const getHash = (arr: unknown[]) => {
-      if (!Array.isArray(arr) || arr.length === 0) return '';
-      const ids = typeof arr[0] === 'number'
-        ? (arr as number[]).slice(0, 10)
-        : (arr as { event_id?: number }[]).slice(0, 10).map((o) => o?.event_id);
-      return ids.join(',') + `_${arr.length}`;
-    };
-    const filteredHash = getHash(Array.isArray(currentFiltered) ? currentFiltered : []);
+
+    const filteredHash = getFilteredHash(Array.isArray(currentFiltered) ? currentFiltered : []);
     
     // Clear any pending timeout
     if (filteredUpdateTimeout) {
@@ -2062,7 +2218,7 @@ export default function TimeSeries(props: TimeSeriesProps) {
       const delay = justGotData ? 50 : 100; // Shorter delay when we first get data so timeseries loads promptly
       filteredUpdateTimeout = setTimeout(() => {
         const stillHasTrigger = untrack(() => triggerUpdate());
-        const currentHash = getHash(Array.isArray(filtered()) ? filtered() : []);
+        const currentHash = getFilteredHash(Array.isArray(filtered()) ? filtered() : []);
         const shouldUpdate =
           !stillHasTrigger &&
           (currentHash !== lastFilteredHash || justGotData) &&
@@ -2086,6 +2242,10 @@ export default function TimeSeries(props: TimeSeriesProps) {
     if (filteredUpdateTimeout) {
       clearTimeout(filteredUpdateTimeout);
       filteredUpdateTimeout = null;
+    }
+    if (updateTimeSeriesDebounce) {
+      clearTimeout(updateTimeSeriesDebounce);
+      updateTimeSeriesDebounce = null;
     }
   });
 
@@ -2242,14 +2402,14 @@ export default function TimeSeries(props: TimeSeriesProps) {
           "pointer-events": loading() ? "none" : "auto"
         }}>
         <ManeuverLegend
-          elementId="maneuver-legend-timeseries"
+          elementId={resolvedLegendElementId()}
           target_info={{}}
           groups={getLegendGroups().groups}
           colorScale={getLegendGroups().colorScale}
           color={color() || 'TWS'}
           click={props.onLegendClick}
         />
-        <div id="plots" class="maneuver-time-series"></div>
+        <div class="maneuver-time-series maneuver-ts-plots-root" ref={(el) => { plotsEl = el; }} />
       </div>
       <Portal mount={typeof document !== "undefined" ? document.body : undefined}>
         <div id="maneuver-timeseries-tooltip" class="tooltip" style={{

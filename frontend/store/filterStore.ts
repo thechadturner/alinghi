@@ -4,6 +4,10 @@
  * Filters are separated by context: maneuvers, aggregates, timeseries.
  * Setting a maneuver filter (e.g. grade 1) does not affect aggregates or timeseries.
  *
+ * Maneuver **selection** signals (selected*Maneuvers, maneuverTrainingRacing) use createSyncSignal with
+ * autoSync: false so IndexedDB does not propagate them across tabs. The main dashboard applies changes
+ * via setters; Sidebar forwards `getManeuverWindowsFilterBroadcastPayload()` to maneuver popups by postMessage.
+ *
  * @module filterStore
  */
 
@@ -52,6 +56,8 @@ const getFilterSnapshot = (): Record<string, unknown> => {
     if (selectedRacesManeuversState) snap.selectedRacesManeuvers = Array.isArray(selectedRacesManeuversState()) ? selectedRacesManeuversState() : [];
     if (selectedLegsManeuversState) snap.selectedLegsManeuvers = Array.isArray(selectedLegsManeuversState()) ? selectedLegsManeuversState() : [];
     if (selectedGradesManeuversState) snap.selectedGradesManeuvers = Array.isArray(selectedGradesManeuversState()) ? selectedGradesManeuversState() : [];
+    if (maneuverTrainingRacingState) snap.maneuverTrainingRacing = maneuverTrainingRacingState() ?? null;
+    if (maneuverTimeseriesDescriptionState) snap.maneuverTimeseriesDescription = String(maneuverTimeseriesDescriptionState() ?? 'BASICS');
     if (selectedStatesAggregatesState) snap.selectedStatesAggregates = Array.isArray(selectedStatesAggregatesState()) ? selectedStatesAggregatesState() : [];
     if (selectedRacesAggregatesState) snap.selectedRacesAggregates = Array.isArray(selectedRacesAggregatesState()) ? selectedRacesAggregatesState() : [];
     if (selectedLegsAggregatesState) snap.selectedLegsAggregates = Array.isArray(selectedLegsAggregatesState()) ? selectedLegsAggregatesState() : [];
@@ -69,10 +75,38 @@ const getFilterSnapshot = (): Record<string, unknown> => {
       selectedHeadsailCodes: [], selectedMainsailCodes: [], headsailCodeOptions: [], mainsailCodeOptions: [],
       selectedStatesManeuvers: [], selectedRacesManeuvers: [], selectedLegsManeuvers: [], selectedGradesManeuvers: [],
       selectedStatesAggregates: [], selectedRacesAggregates: [], selectedLegsAggregates: [], selectedGradesAggregates: [],
-      selectedStatesTimeseries: [], selectedRacesTimeseries: [], selectedLegsTimeseries: [], selectedGradesTimeseries: []
+      selectedStatesTimeseries: [], selectedRacesTimeseries: [], selectedLegsTimeseries: [], selectedGradesTimeseries: [],
+      maneuverTrainingRacing: null,
+      maneuverTimeseriesDescription: 'BASICS',
     };
   }
 };
+
+/** Filter keys sent to maneuver popup windows when the main page changes filters (Sidebar postMessage). */
+const MANEUVER_WINDOWS_FILTER_BROADCAST_KEYS = [
+  'selectedStatesManeuvers',
+  'selectedRacesManeuvers',
+  'selectedLegsManeuvers',
+  'selectedGradesManeuvers',
+  'maneuverTrainingRacing',
+  'raceOptions',
+  'legOptions',
+  'gradeOptions',
+  'maneuverTimeseriesDescription',
+] as const;
+
+/**
+ * Snapshot slice for maneuver popups: always matches main dashboard filterStore for these keys.
+ * Used instead of partial dirty payloads so children never miss a field when the main page updates.
+ */
+export function getManeuverWindowsFilterBroadcastPayload(): Record<string, unknown> {
+  const snap = getFilterSnapshot();
+  const out: Record<string, unknown> = {};
+  for (const k of MANEUVER_WINDOWS_FILTER_BROADCAST_KEYS) {
+    if (snap[k] !== undefined) out[k] = snap[k];
+  }
+  return out;
+}
 
 const scheduleBroadcast = () => {
   if (pendingBroadcast || isUpdatingFromCrossWindow) return;
@@ -153,6 +187,10 @@ if (typeof window !== 'undefined') {
       if (payload.selectedRacesManeuvers !== undefined) setSelectedRacesManeuversState(payload.selectedRacesManeuvers);
       if (payload.selectedLegsManeuvers !== undefined) setSelectedLegsManeuversState(payload.selectedLegsManeuvers);
       if (payload.selectedGradesManeuvers !== undefined) setSelectedGradesManeuversState(payload.selectedGradesManeuvers);
+      if (payload.maneuverTrainingRacing !== undefined) setManeuverTrainingRacingState(payload.maneuverTrainingRacing as 'TRAINING' | 'RACING' | null);
+      if (payload.maneuverTimeseriesDescription !== undefined) {
+        setManeuverTimeseriesDescriptionState(String(payload.maneuverTimeseriesDescription));
+      }
       if (payload.selectedStatesAggregates !== undefined) setSelectedStatesAggregatesState(payload.selectedStatesAggregates);
       if (payload.selectedRacesAggregates !== undefined) setSelectedRacesAggregatesState(payload.selectedRacesAggregates);
       if (payload.selectedLegsAggregates !== undefined) setSelectedLegsAggregatesState(payload.selectedLegsAggregates);
@@ -205,6 +243,10 @@ let selectedLegsManeuversState: any;
 let setSelectedLegsManeuversState: any;
 let selectedGradesManeuversState: any;
 let setSelectedGradesManeuversState: any;
+let maneuverTrainingRacingState: any;
+let setManeuverTrainingRacingState: any;
+let maneuverTimeseriesDescriptionState: any;
+let setManeuverTimeseriesDescriptionState: any;
 let selectedStatesAggregatesState: any;
 let setSelectedStatesAggregatesState: any;
 let selectedRacesAggregatesState: any;
@@ -244,11 +286,19 @@ createRoot(() => {
     key: "hasChartsWithOwnFilters", 
     autoSync: true
   });
-  // Namespaced filter signals
-  [selectedStatesManeuversState, setSelectedStatesManeuversState] = createSyncSignal<string[]>([], { key: 'selectedStatesManeuvers', autoSync: true });
-  [selectedRacesManeuversState, setSelectedRacesManeuversState] = createSyncSignal<string[]>([], { key: 'selectedRacesManeuvers', autoSync: true });
-  [selectedLegsManeuversState, setSelectedLegsManeuversState] = createSyncSignal<string[]>([], { key: 'selectedLegsManeuvers', autoSync: true });
-  [selectedGradesManeuversState, setSelectedGradesManeuversState] = createSyncSignal<string[]>([], { key: 'selectedGradesManeuvers', autoSync: true });
+  // Maneuver filter selections: autoSync false — sync to other tabs/popups via main window postMessage (Sidebar), not IndexedDB.
+  [selectedStatesManeuversState, setSelectedStatesManeuversState] = createSyncSignal<string[]>([], { key: 'selectedStatesManeuvers', autoSync: false });
+  [selectedRacesManeuversState, setSelectedRacesManeuversState] = createSyncSignal<string[]>([], { key: 'selectedRacesManeuvers', autoSync: false });
+  [selectedLegsManeuversState, setSelectedLegsManeuversState] = createSyncSignal<string[]>([], { key: 'selectedLegsManeuvers', autoSync: false });
+  [selectedGradesManeuversState, setSelectedGradesManeuversState] = createSyncSignal<string[]>([], { key: 'selectedGradesManeuvers', autoSync: false });
+  [maneuverTrainingRacingState, setManeuverTrainingRacingState] = createSyncSignal<'TRAINING' | 'RACING' | null>(null, {
+    key: 'maneuverTrainingRacing',
+    autoSync: false,
+  });
+  [maneuverTimeseriesDescriptionState, setManeuverTimeseriesDescriptionState] = createSyncSignal<string>('BASICS', {
+    key: 'maneuverTimeseriesDescription',
+    autoSync: false,
+  });
   [selectedStatesAggregatesState, setSelectedStatesAggregatesState] = createSyncSignal<string[]>([], { key: 'selectedStatesAggregates', autoSync: true });
   [selectedRacesAggregatesState, setSelectedRacesAggregatesState] = createSyncSignal<string[]>([], { key: 'selectedRacesAggregates', autoSync: true });
   [selectedLegsAggregatesState, setSelectedLegsAggregatesState] = createSyncSignal<string[]>([], { key: 'selectedLegsAggregates', autoSync: true });
@@ -429,6 +479,42 @@ export const setSelectedGradesManeuvers = (value: string[]) => {
   try { setSelectedGradesManeuversState(value); markDirtyAndBroadcast('selectedGradesManeuvers'); } catch (e: any) { warn('[FilterStore] setSelectedGradesManeuvers:', e); }
 };
 
+export type ManeuverTrainingRacing = 'TRAINING' | 'RACING' | null;
+
+export const maneuverTrainingRacing = (): ManeuverTrainingRacing => {
+  try {
+    const v = maneuverTrainingRacingState?.();
+    return v === 'TRAINING' || v === 'RACING' ? v : null;
+  } catch {
+    return null;
+  }
+};
+export const setManeuverTrainingRacing = (value: ManeuverTrainingRacing) => {
+  try {
+    setManeuverTrainingRacingState(value);
+    markDirtyAndBroadcast('maneuverTrainingRacing');
+  } catch (e: any) {
+    warn('[FilterStore] setManeuverTrainingRacing:', e);
+  }
+};
+
+export const maneuverTimeseriesDescription = (): string => {
+  try {
+    const v = maneuverTimeseriesDescriptionState?.();
+    return typeof v === 'string' && v.trim() !== '' ? v : 'BASICS';
+  } catch {
+    return 'BASICS';
+  }
+};
+export const setManeuverTimeseriesDescription = (value: string) => {
+  try {
+    setManeuverTimeseriesDescriptionState(value && String(value).trim() !== '' ? String(value) : 'BASICS');
+    markDirtyAndBroadcast('maneuverTimeseriesDescription');
+  } catch (e: any) {
+    warn('[FilterStore] setManeuverTimeseriesDescription:', e);
+  }
+};
+
 export const selectedStatesAggregates = (): string[] => {
   try { return safeArray(selectedStatesAggregatesState?.()); } catch { return []; }
 };
@@ -511,7 +597,11 @@ export const setSelectedGradesForContext = (context: FilterContext, value: strin
 };
 
 export const hasActiveManeuverFilters = (): boolean =>
-  selectedStatesManeuvers().length > 0 || selectedRacesManeuvers().length > 0 || selectedLegsManeuvers().length > 0 || selectedGradesManeuvers().length > 0;
+  selectedStatesManeuvers().length > 0 ||
+  selectedRacesManeuvers().length > 0 ||
+  selectedLegsManeuvers().length > 0 ||
+  selectedGradesManeuvers().length > 0 ||
+  maneuverTrainingRacing() != null;
 export const hasActiveAggregateFilters = (): boolean =>
   selectedStatesAggregates().length > 0 || selectedRacesAggregates().length > 0 || selectedLegsAggregates().length > 0 || selectedGradesAggregates().length > 0;
 export const hasActiveTimeseriesFilters = (): boolean =>
@@ -520,7 +610,11 @@ export const hasActiveTimeseriesFilters = (): boolean =>
 export const clearManeuverFilters = () => {
   try {
     clearSyncData('selectedStatesManeuvers'); clearSyncData('selectedRacesManeuvers'); clearSyncData('selectedLegsManeuvers'); clearSyncData('selectedGradesManeuvers');
+    clearSyncData('maneuverTrainingRacing');
+    clearSyncData('maneuverTimeseriesDescription');
     setSelectedStatesManeuvers([]); setSelectedRacesManeuvers([]); setSelectedLegsManeuvers([]); setSelectedGradesManeuvers([]);
+    setManeuverTrainingRacing(null);
+    setManeuverTimeseriesDescription('BASICS');
   } catch (e) { warn('[FilterStore] clearManeuverFilters:', e); }
 };
 export const clearAggregateFilters = () => {
@@ -679,6 +773,8 @@ export const clearFilterData = () => {
   clearSyncData('selectedRacesManeuvers');
   clearSyncData('selectedLegsManeuvers');
   clearSyncData('selectedGradesManeuvers');
+  clearSyncData('maneuverTrainingRacing');
+  clearSyncData('maneuverTimeseriesDescription');
   clearSyncData('selectedStatesAggregates');
   clearSyncData('selectedRacesAggregates');
   clearSyncData('selectedLegsAggregates');
@@ -714,6 +810,8 @@ export function disposeFilterStore(): void {
   clearSyncData('selectedRacesManeuvers');
   clearSyncData('selectedLegsManeuvers');
   clearSyncData('selectedGradesManeuvers');
+  clearSyncData('maneuverTrainingRacing');
+  clearSyncData('maneuverTimeseriesDescription');
   clearSyncData('selectedStatesAggregates');
   clearSyncData('selectedRacesAggregates');
   clearSyncData('selectedLegsAggregates');

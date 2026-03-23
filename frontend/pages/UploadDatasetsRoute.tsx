@@ -1,14 +1,12 @@
-import { createSignal, onMount, Show } from "solid-js";
 import { useParams } from "@solidjs/router";
-import { debug, error as logError } from "../utils/console";
+import { createSignal, onMount, Show } from "solid-js";
 import { persistantStore } from "../store/persistantStore";
+import { debug, error as logError } from "../utils/console";
 
-/** Default boat/class when URL omits :className */
-const DEFAULT_REPORT_CLASS = "ac40";
+const DEFAULT_REPORT_CLASS = "gp50";
 
-// Static mapping — Vite must see literal import() paths (no dynamic template strings)
 const uploadDatasetsMap: Record<string, () => Promise<any>> = {
-  ac40: () => import("../reports/ac40/UploadDatasets"),
+  gp50: () => import("../reports/gp50/UploadDatasets"),
 };
 
 export default function UploadDatasetsRoute() {
@@ -31,17 +29,24 @@ export default function UploadDatasetsRoute() {
     debug("[UploadDatasetsRoute] onMount: Loading component for className:", className);
 
     try {
-      const loader = uploadDatasetsMap[className] || uploadDatasetsMap[DEFAULT_REPORT_CLASS];
+      const loader =
+        uploadDatasetsMap[className] || uploadDatasetsMap[DEFAULT_REPORT_CLASS];
       const module = await loader();
       debug("[UploadDatasetsRoute] Successfully loaded component for:", className);
       setComponent(() => module.default);
     } catch (error) {
-      logError(`[UploadDatasetsRoute] Failed to load UploadDatasets for class ${className}:`, error);
+      logError(
+        `[UploadDatasetsRoute] Failed to load UploadDatasets for class ${className}:`,
+        error
+      );
       try {
         const module = await uploadDatasetsMap[DEFAULT_REPORT_CLASS]();
         setComponent(() => module.default);
       } catch (fallbackError) {
-        logError("[UploadDatasetsRoute] Failed to load fallback UploadDatasets:", fallbackError);
+        logError(
+          "[UploadDatasetsRoute] Failed to load fallback UploadDatasets:",
+          fallbackError
+        );
       }
     }
   });

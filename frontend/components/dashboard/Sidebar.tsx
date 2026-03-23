@@ -15,7 +15,7 @@ import { streamingStore } from "../../store/streamingStore";
 import { selection, hasSelection, isCut, selectedEvents, selectedRange, selectedRanges, selectedGroupKeys, cutEvents, setSelectedEvents, setSelectedRanges, setSelectedRange, setHasSelection, setCutEvents, setIsCut } from "../../store/selectionStore";
 import { phase, setPhase, color, setColor, eventType, setEventType, tws, grade, grouped, setGrouped, groupDisplayMode, setGroupDisplayMode } from "../../store/globalStore";
 import { setSelectedTime, liveMode, isPlaying, setIsPlaying, selectedTime, timeWindow } from "../../store/playbackStore";
-import { selectedStatesTimeseries, selectedRacesTimeseries, selectedLegsTimeseries, selectedGradesTimeseries, raceOptions, legOptions, gradeOptions, selectedHeadsailCodes, selectedMainsailCodes, clearTimeseriesFilters } from "../../store/filterStore";
+import { getFilterSnapshot, getManeuverWindowsFilterBroadcastPayload, clearTimeseriesFilters } from "../../store/filterStore";
 import { hasVideoMenu, setHasVideoMenu, sidebarState, setSidebarState, sidebarMenuRefreshTrigger, setSidebarMenuRefreshTrigger } from "../../store/globalStore";
 import { streamingStatusStore } from "../../store/streamingStatusStore";
 
@@ -3070,6 +3070,24 @@ const Sidebar = (props: SidebarProps) => {
     setSidebarMenuRefreshTrigger(0)
   };
 
+  /** Prefer event.source so replies work even if WINDOW_READY hasn't updated childWindows yet (Solid batching / ordering). */
+  const getRequestingChildWindow = (event: MessageEvent, windowName?: string): Window | null => {
+    const src = event.source;
+    if (src && typeof (src as Window).postMessage === "function") {
+      try {
+        const w = src as Window;
+        if (!w.closed) return w;
+      } catch {
+        /* ignore */
+      }
+    }
+    if (windowName) {
+      const mapped = childWindows().get(windowName);
+      if (mapped && !mapped.closed) return mapped;
+    }
+    return null;
+  };
+
   // Message handler for cross-window communication
   const handleMessage = (event: MessageEvent) => {
     if (event.origin !== window.location.origin) return;
@@ -3090,21 +3108,10 @@ const Sidebar = (props: SidebarProps) => {
         return newMap;
       });
     } else if (event.data.type === 'FILTER_UPDATE_FROM_CHILD') {
-      // Receive filter updates from child windows and broadcast to ALL windows (including sender for confirmation)
-      const payload = event.data.payload || {};
-      debug('📢 Sidebar: Received filter update from child, broadcasting to all windows', payload);
-      childWindows().forEach((childWindow, windowName) => {
-        if (!childWindow.closed) {
-          try {
-            childWindow.postMessage({
-              type: 'FILTER_STORE_UPDATE',
-              payload,
-              windowName: window.name
-            }, window.location.origin);
-          } catch (err) {
-            warn('Error forwarding filter update to child window:', err);
-          }
-        }
+      // Maneuver filters are driven by the main dashboard only. Do not relay child filter writes to siblings
+      // (avoids stale partial payloads and keeps a single source of truth).
+      debug('📢 Sidebar: FILTER_UPDATE_FROM_CHILD ignored for filter relay — main page owns maneuver filter state', {
+        windowName: event.data.windowName,
       });
     } else if (event.data.type === 'GLOBAL_STORE_UPDATE_FROM_CHILD') {
       // Receive global store updates from child windows and broadcast to ALL windows (including sender for confirmation)
@@ -3181,32 +3188,28 @@ const Sidebar = (props: SidebarProps) => {
       window.dispatchEvent(new CustomEvent('selectionStoreUpdate', { detail: event.data.payload }));
       broadcastSelectionUpdate(event.data.payload, event.data.windowName);
     } else if (event.data.type === 'REQUEST_FILTER_STATE') {
-      // Send current filter state to requesting child window
+      // Send full filter snapshot so child windows (e.g. ManeuverWindow) get maneuver / aggregate
+      // filters too. Previously only timeseries keys were sent; the popup then applied defaults
+      // for empty maneuver filters, which synced via createSyncSignal and overwrote the main page.
       debug('📢 Sidebar: Received REQUEST_FILTER_STATE from', event.data.windowName);
-      const requestingWindow = childWindows().get(event.data.windowName);
-      if (requestingWindow && !requestingWindow.closed) {
-        const payload = {
-          selectedStates: selectedStatesTimeseries(),
-          selectedRaces: selectedRacesTimeseries(),
-          selectedLegs: selectedLegsTimeseries(),
-          selectedGrades: selectedGradesTimeseries(),
-          raceOptions: raceOptions(),
-          legOptions: legOptions(),
-          gradeOptions: gradeOptions(),
-          selectedHeadsailCodes: selectedHeadsailCodes(),
-          selectedMainsailCodes: selectedMainsailCodes()
-        };
+      const requestingWindow = getRequestingChildWindow(event, event.data.windowName);
+      if (requestingWindow) {
+        const payload = getFilterSnapshot();
         debug('📢 Sidebar: Sending filter state to', event.data.windowName, payload);
         requestingWindow.postMessage({
           type: 'FILTER_STORE_UPDATE',
           payload
         }, window.location.origin);
+      } else {
+        warn('📢 Sidebar: REQUEST_FILTER_STATE — no reply target (source + childWindows miss)', {
+          windowName: event.data.windowName,
+        });
       }
     } else if (event.data.type === 'REQUEST_SELECTION_STATE') {
       // Send current selection state to requesting window (include selectedGroupKeys for grouped maneuver timeseries)
-      const requestingWindow = childWindows().get(event.data.windowName);
+      const requestingWindow = getRequestingChildWindow(event, event.data.windowName);
       
-      if (requestingWindow && !requestingWindow.closed) {
+      if (requestingWindow) {
         const payload = {
           type: 'SELECTION_CHANGE',
           selection: selection(),
@@ -3233,8 +3236,8 @@ const Sidebar = (props: SidebarProps) => {
       }
     } else if (event.data.type === 'REQUEST_PERSISTENT_STATE') {
       // Send current persistent store state to requesting window
-      const requestingWindow = childWindows().get(event.data.windowName);
-      if (requestingWindow && !requestingWindow.closed) {
+      const requestingWindow = getRequestingChildWindow(event, event.data.windowName);
+      if (requestingWindow) {
         const payload = {
           selectedSourceId: selectedSourceId(),
           selectedSourceName: selectedSourceName(),
@@ -3251,9 +3254,9 @@ const Sidebar = (props: SidebarProps) => {
       }
     } else if (event.data.type === 'REQUEST_GLOBAL_STATE') {
       // Send current global store state to requesting window
-      const requestingWindow = childWindows().get(event.data.windowName);
+      const requestingWindow = getRequestingChildWindow(event, event.data.windowName);
       
-      if (requestingWindow && !requestingWindow.closed) {
+      if (requestingWindow) {
         const payload = {
           eventType: eventType(),
           phase: phase(),
@@ -3728,22 +3731,19 @@ const Sidebar = (props: SidebarProps) => {
     
     // Listen for filter store updates from the main window and broadcast to all child windows
     // This ensures child windows sync when the main window changes filters
-    const handleFilterStoreUpdate = (event: CustomEvent) => {
-      const payload = event.detail;
-      if (!payload) {
-        return;
-      }
-      
+    const handleFilterStoreUpdate = (_event: CustomEvent) => {
       const childWindowsList = childWindows();
       const childCount = childWindowsList.size;
-      
-      // Only broadcast if there are child windows
+
       if (childCount === 0) {
         return;
       }
-      
-      // Broadcast to all child windows via postMessage
-      childWindowsList.forEach((childWindow, windowName) => {
+
+      // Always send the full maneuver-relevant slice from the main window’s filterStore so popups stay aligned
+      // (partial dirty payloads can omit keys the child still needs).
+      const payload = getManeuverWindowsFilterBroadcastPayload();
+
+      childWindowsList.forEach((childWindow) => {
         if (!childWindow.closed) {
           try {
             childWindow.postMessage({
@@ -3756,8 +3756,8 @@ const Sidebar = (props: SidebarProps) => {
           }
         }
       });
-      
-      debug('📢 Sidebar: Broadcasted filter store update to child windows', {
+
+      debug('📢 Sidebar: Broadcasted maneuver filter snapshot to child windows', {
         childCount,
         payload
       });
