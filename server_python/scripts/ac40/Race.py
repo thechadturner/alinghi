@@ -442,7 +442,8 @@ def _run_training_hours(api_token, project_id, dataset_id, class_name, date, sou
     """
     No-race path: aggregate by calendar whole hours (00:00-01:00, 01:00-02:00, ...) in the dataset timezone.
     Create TRAINING events with tag HOUR: "11:00", "12:00", ... and GRADE: 2; write stats to race_stats.
-    Data is averaged for each whole hour.
+    Data is averaged for each whole hour. TRAINING row start_time/end_time are the calendar hour bounds (UTC),
+    matching the ts window used for stats, so race-setup can overlap phase/bin events with the same hour as race-summary.
     """
     if "ts" not in df.columns or df["ts"].isna().all():
         u.log(api_token, "Race.py", "warning", "_run_training_hours", "No ts; skipping")
@@ -518,11 +519,11 @@ def _run_training_hours(api_token, project_id, dataset_id, class_name, date, sou
         dfb = df.loc[(df["ts"] >= window_start) & (df["ts"] < window_end)].copy()
         if len(dfb) == 0:
             continue
-        start_ts = dfb["ts"].min()
-        end_ts = dfb["ts"].max()
-        start_time = _ts_to_iso(start_ts)
-        end_time = _ts_to_iso(end_ts)
-        if start_time is None or end_time is None:
+        # Calendar hour [window_start, window_end) in UTC — same as dfb filter — not min/max of samples.
+        # Otherwise phase events (often starting before first sample) fail race-setup EXISTS vs TRAINING times.
+        cal_start_time = _ts_to_iso(window_start)
+        cal_end_time = _ts_to_iso(window_end)
+        if cal_start_time is None or cal_end_time is None:
             continue
 
         hour_label = f"{h:02d}:00"
@@ -534,8 +535,8 @@ def _run_training_hours(api_token, project_id, dataset_id, class_name, date, sou
                 "project_id": int(project_id),
                 "dataset_id": int(dataset_id),
                 "event_type": "TRAINING",
-                "start_time": start_time,
-                "end_time": end_time,
+                "start_time": cal_start_time,
+                "end_time": cal_end_time,
                 "tags": tags,
             }
             res = u.post_api_data(api_token, ":8059/api/events", jsondata)

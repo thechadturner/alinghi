@@ -4693,18 +4693,21 @@ exports.getRaceSetup_TableData = async (req, res) => {
 
     let rows;
     // Shared predicate/conditions for both phase and bin 10 (leg_type, grade, leg_number, order)
-    let twaPredicate;
+    /** TWA filter on events_aggregate rows (alias ea in scoped CTEs). */
+    let twaPredicateEa;
     if (legType === 'upwind') {
-      twaPredicate = 'a."Twa_n_deg" < 75';
+      twaPredicateEa = 'ea."Twa_n_deg" < 75';
     } else if (legType === 'downwind') {
-      twaPredicate = 'a."Twa_n_deg" > 115';
+      twaPredicateEa = 'ea."Twa_n_deg" > 115';
     } else {
-      twaPredicate = 'a."Twa_n_deg" >= 65 AND a."Twa_n_deg" <= 115';
+      twaPredicateEa = 'ea."Twa_n_deg" >= 65 AND ea."Twa_n_deg" <= 115';
     }
     const gradeCondition = legType === 'reaching' ? '> 0' : '> 1';
     const legNumberCondition = legType === 'reaching'
       ? " AND (b.tags -> 'RACES' ->> 'Leg_number') IS NOT NULL AND (b.tags -> 'RACES' ->> 'Leg_number') ~ '^[0-9]+$' AND CAST(b.tags -> 'RACES' ->> 'Leg_number' AS integer) = 1"
       : '';
+    // Training hour: overlap phase/bin interval with TRAINING row times (calendar hour after Race.py fix).
+    // Legacy rows used data min/max times — interval overlap still matches phases that cross those bounds.
     const raceFilterCondition = raceFilter
       ? ` AND (
           (b.tags -> 'RACES' ->> 'Race_number') = $3
@@ -4712,7 +4715,11 @@ exports.getRaceSetup_TableData = async (req, res) => {
             SELECT 1 FROM ${schema}.dataset_events tr
             WHERE tr.dataset_id = c.dataset_id AND LOWER(tr.event_type) = 'training'
               AND tr.tags->>'HOUR' = $3
-              AND b.start_time >= tr.start_time AND b.start_time <= tr.end_time
+              AND b.start_time < tr.end_time
+              AND (
+                (b.end_time IS NOT NULL AND b.end_time > tr.start_time)
+                OR (b.end_time IS NULL AND b.start_time >= tr.start_time)
+              )
           )
         )`
       : '';
@@ -4736,22 +4743,38 @@ exports.getRaceSetup_TableData = async (req, res) => {
         ${raceFilter ? ' AND (de.tags -> \'RACES\' ->> \'Race_number\') = $3' : ''}
         GROUP BY d2.source_id
       ),
+      cand AS (
+        SELECT b.event_id, d.source_id, d.source_name
+        FROM ${schema}.dataset_events b
+        INNER JOIN ${schema}.datasets c ON b.dataset_id = c.dataset_id
+        INNER JOIN ${schema}.sources d ON c.source_id = d.source_id
+        WHERE d.project_id = $1
+          AND c.date = $2
+          AND LOWER(b.event_type) = '${eventType}'
+          AND (b.tags ->> 'GRADE') IS NOT NULL AND (b.tags ->> 'GRADE') ~ '^[0-9]+$' AND CAST(b.tags ->> 'GRADE' AS integer) ${gradeCondition}
+          ${legNumberCondition}
+          ${stateCondition}
+          ${raceFilterCondition}
+      ),
       avg_only AS (
-        SELECT DISTINCT ON (event_id) event_id, "Tws_kph", "Bsp_kph", "Twa_n_deg", "Vmg_kph", "Vmg_perc", "Bsp_polar_perc",
-          "Heel_n_deg", "Pitch_deg", "RH_lwd_mm", "DB_cant_lwd_deg", "DB_cant_eff_lwd_deg", "RUD_rake_ang_deg",
-          "WING_clew_pos_mm", "CA1_ang_n_deg", "WING_twist_n_deg", "JIB_sheet_load_kgf", "JIB_lead_ang_deg", "JIB_cunno_load_kgf"
-        FROM ${schema}.events_aggregate
-        WHERE LOWER(agr_type) = 'avg'
-        ORDER BY event_id
+        SELECT DISTINCT ON (ea.event_id) ea.event_id, ea."Tws_kph", ea."Bsp_kph", ea."Twa_n_deg", ea."Vmg_kph", ea."Vmg_perc", ea."Bsp_polar_perc",
+          ea."Heel_n_deg", ea."Pitch_deg", ea."RH_lwd_mm", ea."DB_cant_lwd_deg", ea."DB_cant_eff_lwd_deg", ea."RUD_rake_ang_deg",
+          ea."WING_clew_pos_mm", ea."CA1_ang_n_deg", ea."WING_twist_n_deg", ea."JIB_sheet_load_kgf", ea."JIB_lead_ang_deg", ea."JIB_cunno_load_kgf"
+        FROM ${schema}.events_aggregate ea
+        INNER JOIN cand ON ea.event_id = cand.event_id
+        WHERE LOWER(ea.agr_type) = 'avg'
+          AND ${twaPredicateEa}
+        ORDER BY ea.event_id
       ),
       std_only AS (
-        SELECT DISTINCT ON (event_id) event_id, "Heel_n_deg" AS std_heel, "Pitch_deg" AS std_pitch, "RH_lwd_mm" AS std_rh
-        FROM ${schema}.events_aggregate
-        WHERE LOWER(agr_type) = 'std'
-        ORDER BY event_id
+        SELECT DISTINCT ON (ea.event_id) ea.event_id, ea."Heel_n_deg" AS std_heel, ea."Pitch_deg" AS std_pitch, ea."RH_lwd_mm" AS std_rh
+        FROM ${schema}.events_aggregate ea
+        INNER JOIN avg_only ao ON ea.event_id = ao.event_id
+        WHERE LOWER(ea.agr_type) = 'std'
+        ORDER BY ea.event_id
       )
       SELECT
-        d.source_name,
+        c.source_name,
         pos.position,
         AVG(a."Tws_kph") AS avg_tws,
         AVG(a."Bsp_kph") AS avg_bsp,
@@ -4772,20 +4795,10 @@ exports.getRaceSetup_TableData = async (req, res) => {
         AVG(a."JIB_lead_ang_deg") AS avg_jib_lead,
         AVG(a."JIB_cunno_load_kgf") AS avg_jib_cunno
       FROM avg_only a
-      INNER JOIN ${schema}.dataset_events b ON a.event_id = b.event_id
-      INNER JOIN ${schema}.datasets c ON b.dataset_id = c.dataset_id
-      INNER JOIN ${schema}.sources d ON c.source_id = d.source_id
-      LEFT JOIN std_only s ON s.event_id = b.event_id
-      LEFT JOIN pos ON pos.source_id = d.source_id
-      WHERE d.project_id = $1
-        AND c.date = $2
-        AND LOWER(b.event_type) = '${eventType}'
-        AND (b.tags ->> 'GRADE') IS NOT NULL AND (b.tags ->> 'GRADE') ~ '^[0-9]+$' AND CAST(b.tags ->> 'GRADE' AS integer) ${gradeCondition}
-        ${legNumberCondition}
-        ${stateCondition}
-        AND ${twaPredicate}
-        ${raceFilterCondition}
-      GROUP BY d.source_name, pos.position
+      INNER JOIN cand c ON a.event_id = c.event_id
+      LEFT JOIN std_only s ON s.event_id = a.event_id
+      LEFT JOIN pos ON pos.source_id = c.source_id
+      GROUP BY c.source_name, pos.position
       ${orderByClause}`;
 
     const params = raceFilter ? [projectId, normalizedDate, raceFilter] : [projectId, normalizedDate];

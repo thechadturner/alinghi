@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "type": "commonjs",
   "description": "File server for TeamShare",
+  "scripts": {
+    "test": "node --test-force-exit --test __tests__/integration/duckdb-concurrency.test.js __tests__/unit/concurrency-limiter.test.js"
+  },
   "dependencies": {
     "@dsnp/parquetjs": "^1.8.7",
     "@influxdata/influxdb-client": "^1.35.0",

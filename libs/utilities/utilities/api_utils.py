@@ -683,6 +683,11 @@ def get_channel_groups(api_token: str, class_name: str, project_id: str, date: s
     else:
         log_error(f"Channel-groups API returned status {response.status_code}")
         log_error(f"Response: {response.text[:200]}")
+        log_error(
+            "If message is 'Source not found', ensure the file server has parquet under "
+            f"DATA_DIRECTORY/System/{project_id}/{str(class_name).lower()}/{date}/{source_name}/ "
+            "(folder name must match source_name; case is resolved case-insensitively on the server)."
+        )
         return []
 
 
@@ -1191,6 +1196,11 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
         
         if len(channel_groups) == 0:
             log_error(f"No channel groups returned for class_name={class_name}, project_id={project_id}, date={date}, source_name={source_name}")
+            log_error(
+                "Check file server: directory must exist with .parquet files at "
+                f"System/{project_id}/{str(class_name).lower()}/{date}/{source_name}/ "
+                "(see channel-groups / channel-values API and DATA_DIRECTORY)."
+            )
             return dff
             
         frames = []

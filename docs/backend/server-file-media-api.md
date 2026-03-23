@@ -17,6 +17,16 @@ Endpoints
 Health
 - GET /api/health, /api/ready
 
+Automated tests (concurrency / limiter)
+
+- From repo root: `npm run test:server_file` (runs `server_file`’s `npm test`).
+- Prerequisites: install dependencies in `server_file` once (`cd server_file && npm install`), same as Docker/VM deploy for that service.
+- **Integration** ([`server_file/__tests__/integration/duckdb-concurrency.test.js`](../../server_file/__tests__/integration/duckdb-concurrency.test.js)): builds a small temp Parquet file, then runs **4 and 13 parallel** calls to `queryParquetFiles` (same global DuckDB path as production). Asserts all complete with **consistent row counts**; logs wall-clock time (for tuning). Optional second case uses **`1s` resolution** in parallel and asserts all results share the same length.
+- **Unit** ([`server_file/__tests__/unit/concurrency-limiter.test.js`](../../server_file/__tests__/unit/concurrency-limiter.test.js)): [`middleware/concurrency_limiter.js`](../../server_file/middleware/concurrency_limiter.js) — `FILE_HEAVY_QUERY_MAX_CONCURRENT` parsing (`0`/unset = unlimited), `tryAcquire` / `acquire` behavior, and retry payload shape. The limiter is **not** wired into HTTP routes yet; use it when capping heavy `channel-values` traffic.
+- The `npm test` script uses Node’s `--test-force-exit` so the process exits cleanly after the DuckDB integration tests (the native addon may otherwise keep the event loop open).
+- `queryParquetFiles` clears its internal query timeout timer when a query finishes successfully or fails, so timers do not keep the server (or tests) alive for `DUCKDB_QUERY_TIMEOUT_MS` after each request.
+- End-to-end HTTP load (many parallel clients through nginx) is **out of scope** here; use k6 or similar against staging if you need RPS/latency curves.
+
 Media Server (Video Streaming)
 Base URL: http://host:8089 (or proxied via /api/media/video)
 

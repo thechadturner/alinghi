@@ -411,9 +411,27 @@ export default function AdminScriptExecution() {
       try {
         const sanitizedDate = dataset.date.replace(/[-/]/g, "");
 
-        // Get source name for this dataset
-        const source = sources().find(s => s.source_id === dataset.source_id);
-        const sourceName = source?.source_name || "";
+        // Source name must match the folder under the file server (System/.../date/<source>/). Prefer name from
+        // the fetched dataset row, then project sources list — empty string causes channel-groups 404 / script failure.
+        const sourceFromStore = sources().find((s) => s.source_id === dataset.source_id);
+        const sourceName = (
+          (dataset.source_name && String(dataset.source_name).trim()) ||
+          (sourceFromStore?.source_name && String(sourceFromStore.source_name).trim()) ||
+          ""
+        );
+
+        if (!sourceName) {
+          const msg = `Missing source_name for dataset_id=${dataset.dataset_id} (source_id=${dataset.source_id}). Scripts need the boat folder name on the file server.`;
+          logError(`[AdminScriptExecution] ${msg}`);
+          setExecutionStatuses((prev) =>
+            prev.map((status) =>
+              status.dataset_id === dataset.dataset_id && status.script_name === scriptName
+                ? { ...status, status: "error" as const, error: msg }
+                : status
+            )
+          );
+          continue;
+        }
 
         // Build parameters to match the flow that works for each script.
         // For 1_normalization_influx.py: match UploadDatasets.tsx (upload datasets page) exactly (no start_time/end_time; backend uses full-day from date + timezone).

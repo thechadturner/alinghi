@@ -174,8 +174,28 @@ export default function TrainingSummaryPage() {
   /* --- Copy table data (hover + clipboard) --- */
   const [isHoveredSummary, setIsHoveredSummary] = createSignal(false);
   const [isHoveredAverages, setIsHoveredAverages] = createSignal(false);
+  const [showCopySummary, setShowCopySummary] = createSignal(false);
+  const [showCopyAverages, setShowCopyAverages] = createSignal(false);
   const [copySuccessSummary, setCopySuccessSummary] = createSignal(false);
   const [copySuccessAverages, setCopySuccessAverages] = createSignal(false);
+
+  createEffect(() => {
+    if (isHoveredSummary()) {
+      const timer = setTimeout(() => setShowCopySummary(true), 2000);
+      onCleanup(() => clearTimeout(timer));
+    } else {
+      setShowCopySummary(false);
+    }
+  });
+
+  createEffect(() => {
+    if (isHoveredAverages()) {
+      const timer = setTimeout(() => setShowCopyAverages(true), 2000);
+      onCleanup(() => clearTimeout(timer));
+    } else {
+      setShowCopyAverages(false);
+    }
+  });
 
   /** Get comparable value for sort/scale from a row by key. Tries key as-is then case-insensitive match (API/DB may return e.g. Vmg_perc_avg). */
   const getRowValue = (row: Record<string, unknown>, key: string): number | string | null => {
@@ -581,20 +601,34 @@ export default function TrainingSummaryPage() {
     filterStoreSelectedSources();
     if (!loading()) {
       fetchRaces();
-      if (selectedRace() === "All") fetchRaceSummary("0");
     }
   });
 
+  /** Refetch race summary when race, date, project, class, or source filters change (summary API does not use legType). */
   createEffect(() => {
-    const race = selectedRace();
-    legType();
-    // Also watch filterStore for source selection changes
+    selectedClassName();
+    selectedProjectId();
+    selectedDate();
+    selectedRace();
     filterStoreSelectedSources();
     if (!loading() && dateNorm().length === 8) {
-      fetchRaceSetup();
+      const race = selectedRace();
       if (race === "All") fetchRaceSummary("0");
       else if (race) fetchRaceSummary(race);
       else setSummaryRows([]);
+    }
+  });
+
+  /** Refetch Average Setups when race, leg type, date, project, class, or source filters change. */
+  createEffect(() => {
+    selectedClassName();
+    selectedProjectId();
+    selectedDate();
+    selectedRace();
+    legType();
+    filterStoreSelectedSources();
+    if (!loading() && dateNorm().length === 8) {
+      fetchRaceSetup();
     }
   });
 
@@ -1029,7 +1063,7 @@ export default function TrainingSummaryPage() {
               })()}
             </div>
           </div>
-          {isHoveredSummary() && (
+          {showCopySummary() && (
             <div class="copy-table-data-actions">
               <button
                 type="button"
@@ -1189,7 +1223,7 @@ export default function TrainingSummaryPage() {
               </div>
             </Show>
           </div>
-          {isHoveredAverages() && averagesRows().length > 0 && (
+          {showCopyAverages() && averagesRows().length > 0 && (
             <div class="copy-table-data-actions">
               <button
                 type="button"

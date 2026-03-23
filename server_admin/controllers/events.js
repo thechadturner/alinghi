@@ -148,7 +148,7 @@ exports.mergeDatasetEventTags = async (req, res) => {
             delete mergedTags[k];
         }
 
-        const updateSql = `UPDATE ${class_name}.dataset_events SET tags = $1::jsonb, date_modified = CURRENT_TIMESTAMP WHERE event_id = $2`;
+        const updateSql = `UPDATE ${class_name}.dataset_events SET tags = $1::jsonb WHERE event_id = $2`;
         const updateResult = await db.ExecuteCommand(updateSql, [JSON.stringify(mergedTags), eventRow.event_id]);
 
         if (updateResult) {

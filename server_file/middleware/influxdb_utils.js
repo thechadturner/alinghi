@@ -1104,10 +1104,31 @@ async function getChannelValuesFromInfluxDB(
     if (truncatedChunks.length > 0) {
       warn(`[influxdb_utils] ${truncatedChunks.length} chunk(s) hit row limit (${queryLimit}); result may be truncated. Narrow time range or reduce channels.`);
     }
-    // Warn when some chunks returned no data (possible timeout or failure)
+    // Warn when some chunks returned no data (empty series vs errors: failures also log in runOneChunkJob)
     const emptyChunkCount = chunkResults.filter(r => !r || r.length === 0).length;
     if (emptyChunkCount > 0) {
-      warn(`[influxdb_utils] ${emptyChunkCount} of ${chunkResults.length} chunk(s) returned no data; result may be partial. Check for timeouts or InfluxDB errors.`);
+      const allEmpty = emptyChunkCount === chunkResults.length;
+      const ctx = {
+        boat,
+        date: formattedDate,
+        level,
+        bucket: influxBucket,
+        emptyChunks: emptyChunkCount,
+        totalChunks: chunkResults.length,
+      };
+      if (allEmpty) {
+        warn(
+          `[influxdb_utils] All ${chunkResults.length} Influx chunk(s) returned no rows (boat=${boat}, date=${formattedDate}, level=${level}, bucket=${influxBucket}). ` +
+            'Common causes: no data in Influx for this boat/day/level, boat tag mismatch vs normalization (1_normalization_influx), wrong bucket, or retention dropped the range. ' +
+            'If chunk queries failed, see earlier [influxdb_utils] error lines (504/timeouts).',
+          ctx
+        );
+      } else {
+        warn(
+          `[influxdb_utils] ${emptyChunkCount} of ${chunkResults.length} chunk(s) returned no data; merged result may be partial. Check timeouts/Influx errors above or sparse data in some hours.`,
+          ctx
+        );
+      }
     }
     
     // Merge all chunk results

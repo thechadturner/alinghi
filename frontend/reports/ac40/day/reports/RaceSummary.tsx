@@ -193,8 +193,28 @@ export default function RaceSummaryPage() {
   /* --- Copy table data (hover + clipboard) --- */
   const [isHoveredSummary, setIsHoveredSummary] = createSignal(false);
   const [isHoveredAverages, setIsHoveredAverages] = createSignal(false);
+  const [showCopySummary, setShowCopySummary] = createSignal(false);
+  const [showCopyAverages, setShowCopyAverages] = createSignal(false);
   const [copySuccessSummary, setCopySuccessSummary] = createSignal(false);
   const [copySuccessAverages, setCopySuccessAverages] = createSignal(false);
+
+  createEffect(() => {
+    if (isHoveredSummary()) {
+      const timer = setTimeout(() => setShowCopySummary(true), 2000);
+      onCleanup(() => clearTimeout(timer));
+    } else {
+      setShowCopySummary(false);
+    }
+  });
+
+  createEffect(() => {
+    if (isHoveredAverages()) {
+      const timer = setTimeout(() => setShowCopyAverages(true), 2000);
+      onCleanup(() => clearTimeout(timer));
+    } else {
+      setShowCopyAverages(false);
+    }
+  });
   const [summaryLoading, setSummaryLoading] = createSignal(false);
   let summaryFetchSeq = 0;
 
@@ -1037,7 +1057,7 @@ export default function RaceSummaryPage() {
               </div>
             </div>
           </Show>
-          {isHoveredSummary() && !summaryLoading() && (
+          {showCopySummary() && !summaryLoading() && (
             <div class="copy-table-data-actions">
               <button
                 type="button"
@@ -1211,7 +1231,7 @@ export default function RaceSummaryPage() {
               </div>
             </Show>
           </div>
-          {isHoveredAverages() && averagesRows().length > 0 && (
+          {showCopyAverages() && averagesRows().length > 0 && (
             <div class="copy-table-data-actions">
               <button
                 type="button"

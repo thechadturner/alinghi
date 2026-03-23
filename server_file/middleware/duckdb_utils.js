@@ -874,16 +874,20 @@ async function queryParquetFiles(filePaths, channelList, startTs, endTs, resolut
   };
   
   // Create a timeout promise that will reject if query takes too long
+  let queryTimeoutId;
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => {
+    queryTimeoutId = setTimeout(() => {
       reject(new Error(`DuckDB query timeout after ${queryTimeoutMs}ms (queried files; partial rows: ${allResults.length})`));
     }, queryTimeoutMs);
   });
-  
+
   // Race the query execution against the timeout
   try {
-    return await Promise.race([queryExecution(), timeoutPromise]);
+    const result = await Promise.race([queryExecution(), timeoutPromise]);
+    if (queryTimeoutId) clearTimeout(queryTimeoutId);
+    return result;
   } catch (err) {
+    if (queryTimeoutId) clearTimeout(queryTimeoutId);
     if (err.message && err.message.includes('timeout')) {
       error(`[duckdb_utils] DuckDB query timed out after ${queryTimeoutMs}ms`);
       error(`[duckdb_utils] Rows accumulated: ${allResults.length}, parquet files: ${sortedParquetPaths.length}`);

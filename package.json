@@ -30,6 +30,7 @@
     "test:streaming:integration:full": "node server_stream/__tests__/integration/test-full-data-flow.js",
     "test:streaming:integration:queries": "node server_stream/__tests__/integration/test-query-format-scenarios.js",
     "test:streaming:integration:channels": "node server_stream/__tests__/integration/test-channel-normalization-pipeline.js",
+    "test:server_file": "cd server_file && npm test",
     "test:streaming:processor": "node server_stream/__tests__/test-processor.js",
     "server:admin": "nodemon --config nodemon.admin.json",
     "server:app": "nodemon --config nodemon.app.json",
@@ -45,7 +46,7 @@
   "dependencies": {
     "@influxdata/influxdb-client": "^1.35.0",
     "@solidjs/router": "^0.10.0",
-    "@solidjs/sync": "github:thechadturner/syncstore",
+    "@solidjs/sync": "github:thechadturner/syncstore#fa25a919e9aaadf14a6c2d2704ef5a977d1623a3",
     "apache-arrow": "^21.0.0",
     "autoprefixer": "^10.4.16",
     "bcrypt": "^6.0.0",

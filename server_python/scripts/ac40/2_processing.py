@@ -1491,7 +1491,13 @@ if __name__ == "__main__":
                 print("Script Completed (batch):", len(dataset_list), "datasets processed.", u.dt.now(), flush=True)
         else:
             u.log(api_token, "2_processing.py", "info", "No data found", str(u.dt.now()))
-            print("Scripts Failed:", u.dt.now(), flush=True)
+            print(
+                "Scripts Failed: No rows loaded (get_data returned empty). "
+                "Typical causes: file server channel-groups 404 'Source not found' (no parquet folder for this "
+                f"source/date), wrong source_name, or date/class/project mismatch. "
+                f"class_name={class_name!r} project_id={project_id!r} date={date!r} source_name={source_name!r}",
+                flush=True,
+            )
             sys.exit(1)
 
     except Exception as error:

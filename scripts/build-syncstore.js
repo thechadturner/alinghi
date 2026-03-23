@@ -6,7 +6,7 @@
  * It checks if the dist folder exists to avoid unnecessary rebuilds
  */
 
-import { existsSync, statSync, rmSync, cpSync } from 'fs';
+import { existsSync, statSync, rmSync, cpSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -18,6 +18,20 @@ const rootDir = join(__dirname, '..');
 const syncPath = join(rootDir, 'node_modules', '@solidjs', 'sync');
 const distPath = join(syncPath, 'dist', 'index.js');
 const packageJsonPath = join(syncPath, 'package.json');
+
+/** @returns {string | null} */
+const getPinnedSyncstoreRef = () => {
+  try {
+    const rootPkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'));
+    const dep = rootPkg.dependencies?.['@solidjs/sync'];
+    if (typeof dep === 'string' && dep.includes('#')) {
+      return dep.split('#').pop() || null;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+};
 
 // Check if we need to build
 const needsBuild = () => {
@@ -74,10 +88,14 @@ try {
           rmSync(tempRepoPath, { recursive: true, force: true });
         }
         
-        // Clone the repo
+        // Clone the repo (match pinned ref from package.json when present)
         process.chdir(rootDir);
         execSync('git clone https://github.com/thechadturner/syncstore.git temp-syncstore-repo', { stdio: 'inherit' });
-        
+        const pinnedRef = getPinnedSyncstoreRef();
+        if (pinnedRef) {
+          execSync(`git -C temp-syncstore-repo checkout ${pinnedRef}`, { stdio: 'inherit' });
+        }
+
         // Copy source files to the package directory
         const tempSrcPath = join(tempRepoPath, 'src');
         if (existsSync(tempSrcPath)) {
@@ -111,6 +129,10 @@ try {
       console.log('Installing @solidjs/sync dependencies...');
       execSync('npm install --legacy-peer-deps', { stdio: 'inherit' });
     }
+
+    // vite-plugin-dts@2 + @microsoft/api-extractor breaks on current Node (Collector.js.js); syncstore pins ^2.0.0
+    console.log('Patching vite-plugin-dts for @solidjs/sync library build...');
+    execSync('npm install vite-plugin-dts@4.5.4 --save-dev --legacy-peer-deps', { stdio: 'inherit' });
     
     // Build the package
     console.log('Building @solidjs/sync...');
