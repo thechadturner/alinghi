@@ -127,6 +127,7 @@ export default function FleetCheatSheetPage() {
   const [formattedColumns, setFormattedColumns] = createSignal<string[]>([]);
   const [showDeltas, setShowDeltas] = createSignal(true);
   const [isHovered, setIsHovered] = createSignal(false);
+  const [showCopy, setShowCopy] = createSignal(false);
   const [copySuccess, setCopySuccess] = createSignal(false);
 
   const [loadingManeuver, setLoadingManeuver] = createSignal(true);
@@ -141,7 +142,26 @@ export default function FleetCheatSheetPage() {
   const [formattedColumnsManeuver, setFormattedColumnsManeuver] = createSignal<string[]>([]);
   const [showDeltasManeuver, setShowDeltasManeuver] = createSignal(true);
   const [isHoveredManeuver, setIsHoveredManeuver] = createSignal(false);
+  const [showCopyManeuver, setShowCopyManeuver] = createSignal(false);
   const [copySuccessManeuver, setCopySuccessManeuver] = createSignal(false);
+
+  createEffect(() => {
+    if (isHovered()) {
+      const timer = setTimeout(() => setShowCopy(true), 2000);
+      onCleanup(() => clearTimeout(timer));
+    } else {
+      setShowCopy(false);
+    }
+  });
+
+  createEffect(() => {
+    if (isHoveredManeuver()) {
+      const timer = setTimeout(() => setShowCopyManeuver(true), 2000);
+      onCleanup(() => clearTimeout(timer));
+    } else {
+      setShowCopyManeuver(false);
+    }
+  });
 
   const getRowValue = (row: Record<string, unknown>, key: string): number | string | null => {
     const v = row[key] ?? row[key.toLowerCase()] ?? row[key.toUpperCase()];
@@ -801,7 +821,7 @@ export default function FleetCheatSheetPage() {
                   </div>
                 </Show>
               </div>
-              {isHovered() && rows().length > 0 && (
+              {showCopy() && rows().length > 0 && (
                 <div class="copy-table-data-actions">
                   <button
                     type="button"
@@ -1010,7 +1030,7 @@ export default function FleetCheatSheetPage() {
                         </div>
                       </Show>
                     </div>
-                    {isHoveredManeuver() && rowsManeuver().length > 0 && (
+                    {showCopyManeuver() && rowsManeuver().length > 0 && (
                       <div class="copy-table-data-actions">
                         <button
                           type="button"
