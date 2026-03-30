@@ -1,4 +1,4 @@
-import { createSignal, onMount, onCleanup, Show, createEffect, untrack } from "solid-js";
+import { createSignal, onMount, onCleanup, Show, createEffect, untrack, on } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import LoadingOverlay from "../../../../components/utilities/Loading";
 import DataNotFoundMessage from "../../../../components/utilities/DataNotFoundMessage";
@@ -19,6 +19,13 @@ import { registerSelectionStoreCleanup, cutEvents, isCut } from "../../../../sto
 import { selectedRacesTimeseries, selectedLegsTimeseries, selectedGradesTimeseries, setSelectedRacesTimeseries, setSelectedLegsTimeseries, setSelectedGradesTimeseries, setHasChartsWithOwnFilters } from "../../../../store/filterStore";
 import { selectedTime } from "../../../../store/playbackStore";
 import { applyDataFilter, extractFilterOptions } from "../../../../utils/dataFiltering";
+import { sidebarMenuRefreshTrigger } from "../../../../store/globalStore";
+import {
+  buildExploreResampleFetchPlan,
+  logExploreMultiResampleAudit,
+  rawReadingPlotKeyForExploreChannel,
+  useRawReadingsForCumulativeLineTypes,
+} from "../../../../utils/timeseriesSeriesTransforms";
 
 interface TimeSeriesPageProps {
   objectName?: string;
@@ -91,8 +98,10 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
   const [loadingMessage, setLoadingMessage] = createSignal<string>("Loading time series configuration...");
   /** True when we have chart config but data/channels could not be found (API or HuniDB). */
   const [dataNotFound, setDataNotFound] = createSignal(false);
+
   // Progress monitoring interval (declared outside function for cleanup)
   let progressCheckInterval: ReturnType<typeof setInterval> | null = null;
+  let cleanupScalingFn: (() => void) | undefined;
 
   debug('🕐 TimeSeriesPage: Initial state - isLoading:', isLoading(), 'chartConfig:', chartConfig());
 
@@ -686,6 +695,7 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
       setLoadingMessage("Loading data...");
       debug('🕐 TimeSeriesPage: Requesting data from unifiedDataStore (will check cache first)');
       const startTime = Date.now();
+      const exploreResampleFetchPlan = buildExploreResampleFetchPlan(chartObjects);
       const data = await unifiedDataStore.fetchDataWithChannelCheckingFromFile(
         'ts',
         selectedClassName(),
@@ -699,7 +709,8 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
           date: formattedDate,
           timezone: timezoneForApi, // So channel-values/Influx get correct UTC date (local date + timezone)
           use_v2: true, // Obsolete - kept for backward compatibility (DuckDB is now the only implementation)
-          applyGlobalFilters: false // Always fetch full dataset, apply filters locally
+          applyGlobalFilters: false, // Always fetch full dataset, apply filters locally
+          exploreResampleFetchPlan: exploreResampleFetchPlan ?? undefined,
         },
         'timeseries'
       );
@@ -810,6 +821,11 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
 
       // Track if we've logged diagnostic info for the first data point
       let hasLoggedFirstPointDiagnostics = false;
+      let warnedCumulativeLineTypesNoRawExplore = false;
+
+      const channelsToCopyOnPoints = [
+        ...new Set([...validChannels, ...(exploreResampleFetchPlan?.mergedYKeys ?? [])]),
+      ];
 
       const processedData = !hasDataFromFetch ? [] : data.map((item: any, index: number) => {
         const dataPoint: any = {
@@ -823,8 +839,8 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
           return key !== undefined ? item[key] : undefined;
         };
 
-        // Add all channel data to the data point (case-insensitive match so API/parquet keys match chart config)
-        validChannels.forEach((channelName: string) => {
+        // Include disambiguated Y columns (same source channel at 1HZ + 10HZ, etc.)
+        channelsToCopyOnPoints.forEach((channelName: string) => {
           const value = getItemChannelValue(channelName);
           if (value !== undefined) {
             dataPoint[channelName] = value;
@@ -909,37 +925,59 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
       const chartConfig = chartObjects.map((chart: any, index: number) => ({
         ...chart,
         chart: `chart_${index + 1}`,
-        series: chart.series.map((series: any) => {
+        series: chart.series.map((series: any, seriesIndex: number) => {
           const xName = series.xaxis.name;
           const yName = series.yaxis.name;
+          const yPlotKey =
+            exploreResampleFetchPlan?.seriesYPlotKeyByChartSeries[`${index}-${seriesIndex}`] ?? yName;
 
-          // Helper function to get value with case-insensitive matching
-          // Data fields now preserve original case, but fallback to lowercase for backward compatibility
+          const rawReadingKey =
+            useRawReadingsForCumulativeLineTypes(series.lineType) && exploreResampleFetchPlan
+              ? rawReadingPlotKeyForExploreChannel(chart, index, yName, exploreResampleFetchPlan)
+              : null;
+          if (
+            useRawReadingsForCumulativeLineTypes(series.lineType) &&
+            exploreResampleFetchPlan &&
+            !rawReadingKey &&
+            !warnedCumulativeLineTypesNoRawExplore
+          ) {
+            warnedCumulativeLineTypesNoRawExplore = true;
+            warn(
+              "TimeSeries explore: cumulative / abs cumulative / abs cumulative diff need a RAW column for native samples; none found — using this series resampled y (bucket means). Add a RAW series for the same channel or ensure RAW is fetched."
+            );
+          }
+          const valueKeyForPath = rawReadingKey ?? yPlotKey;
+
+          // Match shared TimeSeries / getItemChannelValue: any key casing (parquet vs chart config).
           const getValue = (item: any, fieldName: string): any => {
             if (item[fieldName] !== undefined) return item[fieldName];
-            // Try lowercase version as fallback (for backward compatibility with old data)
-            const lowerName = fieldName.toLowerCase();
-            if (item[lowerName] !== undefined) return item[lowerName];
-            return undefined;
+            const key = Object.keys(item).find((k) => k.toLowerCase() === fieldName.toLowerCase());
+            return key !== undefined ? item[key] : undefined;
           };
 
-          // Data is already processed with proper x values (Date objects)
+          // Require parsed x + path y (RAW column for abs_cumulative_diff when available); do not require x-axis column on the row when item.x is set
+          // (RAW vs 1Hz merged rows often omit the x field name copy but still have item.x).
           const seriesData = sortedProcessedData
             .filter((item: any) => {
-              const xVal = getValue(item, xName);
-              const yVal = getValue(item, yName);
-              return item.x !== undefined && xVal !== undefined && yVal !== undefined;
+              const yVal = getValue(item, valueKeyForPath);
+              return item.x !== undefined && yVal !== undefined && yVal !== null;
             })
             .map((item: any) => {
               const xVal = getValue(item, xName);
-              const yVal = getValue(item, yName);
+              const yVal = getValue(item, valueKeyForPath);
+              const xAxisPayload = xVal !== undefined ? xVal : item.x;
+              const yPlotKeyCol =
+                rawReadingKey && rawReadingKey !== yPlotKey ? getValue(item, yPlotKey) : undefined;
+              const plotKeyStored =
+                yPlotKeyCol !== undefined && yPlotKeyCol !== null ? yPlotKeyCol : yVal;
 
               const seriesPoint: any = {
                 x: item.x, // Already a Date object from processing
                 y: yVal,
                 Datetime: item.Datetime,
-                [xName]: xVal,
-                [yName]: yVal
+                [xName]: xAxisPayload,
+                [yName]: yVal,
+                [yPlotKey]: plotKeyStored,
               };
 
               // Preserve filter metadata fields for filtering to work (check both cases)
@@ -955,11 +993,15 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
               return seriesPoint;
             });
 
-          return { ...series, data: seriesData };
+          return { ...series, yDataKey: yPlotKey, data: seriesData };
         })
       }));
 
       debug('🕐 TimeSeriesPage: Created chart config with', chartConfig.length, 'charts');
+
+      if (exploreResampleFetchPlan?.mergedYKeys?.length) {
+        logExploreMultiResampleAudit(chartConfig, exploreResampleFetchPlan);
+      }
 
       // Store original unfiltered config
       setOriginalChartConfig(chartConfig);
@@ -993,53 +1035,110 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
     }
   };
 
-  onMount(async () => {
-    debug('🕐 TimeSeriesPage: onMount called');
-    await logPageLoad('TimeSeries.jsx', 'Time Series Report');
-    debug('🕐 TimeSeriesPage: Page load logged, starting fetchChartConfigAndData');
+  // Refetch chart config + full-day data when dataset/source/page changes or after builder save
+  let lastFetchKey = '';
+  let hasInitialFetch = false;
+  let isDependencyFetchRunning = false;
+  let datasetEffectRunCount = 0;
+  let lastDatasetEffectTime = 0;
 
-    // Set up dynamic scaling for media-container using the global utility
-    // Use width-based scaling to fill available width when zoomed (matches Performance page)
-    const cleanupScaling = setupMediaContainerScaling({
+  createEffect(
+    on(
+      [
+        () => user()?.user_id,
+        () => selectedClassName(),
+        () => selectedProjectId(),
+        () => selectedDatasetId(),
+        () => selectedSourceId(),
+        () => selectedPage(),
+        () => props?.objectName,
+        () => sidebarMenuRefreshTrigger(),
+      ],
+      () => {
+        const now = Date.now();
+        if (now - lastDatasetEffectTime < 100) {
+          debug('🕐 TimeSeriesPage: Dataset effect debounced');
+          return;
+        }
+        lastDatasetEffectTime = now;
+
+        datasetEffectRunCount++;
+        if (datasetEffectRunCount > 12) {
+          logError('🕐 TimeSeriesPage: Dataset effect run count exceeded, stopping', { count: datasetEffectRunCount });
+          return;
+        }
+
+        if (isDependencyFetchRunning) {
+          debug('🕐 TimeSeriesPage: Fetch already in progress, skipping');
+          return;
+        }
+
+        const currentUser = user();
+        const className = selectedClassName();
+        const projectId = selectedProjectId();
+        const datasetId = selectedDatasetId();
+        const sourceId = selectedSourceId();
+        const page = selectedPage();
+        const menuRefresh = sidebarMenuRefreshTrigger();
+        const objName = untrack(() => objectName());
+
+        if (!currentUser?.user_id || !className || !projectId || !datasetId || !sourceId) {
+          debug('🕐 TimeSeriesPage: Missing deps for fetch, skipping');
+          return;
+        }
+
+        const fetchKey = `${currentUser.user_id}_${className}_${projectId}_${datasetId}_${sourceId}_${page}_${objName}_${menuRefresh}`;
+        if (fetchKey === lastFetchKey) {
+          debug('🕐 TimeSeriesPage: Fetch key unchanged, skipping:', fetchKey);
+          return;
+        }
+        lastFetchKey = fetchKey;
+
+        const currentlyLoading = untrack(() => isLoading());
+        const isInitialFetch = !hasInitialFetch;
+        if (!isInitialFetch && currentlyLoading) {
+          debug('🕐 TimeSeriesPage: Already loading, skipping duplicate request');
+          return;
+        }
+        hasInitialFetch = true;
+
+        isDependencyFetchRunning = true;
+        fetchChartConfigAndData()
+          .catch((err: unknown) => {
+            logError('🕐 TimeSeriesPage: Error in dependency fetch effect:', err);
+          })
+          .finally(() => {
+            isDependencyFetchRunning = false;
+            if (datasetEffectRunCount > 0) datasetEffectRunCount = 0;
+          });
+      }
+    )
+  );
+
+  onMount(() => {
+    debug('🕐 TimeSeriesPage: onMount called');
+    void logPageLoad('TimeSeries.jsx', 'Time Series Report').then(() => {
+      debug('🕐 TimeSeriesPage: Page load logged');
+    });
+
+    cleanupScalingFn = setupMediaContainerScaling({
       logPrefix: 'TimeSeries',
       scaleToWidth: true
     });
 
-    // Debug: Check initial selectedTime state
     debug('🕐 TimeSeriesPage: Initial selectedTime state:', {
       selectedTime: selectedTime()?.toISOString() || 'null',
       isDefault: selectedTime()?.getTime() === new Date('1970-01-01T12:00:00Z').getTime()
     });
-
-    // Only fetch chart configuration, let TimeSeries component handle data fetching
-    try {
-      await fetchChartConfigAndData();
-      debug('🕐 TimeSeriesPage: Chart configuration fetched successfully');
-
-      // Debug: Check selectedTime after chart config is loaded
-      debug('🕐 TimeSeriesPage: selectedTime after chart config loaded:', {
-        selectedTime: selectedTime()?.toISOString() || 'null',
-        isDefault: selectedTime()?.getTime() === new Date('1970-01-01T12:00:00Z').getTime()
-      });
-    } catch (error: any) {
-      logError('🕐 TimeSeriesPage: Error in onMount:', error);
-    }
-
-    // Cleanup on unmount
-    return () => {
-      cleanupScaling(); // Call the cleanup function returned by the utility
-    };
-
-    debug('🕐 TimeSeriesPage: onMount completed');
   });
 
   onCleanup(() => {
     debug('🕐 TimeSeriesPage: onCleanup called');
-    // Cleanup progress monitoring interval
     if (progressCheckInterval) {
       clearInterval(progressCheckInterval);
       progressCheckInterval = null;
     }
+    cleanupScalingFn?.();
   });
 
   return (

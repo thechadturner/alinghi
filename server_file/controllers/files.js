@@ -25,7 +25,9 @@ const {
   getChannelValuesFromInfluxDB,
   getChannelValuesFromInfluxDBWithFallback,
   checkInfluxDBHealth,
-  saveInfluxDataToParquet
+  saveInfluxDataToParquet,
+  influxParquetBasenameFromApiResolution,
+  isInfluxTierParquetBasename,
 } = require('../middleware/influxdb_utils');
 
 // Utility to safely join paths
@@ -57,6 +59,89 @@ function resolveSourcePath(parentDir, sourceName) {
     debug('[files] resolveSourcePath: could not list parent dir', err.message);
   }
   return exactPath;
+}
+
+/**
+ * Influx query resolution for unified backfill when API sends RAW (null): env INFLUX_BACKFILL_RAW_RESOLUTION or 100ms.
+ */
+function influxResolutionForChannelValuesBackfill(resolution) {
+  if (resolution === null) {
+    const raw = env.INFLUX_BACKFILL_RAW_RESOLUTION;
+    return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : '100ms';
+  }
+  if (typeof resolution === 'string' && resolution.trim() !== '') return resolution.trim();
+  return '1s';
+}
+
+/**
+ * DuckDB reads: all non-Influx parquets + Influx tier parquets for channel-values.
+ * - When the tier matching API resolution exists: include it plus legacy influx_data.parquet if present
+ *   (some boats only wrote certain channels to legacy; 1hz may exist but be sparse for those columns).
+ * - When that tier file is missing: include every influx tier parquet on disk so data is still returned
+ *   (e.g. only legacy, or only 1hz while API asked for 10hz — queryParquetFiles resamples to the request).
+ * Merge order: API-matching tier first, then supplemental tiers by INFLUX_SUPPLEMENT_QUERY_ORDER so
+ * later files fill nulls for the same ts (see duckdb_utils timestampMap merge).
+ */
+const INFLUX_SUPPLEMENT_QUERY_ORDER = {
+  'influx_data_1hz.parquet': 10,
+  'influx_data_10hz.parquet': 20,
+  'influx_data.parquet': 30,
+  'influx_data_raw.parquet': 40,
+};
+
+function listParquetPathsForDuckDbChannelValues(sourcePath, apiResolution) {
+  if (!fs.existsSync(sourcePath)) return [];
+  const all = fs.readdirSync(sourcePath).filter((f) => f.endsWith('.parquet'));
+  const wantedBasename = influxParquetBasenameFromApiResolution(apiResolution);
+  const wantedLower = wantedBasename.toLowerCase();
+  const hasWantedFile = all.some((x) => x.toLowerCase() === wantedLower);
+
+  const nonInflux = [];
+  const influxTierNames = [];
+  for (const f of all) {
+    if (!isInfluxTierParquetBasename(f)) {
+      nonInflux.push(safeJoin(sourcePath, f));
+    } else {
+      influxTierNames.push(f);
+    }
+  }
+
+  const influxPaths = [];
+  if (hasWantedFile) {
+    const wantedName = influxTierNames.find((x) => x.toLowerCase() === wantedLower);
+    if (wantedName) {
+      influxPaths.push(safeJoin(sourcePath, wantedName));
+    }
+    const legacyName = influxTierNames.find((x) => x.toLowerCase() === 'influx_data.parquet');
+    if (legacyName) {
+      influxPaths.push(safeJoin(sourcePath, legacyName));
+    }
+  } else {
+    for (const f of influxTierNames) {
+      influxPaths.push(safeJoin(sourcePath, f));
+    }
+  }
+
+  const seenBasename = new Set();
+  const dedupedInflux = influxPaths.filter((p) => {
+    const key = path.basename(p).toLowerCase();
+    if (seenBasename.has(key)) return false;
+    seenBasename.add(key);
+    return true;
+  });
+
+  dedupedInflux.sort((a, b) => {
+    const ba = path.basename(a).toLowerCase();
+    const bb = path.basename(b).toLowerCase();
+    const priA = ba === wantedLower ? -1 : 0;
+    const priB = bb === wantedLower ? -1 : 0;
+    if (priA !== priB) return priA - priB;
+    const oa = INFLUX_SUPPLEMENT_QUERY_ORDER[ba] ?? 99;
+    const ob = INFLUX_SUPPLEMENT_QUERY_ORDER[bb] ?? 99;
+    return oa - ob;
+  });
+
+  return [...nonInflux, ...dedupedInflux];
 }
 
 // Helper function to get dataset_id from source_name, date, class_name, and project_id
@@ -545,15 +630,15 @@ exports.getChannelList = async (req, res) => {
       file.endsWith('.parquet')
     );
 
-    // When data_source is 'file', exclude influx_data.parquet so "FILE" = channels from file-system/normalization
-    // parquet only. Channels that exist only in Influx (or only in influx_data.parquet) are then "missing"
-    // and the frontend will call channel-values with data_source=influx to fetch and save them.
-    const INFLUX_PARQUET = 'influx_data.parquet';
+    // When data_source is 'file', exclude Influx tier parquets so "FILE" = normalization parquets only.
     const files = dataSource === 'file'
-      ? allFiles.filter((file) => file !== INFLUX_PARQUET)
+      ? allFiles.filter((file) => !isInfluxTierParquetBasename(file))
       : allFiles;
-    if (dataSource === 'file' && allFiles.includes(INFLUX_PARQUET)) {
-      log(`[getChannelList] data_source=file: excluding ${INFLUX_PARQUET} so Influx-only channels are fetched and saved`);
+    if (dataSource === 'file') {
+      const excluded = allFiles.filter((file) => isInfluxTierParquetBasename(file));
+      if (excluded.length > 0) {
+        log(`[getChannelList] data_source=file: excluding Influx tier parquets: ${excluded.join(', ')}`);
+      }
     }
 
     // Return empty array instead of 404 if no files found - allows unified discovery to continue
@@ -643,7 +728,7 @@ exports.getChannelValues = async (req, res) => {
   // Normalize class_name early (used by multiple paths)
   const classLower = String(class_name || '').toLowerCase();
 
-  // If data_source is 'influx', query InfluxDB (strm then log for missing) and save to influx_data.parquet before responding
+  // If data_source is 'influx', query InfluxDB (strm then log for missing) and save to tier parquet (raw / 10hz / 1hz) before responding
   if (dataSource === 'influx') {
     try {
       const sourceNameUpper = source_name ? source_name.toUpperCase() : '';
@@ -667,14 +752,19 @@ exports.getChannelValues = async (req, res) => {
         return n && n !== 'ts' && n !== 'Datetime';
       }).length;
 
-      log(`[getChannelValues] INFLUX path: querying InfluxDB (strm then log for missing) then saving to influx_data.parquet; date=${dateYyyyMmDd} (local), influxDate=${influxDateUtc} (UTC), source=${actualSourceName}, channel_list.length=${influxChannelList.length}, data_channels=${measurementCount}`);
+      const influxQueryRes = influxResolutionForChannelValuesBackfill(
+        resolution === undefined ? '1s' : resolution
+      );
+      const saveTierResolution = resolution === null ? null : (typeof resolution === 'string' && resolution.trim() !== '' ? resolution.trim() : '1s');
+      const tierBasename = influxParquetBasenameFromApiResolution(saveTierResolution);
+      log(`[getChannelValues] INFLUX path: querying InfluxDB then saving to ${tierBasename}; date=${dateYyyyMmDd} (local), influxDate=${influxDateUtc} (UTC), source=${actualSourceName}, channel_list.length=${influxChannelList.length}, data_channels=${measurementCount}`);
 
       // Query InfluxDB with fallback: strm first, then log for any channel with no data
       const influxData = await getChannelValuesFromInfluxDBWithFallback(
         influxDateUtc,
         actualSourceName,
         influxChannelList,
-        resolution || '1s',
+        influxQueryRes,
         start_ts,
         end_ts,
         'UTC',
@@ -682,7 +772,7 @@ exports.getChannelValues = async (req, res) => {
       );
 
       if (!influxData || influxData.length === 0) {
-        log('[getChannelValues] InfluxDB returned no data - influx_data.parquet will NOT be written (returning 204)', {
+        log(`[getChannelValues] InfluxDB returned no data - ${tierBasename} will NOT be written (returning 204)`, {
           date: dateYyyyMmDd,
           source: actualSourceName,
           channel_count: influxChannelList.length,
@@ -696,7 +786,14 @@ exports.getChannelValues = async (req, res) => {
 
       // Save InfluxDB data to parquet so API can serve from file in future sessions.
       // CRITICAL: await save so response is sent only after parquet is written.
-      const filePath = await saveInfluxDataToParquet(influxData, project_id, class_name, dateYyyyMmDd, actualSourceName);
+      const filePath = await saveInfluxDataToParquet(
+        influxData,
+        project_id,
+        class_name,
+        dateYyyyMmDd,
+        actualSourceName,
+        saveTierResolution
+      );
       if (filePath) {
         log(`[getChannelValues] Successfully saved InfluxDB data to ${filePath}`);
       } else {
@@ -718,7 +815,7 @@ exports.getChannelValues = async (req, res) => {
   }
 
   // Unified path: split channels into in-file vs not-in-file, backfill missing from Influx, then serve all from DuckDB
-  // Align with upload datasets UI (Influx path): use dataset timezone for Influx so local date range matches normalization.
+  // Align with UploadDatasets (Influx upload page): use dataset timezone for Influx so local date range matches normalization.
   if (isUnified) {
     try {
       // Date must be YYYYMMDD (dataset local date) for folder path. We convert to UTC only for Influx.
@@ -793,40 +890,46 @@ exports.getChannelValues = async (req, res) => {
         if (influxDateUtc !== pathDateYyyyMmDd) {
           log(`[getChannelValues] Unified: Influx date in UTC: ${pathDateYyyyMmDd} (local) -> ${influxDateUtc} (UTC), tz=${targetTimezone}`);
         }
-        log(`[getChannelValues] Unified: backfilling ${dataChannelsNotInFile.length} channels from Influx (strm then log for missing):`, dataChannelsNotInFile.slice(0, 5));
+        const influxQueryRes = influxResolutionForChannelValuesBackfill(resolution);
+        log(`[getChannelValues] Unified: backfilling ${dataChannelsNotInFile.length} channels from Influx at ${influxQueryRes} (API resolution=${resolution === null ? 'RAW' : resolution || 'default 1s'}):`, dataChannelsNotInFile.slice(0, 5));
 
         const influxData = await getChannelValuesFromInfluxDBWithFallback(
           influxDateUtc,
           actualSourceName,
           influxChannelList,
-          resolution || '1s',
+          influxQueryRes,
           start_ts,
           end_ts,
           'UTC',
           true
         );
         if (influxData && influxData.length > 0) {
-          const writtenPath = await saveInfluxDataToParquet(influxData, project_id, class_name, pathDateYyyyMmDd, actualSourceName);
+          const writtenPath = await saveInfluxDataToParquet(
+            influxData,
+            project_id,
+            class_name,
+            pathDateYyyyMmDd,
+            actualSourceName,
+            resolution
+          );
           if (writtenPath) {
-            log(`[getChannelValues] Unified: saved ${influxData.length} Influx rows to influx_data.parquet at ${writtenPath}`);
+            log(`[getChannelValues] Unified: saved ${influxData.length} Influx rows to ${influxParquetBasenameFromApiResolution(resolution)} at ${writtenPath}`);
           } else {
             warn('[getChannelValues] Unified: saveInfluxDataToParquet returned null (parquet not written - check server logs for saveInfluxDataToParquet errors)');
           }
         }
       }
 
-      // Re-read file list (include newly written influx_data.parquet)
+      // DuckDB: non-Influx parquets + one Influx tier matching this request's resolution
       let sourcePathForDuck = sourcePath;
       if (!fs.existsSync(sourcePathForDuck)) {
-        // saveInfluxDataToParquet creates dir; if we didn't backfill, path may still not exist
         log('[getChannelValues] Unified: no source path after backfill, returning 204');
         return sendResponse(res, info, 204, true, 'No channel values found', []);
       }
-      const files = fs.readdirSync(sourcePathForDuck).filter((f) => f.endsWith('.parquet'));
-      if (files.length === 0) {
+      const filePaths = listParquetPathsForDuckDbChannelValues(sourcePathForDuck, resolution);
+      if (filePaths.length === 0) {
         return sendResponse(res, info, 204, true, 'No channel values found', []);
       }
-      const filePaths = files.map((f) => safeJoin(sourcePathForDuck, f));
 
       const hasPermission = await check_permissions(req, 'read', project_id);
       if (!hasPermission) {
@@ -974,9 +1077,11 @@ exports.getChannelValues = async (req, res) => {
       log(`[getChannelValues] Full frequency mode (no resolution) - returning native data frequency`);
     }
 
-    // Build file paths
-    const filePaths = files.map(file => safeJoin(sourcePath, file));
-    
+    const filePaths = listParquetPathsForDuckDbChannelValues(sourcePath, resolution);
+    if (filePaths.length === 0) {
+      return res.status(404).json({ success: false, message: 'No parquet files match this resolution' });
+    }
+
     log(`[getChannelValues] Querying ${filePaths.length} files from ${sourcePath}`);
     log(`[getChannelValues] Channel list (${normalizedChannelList.length} channels):`, normalizedChannelList.map(ch => typeof ch === 'string' ? ch : ch.name));
 

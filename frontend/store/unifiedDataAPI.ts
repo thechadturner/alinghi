@@ -8,6 +8,8 @@ import { extractAndNormalizeMetadata } from '../utils/dataNormalization';
 import { debug, info, warn, error as logError } from '../utils/console';
 
 // Define the parameter interfaces
+export type ChannelBucketAggregate = 'sum' | 'sum_abs';
+
 export interface ChannelValuesParams {
   projectId: number;
   className: string;
@@ -19,7 +21,10 @@ export interface ChannelValuesParams {
   timezone?: string | null; // Timezone for UTC to local conversion
   use_v2?: boolean; // Obsolete - kept for backward compatibility, now ignored (DuckDB is the only implementation)
   data_source?: 'auto' | 'file' | 'influx'; // Data source to use: 'auto' (default), 'file', or 'influx'
-  resolution?: string; // Optional resolution for channel-values API (e.g. '1s')
+  /** channel-values DuckDB resampling: `undefined` → default `1s`; `null` → RAW (no bucket SQL). */
+  resolution?: string | null;
+  /** Per-channel DuckDB bucket fn when resampling (cumulative / abs_cumulative line types). Keys match series y-axis channel names. */
+  channelBucketAggregateByName?: Record<string, ChannelBucketAggregate>;
 }
 
 export interface MapDataParams {
@@ -75,6 +80,18 @@ const TIMESERIES_METADATA_CHANNELS_FALLBACK = ['Grade', 'State', 'Twa_deg', 'Rac
 const INTERNAL_TO_PARQUET_CHANNEL_NAMES: Record<string, string> = { State: 'Foiling_state' };
 /** When building keyMapping from API response, map these parquet keys to internal names so we keep calling it State inside. */
 const PARQUET_TO_INTERNAL_CHANNEL_NAMES: Record<string, string> = { Foiling_state: 'State' };
+
+function lookupChannelBucketAggregate(
+  map: Record<string, ChannelBucketAggregate> | undefined,
+  channelName: string
+): ChannelBucketAggregate | undefined {
+  if (!map) return undefined;
+  const direct = map[channelName];
+  if (direct) return direct;
+  const lower = channelName.toLowerCase();
+  const key = Object.keys(map).find((k) => k.toLowerCase() === lower);
+  return key ? map[key] : undefined;
+}
 
 // Convert API data to DataPoint format
 // timezone: Optional timezone string for converting ts to Datetime (e.g., 'Europe/Madrid', 'UTC')
@@ -269,9 +286,11 @@ export const fetchAndStoreTimeSeriesData = async (params: ChannelValuesParams): 
         const channelLower = channel.toLowerCase();
         // Check type using lowercase comparison for case-insensitive matching, but use original case in name
         const isIntType = channelLower === 'race_number' || channelLower === 'leg_number' || channelLower === 'grade';
-        return { 
+        const bucket_aggregate = lookupChannelBucketAggregate(params.channelBucketAggregateByName, channel);
+        return {
           name: channel, // Use normalized original case channel name
-          type: isIntType ? 'int' : 'float' 
+          type: isIntType ? 'int' : 'float',
+          ...(bucket_aggregate ? { bucket_aggregate } : {}),
         };
       });
 
@@ -336,6 +355,14 @@ export const fetchAndStoreTimeSeriesData = async (params: ChannelValuesParams): 
         }
       }
 
+      // `null` = RAW (server accepts null); `undefined` = default 1 Hz for backward compatibility
+      const resolutionForPayload =
+        params.resolution === null
+          ? null
+          : typeof params.resolution === 'string' && params.resolution.trim() !== ''
+            ? params.resolution.trim()
+            : '1s';
+
       const payload = {
       project_id: params.projectId,
       class_name: params.className,
@@ -345,7 +372,7 @@ export const fetchAndStoreTimeSeriesData = async (params: ChannelValuesParams): 
       start_ts: startTs,
       end_ts: endTs,
       timezone: params.timezone || 'UTC', // Default to UTC if not provided (API requires string, not null)
-      resolution: params.resolution || '1s', // Default resolution
+      resolution: resolutionForPayload,
       data_source: serverDataSource // 'auto' = server unified (split, backfill Influx, serve from file); 'file' or 'influx' = explicit
     };
 
@@ -926,6 +953,8 @@ export const getDataByChannels = async (
     use_v2?: boolean; // Obsolete - kept for backward compatibility, now ignored (DuckDB is the only implementation)
     dataTypes?: string[];
     data_source?: 'auto' | 'file' | 'influx'; // Data source to use: 'auto' (default), 'file', or 'influx'
+    channelBucketAggregateByName?: Record<string, ChannelBucketAggregate>;
+    resolution?: string | null;
   }
 ): Promise<{
   data: DataPoint[];
@@ -1065,9 +1094,11 @@ export const getDataByChannels = async (
         sourceId: sourceId, // Use resolved sourceId
         channels: channels,
         date: date,
-        timezone: (options as any).timezone || 'UTC', // Default to UTC if not provided (API requires string, not null)
-        use_v2: (options as any).use_v2 !== false, // Obsolete - kept for backward compatibility, now ignored
-        data_source: options.data_source || 'auto' // Obsolete - kept for backward compatibility, now ignored (DuckDB is the only implementation)
+        timezone: options.timezone || 'UTC', // Default to UTC if not provided (API requires string, not null)
+        use_v2: options.use_v2 !== false, // Obsolete - kept for backward compatibility, now ignored
+        data_source: options.data_source || 'auto', // Obsolete - kept for backward compatibility, now ignored (DuckDB is the only implementation)
+        channelBucketAggregateByName: options.channelBucketAggregateByName,
+        resolution: options.resolution,
       });
     }
     

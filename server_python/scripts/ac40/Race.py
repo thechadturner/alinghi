@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import sys
 import json
-import pyarrow as pa
 import os
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -49,56 +48,181 @@ api_token = os.getenv('SYSTEM_KEY')
 if not api_token:
     raise RuntimeError("SYSTEM_KEY is missing from environment configuration.")
 
+_RH_BAND_COLS = ('rh300_below', 'rh750_below', 'rh1400_above', 'rhGood')
+
+# Built once per process; avoid reallocating the large channel list on every get_data() call.
+_GET_DATA_CHANNELS = [
+    {'name': 'Datetime', 'type': 'datetime'},
+    {'name': 'ts', 'type': 'float'},
+    {'name': 'Lat_dd', 'type': 'float'},
+    {'name': 'Lng_dd', 'type': 'float'},
+    {'name': 'Twd_cor_deg', 'type': 'angle360'},
+    {'name': 'Tws_cor_kph', 'type': 'float'},
+    {'name': 'Polar_perc', 'type': 'float'},
+    {'name': 'Bsp_kts', 'type': 'float'},
+    {'name': 'Twa_cor_deg', 'type': 'float'},
+    {'name': 'Twa_n_cor_deg', 'type': 'float'},
+    {'name': 'Vmg_cor_kph', 'type': 'float'},
+    {'name': 'Vmg_cor_perc', 'type': 'float'},
+    {'name': 'Tws_kph', 'type': 'float'},
+    {'name': 'Twd_deg', 'type': 'angle360'},
+    {'name': 'Twa_deg', 'type': 'float'},
+    {'name': 'Twa_n_deg', 'type': 'float'},
+    {'name': 'Vmg_kph', 'type': 'float'},
+    {'name': 'Vmg_perc', 'type': 'float'},
+    {'name': 'Pitch_deg', 'type': 'float'},
+    {'name': 'Heel_n_deg', 'type': 'float'},
+    {'name': 'RH_lwd_mm', 'type': 'float'},
+    {'name': 'rh300_below', 'type': 'float'},
+    {'name': 'rh750_below', 'type': 'float'},
+    {'name': 'rh1400_above', 'type': 'float'},
+    {'name': 'rhGood', 'type': 'float'},
+    {'name': 'rhZero', 'type': 'float'},
+    {'name': 'RUD_rake_ang_deg', 'type': 'float'},
+    {'name': 'RUD_diff_ang_deg', 'type': 'float'},
+    {'name': 'DB_cant_lwd_deg', 'type': 'float'},
+    {'name': 'DB_cant_eff_lwd_deg', 'type': 'float'},
+    {'name': 'CA1_ang_n_deg', 'type': 'float'},
+    {'name': 'WING_twist_n_deg', 'type': 'float'},
+    {'name': 'WING_clew_pos_n_mm', 'type': 'float'},
+    {'name': 'JIB_sheet_load_kgf', 'type': 'float'},
+    {'name': 'JIB_cunno_load_kgf', 'type': 'float'},
+    {'name': 'JIB_lead_ang_deg', 'type': 'float'},
+    {'name': 'Foiling_state', 'type': 'int'},
+    {'name': 'Phase_id', 'type': 'int'},
+    {'name': 'Race_number', 'type': 'int'},
+    {'name': 'Leg_number', 'type': 'int'},
+    {'name': 'Maneuver_type', 'type': 'string'},
+    {'name': 'Grade', 'type': 'int'},
+]
+
+
+def _df_col_map_lower(df):
+    """Map lowercased column name -> actual column label (build once per df)."""
+    if df is None:
+        return {}
+    return {str(c).lower(): c for c in df.columns}
+
+
+def _series_col_ci(df, logical_name: str, col_map=None):
+    """Return df column as Series if a column name matches logical_name case-insensitively."""
+    if df is None or logical_name is None:
+        return None
+    want = str(logical_name).lower()
+    if col_map is None:
+        col_map = _df_col_map_lower(df)
+    actual = col_map.get(want)
+    return df[actual] if actual is not None else None
+
+
+def _mean360_series(series: pd.Series):
+    """Circular mean in degrees; numpy-vectorized vs u.mean360(list(...))."""
+    if series is None or len(series) == 0:
+        return None
+    arr = pd.to_numeric(series, errors='coerce').dropna().to_numpy(dtype=np.float64)
+    if arr.size == 0:
+        return None
+    rad = np.radians(arr)
+    ang = float(np.degrees(np.arctan2(np.sin(rad).sum(), np.cos(rad).sum())))
+    return u.angle360_normalize(ang)
+
+
+def _rh_band_series_from_height(rh: pd.Series):
+    """
+    Same band rules as 3_systems.compute_rh_lwd_features: rhZero (RH <= 0), rh300_below,
+    rh750_below (300,750 open), rhGood (750,1400 open), rh1400_above; NaN where RH missing.
+    """
+    r = pd.to_numeric(rh, errors='coerce')
+
+    def band(mask: pd.Series) -> pd.Series:
+        return pd.Series(np.where(r.notna(), mask.astype(np.float64), np.nan), index=r.index)
+
+    return {
+        'rhZero': band(r <= 0.0),
+        'rh300_below': band(r < 300.0),
+        'rh750_below': band((r > 300.0) & (r < 750.0)),
+        'rh1400_above': band(r > 1400.0),
+        'rhGood': band((r > 750.0) & (r < 1400.0)),
+    }
+
+
+def _rh_band_use_and_valid_from_df(df):
+    """
+    Build band column dict and boolean valid mask (rh300_below notna), same logic as RH percents.
+
+    Returns (use, valid) or None if empty / no usable RH or bands.
+    """
+    if df is None or len(df) == 0:
+        return None
+
+    col_map = _df_col_map_lower(df)
+    use = {}
+    missing = []
+    for c in _RH_BAND_COLS:
+        s = _series_col_ci(df, c, col_map)
+        if s is not None and s.notna().any():
+            use[c] = s
+        else:
+            missing.append(c)
+
+    if missing:
+        rh_col = _series_col_ci(df, 'RH_lwd_mm', col_map)
+        if rh_col is None:
+            return None
+        computed = _rh_band_series_from_height(rh_col)
+        for c in missing:
+            use[c] = computed[c]
+
+    # rhZero: prefer API column; else derive from RH_lwd_mm (same rule as 3_systems).
+    rz = _series_col_ci(df, 'rhZero', col_map)
+    if rz is not None and rz.notna().any():
+        use['rhZero'] = rz
+    else:
+        rh_col = _series_col_ci(df, 'RH_lwd_mm', col_map)
+        if rh_col is not None:
+            use['rhZero'] = _rh_band_series_from_height(rh_col)['rhZero']
+
+    valid = use['rh300_below'].notna()
+    if int(valid.sum()) <= 0:
+        return None
+
+    return (use, valid)
+
+
+def _rh_band_percents_from_use_valid(use, valid):
+    """RH300/RH750/RHgood/RH1400 percents from precomputed use dict and valid mask."""
+    n = int(valid.sum())
+    if n <= 0:
+        return (None, None, None, None)
+
+    def pct(col):
+        return 100.0 * float(pd.to_numeric(use[col][valid], errors='coerce').fillna(0).sum()) / n
+
+    return (pct('rh300_below'), pct('rh750_below'), pct('rhGood'), pct('rh1400_above'))
+
+
+def _rh_band_percents_from_df(df):
+    """
+    RH300_perc / RH750_perc / RHgood_perc / RH1400_perc as % of samples with non-NaN band flags
+    (same denominator): n = rows where rh300_below is not NaN, then 100 * sum(flag) / n.
+
+    Uses precomputed band columns from the API when present (case-insensitive names) and any
+    non-null values; otherwise derives missing bands from RH_lwd_mm (height-derived work skipped
+    when all four API columns are populated).
+    """
+    tup = _rh_band_use_and_valid_from_df(df)
+    if tup is None:
+        return (None, None, None, None)
+    return _rh_band_percents_from_use_valid(tup[0], tup[1])
+
+
 def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
     df = pd.DataFrame()
     try:
-        channels = [
-            {'name': 'Datetime', 'type': 'datetime'},
-            {'name': 'ts', 'type': 'float'},
-            {'name': 'Lat_dd', 'type': 'float'},
-            {'name': 'Lng_dd', 'type': 'float'},
-            {'name': 'Twd_cor_deg', 'type': 'angle360'},
-            {'name': 'Tws_cor_kph', 'type': 'float'},
-            
-            {'name': 'Polar_perc', 'type': 'float'},
-            {'name': 'Bsp_kts', 'type': 'float'},
-            {'name': 'Twa_cor_deg', 'type': 'float'},
-            {'name': 'Twa_n_cor_deg', 'type': 'float'},
-            {'name': 'Vmg_cor_kph', 'type': 'float'},
-            {'name': 'Vmg_cor_perc', 'type': 'float'},
-            # Fallback channels (used when _cor_ values are missing)
-            {'name': 'Tws_kph', 'type': 'float'},
-            {'name': 'Twd_deg', 'type': 'angle360'},
-            {'name': 'Twa_deg', 'type': 'float'},
-            {'name': 'Twa_n_deg', 'type': 'float'},
-            {'name': 'Vmg_kph', 'type': 'float'},
-            {'name': 'Vmg_perc', 'type': 'float'},
-
-            {'name': 'Pitch_deg', 'type': 'float'},
-            {'name': 'Heel_n_deg', 'type': 'float'},
-            {'name': 'RH_lwd_mm', 'type': 'float'},
-
-            {'name': 'RUD_rake_ang_deg', 'type': 'float'},
-            {'name': 'RUD_diff_ang_deg', 'type': 'float'},
-            {'name': 'DB_cant_lwd_deg', 'type': 'float'},
-            {'name': 'DB_cant_eff_lwd_deg', 'type': 'float'},
-
-            {'name': 'CA1_ang_n_deg', 'type': 'float'},
-            {'name': 'WING_twist_n_deg', 'type': 'float'},
-            {'name': 'WING_clew_pos_n_mm', 'type': 'float'},
-            {'name': 'JIB_sheet_load_kgf', 'type': 'float'},
-            {'name': 'JIB_cunno_load_kgf', 'type': 'float'},
-            {'name': 'JIB_lead_ang_deg', 'type': 'float'},
-
-            {'name': 'Foiling_state', 'type': 'int'},
-            {'name': 'Phase_id', 'type': 'int'},
-            {'name': 'Race_number', 'type': 'int'},
-            {'name': 'Leg_number', 'type': 'int'},
-            {'name': 'Maneuver_type', 'type': 'string'},
-            {'name': 'Grade', 'type': 'int'}
-        ]
-
-        dfi = u.get_channel_values(api_token, class_name, project_id, date, source_name, channels, '100ms', start_ts, end_ts, 'UTC')
+        dfi = u.get_channel_values(
+            api_token, class_name, project_id, date, source_name,
+            _GET_DATA_CHANNELS, '100ms', start_ts, end_ts, 'UTC',
+        )
 
         if dfi is not None and len(dfi) > 0:
             # Rename corrected (_cor) channels to standard names. If a corrected column exists,
@@ -205,6 +329,10 @@ def _empty_channelinfo(event_id, isRace, previous_cumulative_sec=None):
         'Bsp_max_kph': None,
         'Vmg_avg_kph': None,
         'Foiling_perc': None,
+        'RH300_perc': None,
+        'RH750_perc': None,
+        'RHgood_perc': None,
+        'RH1400_perc': None,
         'Maneuver_count': None,
         'Phase_duration_avg_sec': None,
         'Bsp_start_kph': None,
@@ -248,32 +376,42 @@ def getChannelInfo(event_id, df, isRace=True, previous_cumulative_sec=None):
     time_s = end_ts - start_ts
     tws_avg = _safe_col_mean(df, 'Tws_kph')
     twd_deg_series = _safe_col_series(df, 'Twd_deg')
-    twd_avg = u.mean360(list(twd_deg_series)) if twd_deg_series is not None else None
+    twd_avg = _mean360_series(twd_deg_series) if twd_deg_series is not None else None
     bsp_avg = _safe_col_mean(df, 'Bsp_kts')
     bsp_max = df['Bsp_kts'].max() if 'Bsp_kts' in df.columns else None
 
     leg_col = 'Leg_number' in df.columns
-    dfrf = df.loc[(df['Leg_number'] > 1)].copy() if leg_col else pd.DataFrame()
-    vmg_avg = _safe_col_mean(dfrf, 'Vmg_kph') if len(dfrf) > 0 else _safe_col_mean(df, 'Vmg_kph')
+    leg_pos = (df['Leg_number'] > 0) if leg_col else None
 
-    dflf = df.loc[(df['Leg_number'] > 0)].copy() if leg_col else df
-    # When there are no legs (e.g. training-by-hour), dflf is empty; use full df for time range so foiling_perc and racetime_s are valid
-    if len(dflf) == 0:
-        dflf = df.copy()
-    start_ts = dflf['ts'].min()
-    end_ts = dflf['ts'].max()
-    racetime_s = end_ts - start_ts if (start_ts is not None and end_ts is not None) else None
-    if racetime_s is not None and (np.isnan(racetime_s) or racetime_s <= 0):
-        racetime_s = None
+    df_vm = df.loc[df['Leg_number'] > 1] if leg_col else pd.DataFrame()
+    vmg_avg = _safe_col_mean(df_vm, 'Vmg_kph') if len(df_vm) > 0 else _safe_col_mean(df, 'Vmg_kph')
 
-    foil_col = 'Foiling_state' in df.columns
-    # For foiling count: when we have legs use only Leg_number > 0; when no legs (training) use full df
-    if leg_col and len(df.loc[(df['Leg_number'] > 0)]) > 0:
-        dfrf = df.loc[(df['Foiling_state'] == 0) & (df['Leg_number'] > 0)].copy() if foil_col else pd.DataFrame()
-    else:
-        dfrf = df.loc[(df['Foiling_state'] == 0)].copy() if foil_col else pd.DataFrame()
-    foiling_time_s = len(dfrf) / 10
-    foiling_perc = (foiling_time_s / racetime_s) * 100 if racetime_s and racetime_s > 0 else None
+    # Foiling_perc: same sample basis as RH band %; foiling = rhZero == 0 (not RH<=0), aligned with 3_systems.
+    rh_tup = _rh_band_use_and_valid_from_df(df)
+    foil_col = 'RH_lwd_mm' in df.columns
+    foiling_perc = None
+    if rh_tup is not None:
+        use, valid = rh_tup
+        if leg_col and leg_pos is not None and bool(leg_pos.any()):
+            on_leg = leg_pos
+        else:
+            on_leg = pd.Series(True, index=df.index)
+        mask = valid & on_leg
+        col_map_ci = _df_col_map_lower(df)
+        rz_series = use.get('rhZero')
+        if rz_series is not None:
+            rz_num = pd.to_numeric(rz_series, errors='coerce')
+            denom_mask = mask & rz_num.notna()
+            n_d = int(denom_mask.sum())
+            if n_d > 0:
+                foiling_perc = 100.0 * float(((rz_num == 0.0) & denom_mask).sum()) / n_d
+        elif foil_col:
+            rh_series = _series_col_ci(df, 'RH_lwd_mm', col_map_ci)
+            if rh_series is not None:
+                rh_numeric = pd.to_numeric(rh_series, errors='coerce')
+                n_mask = int(mask.sum())
+                if n_mask > 0:
+                    foiling_perc = 100.0 * float(((rh_numeric > 0) & mask).sum()) / n_mask
 
     # Maneuver count: tacks ('T') and gybes ('G') only (excludes roundup, bearaway, takeoff)
     maneuver_count = df['Maneuver_type'].isin(['T', 'G']).sum() if 'Maneuver_type' in df.columns else 0
@@ -293,19 +431,19 @@ def getChannelInfo(event_id, df, isRace=True, previous_cumulative_sec=None):
         return float(round(v, digits)) if digits is not None else float(v)
 
     phase_col = 'Phase_id' in df.columns
-    dfp = df.loc[(df['Phase_id'] > 0)].copy() if phase_col else df.copy()
-
-    if len(dfp) == 0:
-        dfp = df.copy()
+    if phase_col:
+        dfp = df.loc[df['Phase_id'] > 0]
+        if len(dfp) == 0:
+            dfp = df
+    else:
+        dfp = df
 
     if 'ts' not in dfp.columns:
         phase_duration_s = None
-        twd_avg = twd_avg
-        tws_avg = tws_avg
-        bsp_avg = bsp_avg
     else:
-        dfp = dfp.sort_values('ts').copy()
+        dfp = dfp.sort_values('ts', kind='mergesort')
         if phase_col:
+            dfp = dfp.copy()
             dfp['phase_run'] = (dfp['Phase_id'] != dfp['Phase_id'].shift()).cumsum()
             run_counts_uw = dfp.groupby(['Phase_id', 'phase_run']).size().reset_index(name='n_samples')
             run_counts_uw['duration_s'] = run_counts_uw['n_samples'] / 10
@@ -314,35 +452,28 @@ def getChannelInfo(event_id, df, isRace=True, previous_cumulative_sec=None):
         else:
             phase_duration_s = None
         twd_deg_p = _safe_col_series(dfp, 'Twd_deg')
-        twd_avg = u.mean360(list(twd_deg_p)) if twd_deg_p is not None else twd_avg
-        tws_avg = _safe_col_mean(dfp, 'Tws_kph') if tws_avg is None else tws_avg
-        bsp_avg = _safe_col_mean(dfp, 'Bsp_kts') if bsp_avg is None else bsp_avg
+        if twd_deg_p is not None:
+            twd_avg = _mean360_series(twd_deg_p)
+        if tws_avg is None:
+            tws_avg = _safe_col_mean(dfp, 'Tws_kph')
+        if bsp_avg is None:
+            bsp_avg = _safe_col_mean(dfp, 'Bsp_kts')
 
     if isRace == False:
         twa_avg = dfp['Twa_n_deg'].mean()
-        # Leg_start_twa / Leg_end_twa = first and last Twa_deg of the leg (by ts)
-        df_sorted_ts = df.sort_values('ts')
-        twa_start = df_sorted_ts['Twa_deg'].iloc[0] if len(df_sorted_ts) > 0 and 'Twa_deg' in df_sorted_ts.columns else None
-        twa_end = df_sorted_ts['Twa_deg'].iloc[-1] if len(df_sorted_ts) > 0 and 'Twa_deg' in df_sorted_ts.columns else None
+        twa_start = None
+        twa_end = None
+        if 'Twa_deg' in df.columns and 'ts' in df.columns:
+            ts_ok = df['ts'].notna()
+            if ts_ok.any():
+                sub = df.loc[ts_ok]
+                i0 = sub['ts'].idxmin()
+                i1 = sub['ts'].idxmax()
+                twa_start = sub.loc[i0, 'Twa_deg']
+                twa_end = sub.loc[i1, 'Twa_deg']
 
         polar_perc_avg = dfp['Polar_perc'].mean()
         vmg_perc_avg = dfp['Vmg_perc'].mean()
-        # rh_lwd_avg = dfp['RH_lwd_mm'].mean()
-        # pitch_avg = dfp['Pitch_deg'].mean()
-        # heel_avg = dfp['Heel_n_deg'].mean()
-        # rh_lwd_std = dfp['RH_lwd_mm'].std()
-        # pitch_std = dfp['Pitch_deg'].std()
-        # heel_std = dfp['Heel_n_deg'].std()
-        # rud_rake_avg = dfp['RUD_rake_ang_deg'].mean()
-        # rud_diff_avg = dfp['RUD_diff_ang_deg'].mean()
-        # db_cant_avg = dfp['DB_cant_lwd_deg'].mean()
-        # db_cant_eff_avg = dfp['DB_cant_eff_lwd_deg'].mean()
-        # ca1_ang_avg = dfp['CA1_ang_n_deg'].mean()
-        # wing_twist_avg = dfp['WING_twist_n_deg'].mean() 
-        # wing_clew_avg = dfp['WING_clew_pos_n_mm'].mean() 
-        # jib_sheet_load_avg = dfp['JIB_sheet_load_kgf'].mean()
-        # jib_cunno_load_avg = dfp['JIB_cunno_load_kgf'].mean()
-        # jib_lead_ang_avg = dfp['JIB_lead_ang_deg'].mean()
 
         if bsp_avg is not None and not (isinstance(bsp_avg, float) and np.isnan(bsp_avg)):
             bsp_avg *= 1.852
@@ -361,17 +492,29 @@ def getChannelInfo(event_id, df, isRace=True, previous_cumulative_sec=None):
     channelinfo['Bsp_max_kph'] = _safe_float(bsp_max, 3)
     channelinfo['Vmg_avg_kph'] = _safe_float(vmg_avg, 3)
     channelinfo['Foiling_perc'] = _safe_float(foiling_perc, 3)
+
+    if rh_tup is None:
+        rh300_perc, rh750_perc, rhgood_perc, rh1400_perc = (None, None, None, None)
+    else:
+        rh300_perc, rh750_perc, rhgood_perc, rh1400_perc = _rh_band_percents_from_use_valid(rh_tup[0], rh_tup[1])
+    channelinfo['RH300_perc'] = _safe_float(rh300_perc, 3)
+    channelinfo['RH750_perc'] = _safe_float(rh750_perc, 3)
+    channelinfo['RHgood_perc'] = _safe_float(rhgood_perc, 3)
+    channelinfo['RH1400_perc'] = _safe_float(rh1400_perc, 3)
+
     channelinfo['Maneuver_count'] = _safe_float(maneuver_count, 3)
     channelinfo['Phase_duration_avg_sec'] = _safe_float(phase_duration_s, 3)
 
     if isRace == True:
         # Race Bsp_start_kph = Bsp at start of Leg 1 (first sample of leg 1 by ts), in kph
         bsp_start_kph = None
-        if 'Leg_number' in df.columns:
+        if 'Leg_number' in df.columns and 'ts' in df.columns and 'Bsp_kts' in df.columns:
             df_leg1 = df.loc[df['Leg_number'] == 1]
-            if len(df_leg1) > 0:
-                df_leg1_sorted = df_leg1.sort_values('ts')
-                bsp_start_kts = df_leg1_sorted['Bsp_kts'].iloc[0]
+            ts_ok = df_leg1['ts'].notna()
+            if ts_ok.any():
+                sub = df_leg1.loc[ts_ok]
+                i0 = sub['ts'].idxmin()
+                bsp_start_kts = sub.loc[i0, 'Bsp_kts']
                 if bsp_start_kts is not None and not (isinstance(bsp_start_kts, float) and np.isnan(bsp_start_kts)):
                     bsp_start_kph = float(bsp_start_kts) * 1.852
         channelinfo['Bsp_start_kph'] = _safe_float(bsp_start_kph, 3)
@@ -384,12 +527,15 @@ def getChannelInfo(event_id, df, isRace=True, previous_cumulative_sec=None):
     if isRace == False:
         # Bsp at start of leg (first sample by ts), in kph (including leg 1)
         bsp_start_kph = None
-        if len(df) > 0:
-            df_sorted = df.sort_values('ts')
-            bsp_start_kts = df_sorted['Bsp_kts'].iloc[0]
-            if bsp_start_kts is not None and not (isinstance(bsp_start_kts, float) and np.isnan(bsp_start_kts)):
-                bsp_start_kph = float(bsp_start_kts) * 1.852
-                
+        if len(df) > 0 and 'ts' in df.columns and 'Bsp_kts' in df.columns:
+            ts_ok = df['ts'].notna()
+            if ts_ok.any():
+                sub = df.loc[ts_ok]
+                i0 = sub['ts'].idxmin()
+                bsp_start_kts = sub.loc[i0, 'Bsp_kts']
+                if bsp_start_kts is not None and not (isinstance(bsp_start_kts, float) and np.isnan(bsp_start_kts)):
+                    bsp_start_kph = float(bsp_start_kts) * 1.852
+
         channelinfo['Bsp_start_kph'] = _safe_float(bsp_start_kph, 3)
 
         channelinfo['Leg_start_twa'] = _safe_float(twa_start, 3)
@@ -398,27 +544,6 @@ def getChannelInfo(event_id, df, isRace=True, previous_cumulative_sec=None):
         channelinfo['Twa_avg_deg'] = _safe_float(twa_avg, 3)
         channelinfo['Polar_perc_avg'] = _safe_float(polar_perc_avg, 3)
         channelinfo['Vmg_perc_avg'] = _safe_float(vmg_perc_avg, 3)
-        # channelinfo['Heel_avg_deg'] = _safe_float(heel_avg, 3)
-        # channelinfo['Heel_std_deg'] = _safe_float(heel_std, 3)
-
-        # channelinfo['Pitch_avg_deg'] = _safe_float(pitch_avg, 3)
-        # channelinfo['Pitch_std_deg'] = _safe_float(pitch_std, 3)
-
-        # channelinfo['RH_lwd_avg_mm'] = _safe_float(rh_lwd_avg, 3)
-        # channelinfo['RH_lwd_std_mm'] = _safe_float(rh_lwd_std, 3)
-
-        # channelinfo['CA1_avg_deg'] = _safe_float(ca1_ang_avg, 3)
-        # channelinfo['WING_twist_avg_deg'] = _safe_float(wing_twist_avg, 3)
-        # channelinfo['WING_clew_pos_n_mm'] = _safe_float(wing_clew_avg, 3)
-
-        # channelinfo['RUD_rake_ang_deg'] = _safe_float(rud_rake_avg, 3)
-        # channelinfo['RUD_diff_ang_deg'] = _safe_float(rud_diff_avg, 3)
-        # channelinfo['DB_cant_avg_deg'] = _safe_float(db_cant_avg, 3)
-        # channelinfo['DB_cant_eff_avg_deg'] = _safe_float(db_cant_eff_avg, 3)
-
-        # channelinfo['JIB_sheet_avg_deg'] = _safe_float(jib_sheet_load_avg, 3)
-        # channelinfo['JIB_lead_avg_deg'] = _safe_float(jib_lead_ang_avg, 3)
-        # channelinfo['JIB_cunno_avg_deg'] = _safe_float(jib_cunno_load_avg, 3)
 
         # Legs_completed: 1 if this leg has valid duration > 0, else 0
         leg_has_duration = (
@@ -706,34 +831,21 @@ def start(api_token, project_id, dataset_id, class_name, date, source_name, verb
             race_number = race_object['Race_number']
 
             # DO RACE: use only legs that this source has data for (from df), with duration > 0 and not null
-            dfr = df.loc[(df['Race_number'] == race_number) & (df['Leg_number'] > 0)].copy()
-            # Derive valid legs purely from this source's data - not from API leg list
-            valid_leg_numbers = []
-            for leg_num in dfr['Leg_number'].unique():
-                dfl = dfr.loc[(dfr['Leg_number'] == leg_num)].copy()
-                if len(dfl) > 0:
-                    time_s = dfl['ts'].max() - dfl['ts'].min()
-                    if time_s is not None and not (isinstance(time_s, float) and np.isnan(time_s)) and time_s > 0:
-                        valid_leg_numbers.append(int(leg_num))
-            valid_leg_numbers = sorted(valid_leg_numbers)
-            leg_count = max(valid_leg_numbers) if valid_leg_numbers else 0
-            if leg_count == 0:
+            dfr = df.loc[(df['Race_number'] == race_number) & (df['Leg_number'] > 0)]
+            leg_ts = dfr.groupby('Leg_number', sort=False)['ts'].agg(['min', 'max'])
+            leg_ts['dt'] = leg_ts['max'] - leg_ts['min']
+            valid_leg_numbers = sorted(
+                int(ln) for ln in leg_ts.index
+                if pd.notna(leg_ts.at[ln, 'dt']) and leg_ts.at[ln, 'dt'] > 0
+            )
+            if not valid_leg_numbers:
                 continue
-            # Per-leg stats and race aggregate: only valid legs; include last leg so race time = cumulative over all legs
             dfr = dfr.loc[dfr['Leg_number'].isin(valid_leg_numbers)].copy()
-            df_legs = dfr.copy()
-            dfr_race = dfr.copy()
+            df_legs = dfr
+            leg_groups = {int(k): g for k, g in dfr.groupby('Leg_number', sort=False)}
+            total_valid_duration_s = float(leg_ts['dt'].reindex(valid_leg_numbers).sum())
 
-            # RACE Duration_sec and Cumulative_sec = cumulative time for all valid legs including last leg
-            total_valid_duration_s = 0.0
-            for ln in valid_leg_numbers:
-                dfl = dfr.loc[dfr['Leg_number'] == ln]
-                if len(dfl) > 0:
-                    leg_time = dfl['ts'].max() - dfl['ts'].min()
-                    if leg_time is not None and not (isinstance(leg_time, float) and np.isnan(leg_time)) and leg_time > 0:
-                        total_valid_duration_s += leg_time
-
-            dfr_racing = dfr_race.loc[(dfr_race['Leg_number'] > 0)].copy()
+            dfr_racing = dfr
 
             channelinfo = getChannelInfo(event_id, dfr_racing, isRace=True)
             # Set race total from sum of all valid legs including last leg
@@ -748,13 +860,21 @@ def start(api_token, project_id, dataset_id, class_name, date, source_name, verb
             previous_cumulative_sec = 0.0
             for leg_object in race_object['Legs']:
                 leg_event_id = leg_object['Event_id']
-                leg_number = leg_object['Leg_number']
-                if leg_number not in valid_leg_numbers:
+                try:
+                    leg_num_int = int(leg_object['Leg_number'])
+                except (TypeError, ValueError):
+                    continue
+                if leg_num_int not in valid_leg_numbers:
                     continue
 
-                dfl = df_legs.loc[(df_legs['Leg_number'] == leg_number)].copy()
+                dfl = leg_groups.get(leg_num_int)
+                if dfl is None or len(dfl) == 0:
+                    continue
 
-                leg_channelinfo = getChannelInfo(leg_event_id, dfl, isRace=False, previous_cumulative_sec=previous_cumulative_sec if leg_number > 1 else None)
+                leg_channelinfo = getChannelInfo(
+                    leg_event_id, dfl, isRace=False,
+                    previous_cumulative_sec=previous_cumulative_sec if leg_num_int > 1 else None,
+                )
 
                 # Skip legs with null Duration_sec (missing/invalid times)
                 dur_sec = leg_channelinfo.get('Duration_sec')

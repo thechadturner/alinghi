@@ -40,6 +40,13 @@ interface ExecutionStatus {
 
 const STORAGE_KEY = 'admin_script_execution_statuses';
 
+/** Backend script filename for day-level cleanup. */
+const CLEANUP_SCRIPT_FILE = '4_cleanup.py';
+/** Status row label: full cleanup (VMG, race position, day page sync). */
+const CLEANUP_STATUS_FULL = CLEANUP_SCRIPT_FILE;
+/** Status row label: pages_only cleanup (dataset_pages / day_pages refresh only). */
+const CLEANUP_STATUS_DAY_PAGES = `${CLEANUP_SCRIPT_FILE} (day pages)`;
+
 // Persist execution statuses to localStorage
 const saveExecutionStatuses = (statuses: ExecutionStatus[]) => {
   try {
@@ -99,7 +106,8 @@ export default function AdminScriptExecution() {
   const [updatingChannels, setUpdatingChannels] = createSignal(false);
   const [channelUpdateMessage, setChannelUpdateMessage] = createSignal<string | null>(null);
   const [updatingCleanup, setUpdatingCleanup] = createSignal(false);
-  const [cleanupPagesOnly, setCleanupPagesOnly] = createSignal(false);
+  /** Which cleanup variant is running (for button labels). */
+  const [cleanupRunMode, setCleanupRunMode] = createSignal<'full' | 'day' | null>(null);
   const [cleanupMessage, setCleanupMessage] = createSignal<string | null>(null);
   const [updatingMarkwind, setUpdatingMarkwind] = createSignal(false);
   const [markwindMessage, setMarkwindMessage] = createSignal<string | null>(null);
@@ -1248,17 +1256,18 @@ export default function AdminScriptExecution() {
     }
   };
 
-  // Run 4_cleanup.py for each unique date (day-level VMG + race position). One status row per date.
-  const runCleanup = async () => {
+  // Run 4_cleanup.py for each unique date. Full run: VMG + race position + day page sync; pagesOnly: day pages refresh only.
+  const runCleanup = async (pagesOnly: boolean) => {
     if (selectedClassName() !== 'gp50') {
       setCleanupMessage('Cleanup is only supported for gp50.');
       return;
     }
     if (datasets().length === 0) {
-      setCleanupMessage('Fetch datasets first, then click Run cleanup.');
+      setCleanupMessage('Fetch datasets first, then run cleanup or Day pages.');
       return;
     }
 
+    const statusScriptName = pagesOnly ? CLEANUP_STATUS_DAY_PAGES : CLEANUP_STATUS_FULL;
     const ds = datasets();
     const uniqueNormalizedDates: string[] = [];
     const dateKeys = new Set<string>();
@@ -1276,7 +1285,7 @@ export default function AdminScriptExecution() {
         dataset_id: firstForDate.dataset_id,
         date: firstForDate.date,
         source_name: firstForDate.source_name || normDate,
-        script_name: '4_cleanup.py',
+        script_name: statusScriptName,
         status: 'pending' as const,
         started_at: new Date().toISOString()
       };
@@ -1284,11 +1293,12 @@ export default function AdminScriptExecution() {
     setExecutionStatuses((prev) => [...prev, ...initialStatuses]);
     setExecuting(true);
     setUpdatingCleanup(true);
+    setCleanupRunMode(pagesOnly ? 'day' : 'full');
     setCleanupMessage(null);
 
     setExecutionStatuses((prev) =>
       prev.map((s) =>
-        s.script_name === '4_cleanup.py' && initialStatuses.some((i) => i.dataset_id === s.dataset_id && i.date === s.date)
+        s.script_name === statusScriptName && initialStatuses.some((i) => i.dataset_id === s.dataset_id && i.date === s.date)
           ? { ...s, status: 'running' as const }
           : s
       )
@@ -1296,27 +1306,29 @@ export default function AdminScriptExecution() {
 
     try {
       info(
-        `[AdminScriptExecution] Run cleanup: ${uniqueNormalizedDates.length} unique date(s)${cleanupPagesOnly() ? " (pages_only)" : ""}`
+        `[AdminScriptExecution] Run cleanup: ${uniqueNormalizedDates.length} unique date(s)${pagesOnly ? ' (pages_only / day pages)' : ''}`
       );
       for (let i = 0; i < uniqueNormalizedDates.length; i++) {
         const dateNorm = uniqueNormalizedDates[i];
         const statusForDate = initialStatuses[i];
         const datasetId = statusForDate.dataset_id;
 
-        setCleanupMessage(`Cleanup (${i + 1}/${uniqueNormalizedDates.length}): ${dateNorm}...`);
+        setCleanupMessage(
+          `${pagesOnly ? 'Day pages' : 'Cleanup'} (${i + 1}/${uniqueNormalizedDates.length}): ${dateNorm}...`
+        );
         debug('[AdminScriptExecution] Run cleanup: calling execute_script for date', dateNorm);
 
         try {
           const payload = {
             project_id: selectedProjectId()!.toString(),
             class_name: selectedClassName(),
-            script_name: '4_cleanup.py',
+            script_name: CLEANUP_SCRIPT_FILE,
             parameters: {
               class_name: selectedClassName(),
               project_id: selectedProjectId()!.toString(),
               date: dateNorm,
               verbose: false,
-              pages_only: cleanupPagesOnly()
+              pages_only: pagesOnly
             }
           };
           const response_json = await postData(apiEndpoints.python.execute_script, payload);
@@ -1325,12 +1337,12 @@ export default function AdminScriptExecution() {
           if (pid) {
             processStore.startProcess(pid, 'script_execution');
             processStore.setShowToast(pid, false);
-            await waitForProcessCompletion(pid, datasetId, '4_cleanup.py');
+            await waitForProcessCompletion(pid, datasetId, statusScriptName);
           } else {
             const msg = (response_json as { message?: string })?.message || 'No process_id returned';
             setExecutionStatuses((prev) =>
               prev.map((s) =>
-                s.script_name === '4_cleanup.py' && s.dataset_id === datasetId && s.date === statusForDate.date
+                s.script_name === statusScriptName && s.dataset_id === datasetId && s.date === statusForDate.date
                   ? { ...s, status: 'error' as const, error: msg }
                   : s
               )
@@ -1341,7 +1353,7 @@ export default function AdminScriptExecution() {
           const msg = err instanceof Error ? err.message : String(err);
           setExecutionStatuses((prev) =>
             prev.map((s) =>
-              s.script_name === '4_cleanup.py' && s.dataset_id === datasetId && s.date === statusForDate.date
+              s.script_name === statusScriptName && s.dataset_id === datasetId && s.date === statusForDate.date
                 ? { ...s, status: 'error' as const, error: msg }
                 : s
             )
@@ -1355,10 +1367,11 @@ export default function AdminScriptExecution() {
       }
 
       const statusesAfter = executionStatuses();
-      const cleanupStatuses = statusesAfter.filter((s) => s.script_name === '4_cleanup.py' && initialStatuses.some((i) => i.dataset_id === s.dataset_id && i.date === s.date));
+      const cleanupStatuses = statusesAfter.filter((s) => s.script_name === statusScriptName && initialStatuses.some((i) => i.dataset_id === s.dataset_id && i.date === s.date));
       const successCount = cleanupStatuses.filter((s) => s.status === 'success').length;
       const errorCount = cleanupStatuses.filter((s) => s.status === 'error').length;
-      const msg = `Cleanup finished: ${successCount} date(s) ok${errorCount > 0 ? `, ${errorCount} error(s)` : ''}.`;
+      const label = pagesOnly ? 'Day pages' : 'Cleanup';
+      const msg = `${label} finished: ${successCount} date(s) ok${errorCount > 0 ? `, ${errorCount} error(s)` : ''}.`;
       setCleanupMessage(msg);
       info('[AdminScriptExecution]', msg);
     } catch (error: unknown) {
@@ -1366,6 +1379,7 @@ export default function AdminScriptExecution() {
       setCleanupMessage(`Error: ${msg}`);
       logError('[AdminScriptExecution] Run cleanup error:', error);
     } finally {
+      setCleanupRunMode(null);
       setExecuting(false);
       setUpdatingCleanup(false);
     }
@@ -1793,19 +1807,20 @@ export default function AdminScriptExecution() {
         // depend on the ordering of all datasets in the event
         info(`[AdminScriptExecution] Retrying Update Report Names for all datasets (day numbers depend on event ordering)`);
         await updateReportNames();
-      } else if (status.script_name === "4_cleanup.py") {
-        // Day-level cleanup: parameters are class_name, project_id, date, verbose
+      } else if (status.script_name === CLEANUP_STATUS_FULL || status.script_name === CLEANUP_STATUS_DAY_PAGES) {
+        const pagesOnlyRetry = status.script_name === CLEANUP_STATUS_DAY_PAGES;
         const dateNorm = dataset.date.replace(/[-/]/g, "");
         const parameters = {
           class_name: selectedClassName(),
           project_id: selectedProjectId()!.toString(),
           date: dateNorm,
-          verbose: false
+          verbose: false,
+          pages_only: pagesOnlyRetry
         };
         const payload = {
           project_id: selectedProjectId()!.toString(),
           class_name: selectedClassName(),
-          script_name: "4_cleanup.py",
+          script_name: CLEANUP_SCRIPT_FILE,
           parameters
         };
         const controller = new AbortController();
@@ -1813,13 +1828,13 @@ export default function AdminScriptExecution() {
         let response_json = await postData(apiEndpoints.python.execute_script, payload, controller.signal);
         clearTimeout(timeoutId);
         if (response_json?.type === 'AbortError' || response_json?.message === 'Request cancelled') {
-          throw new Error(`Request timeout for 4_cleanup.py on date ${dataset.date} - script may still be running`);
+          throw new Error(`Request timeout for ${CLEANUP_SCRIPT_FILE} on date ${dataset.date} - script may still be running`);
         }
         const pid = response_json?.process_id ?? response_json?.data?.process_id;
         if (pid) {
           processStore.startProcess(pid, 'script_execution');
           processStore.setShowToast(pid, false);
-          await waitForProcessCompletion(pid, status.dataset_id, '4_cleanup.py');
+          await waitForProcessCompletion(pid, status.dataset_id, status.script_name);
         } else {
           throw new Error((response_json as { message?: string })?.message || 'No process_id returned');
         }
@@ -2509,6 +2524,13 @@ export default function AdminScriptExecution() {
                 Execute 2_processing
               </button>
               <button
+                class="px-4 py-2 bg-violet-600 text-white rounded hover:bg-violet-700 disabled:opacity-50"
+                onClick={() => executeScript("3_systems.py")}
+                disabled={executing()}
+              >
+                Execute 3_systems
+              </button>
+              <button
                 class="px-4 py-2 bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50"
                 onClick={() => executeScript("3_corrections.py")}
                 disabled={executing()}
@@ -2551,28 +2573,29 @@ export default function AdminScriptExecution() {
               >
                 {updatingChannels() ? 'Updating channels...' : 'Update channels'}
               </button>
-              <label class="inline-flex items-center gap-2 text-sm text-gray-700">
-                <input
-                  type="checkbox"
-                  class="rounded border-gray-300"
-                  checked={cleanupPagesOnly()}
-                  onChange={(e) => setCleanupPagesOnly(e.currentTarget.checked)}
-                />
-                <span>Day pages only</span>
-              </label>
               <button
                 class="px-4 py-2 bg-violet-600 text-white rounded hover:bg-violet-700 disabled:opacity-50"
-                onClick={runCleanup}
+                onClick={() => runCleanup(false)}
                 disabled={executing() || updatingCleanup() || datasets().length === 0 || selectedClassName() !== 'gp50'}
                 title={
                   selectedClassName() !== 'gp50'
                     ? 'Cleanup is only supported for gp50'
-                    : cleanupPagesOnly()
-                      ? 'Run 4_cleanup.py with pages_only: refresh dataset_pages and day_pages from events/channels only (no VMG, race position, grade-by-VMG)'
-                      : 'Run 4_cleanup.py (day-level VMG + race position + day page sync) for each unique date in the fetched datasets'
+                    : 'Run 4_cleanup.py (day-level VMG + race position + day page sync) for each unique date in the fetched datasets'
                 }
               >
-                {updatingCleanup() ? 'Running cleanup...' : 'Run cleanup'}
+                {updatingCleanup() && cleanupRunMode() === 'full' ? 'Running cleanup...' : 'Run cleanup'}
+              </button>
+              <button
+                class="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+                onClick={() => runCleanup(true)}
+                disabled={executing() || updatingCleanup() || datasets().length === 0 || selectedClassName() !== 'gp50'}
+                title={
+                  selectedClassName() !== 'gp50'
+                    ? 'Cleanup is only supported for gp50'
+                    : 'Run 4_cleanup.py with pages_only: refresh dataset_pages and day_pages from events/channels only (no VMG, race position, grade-by-VMG)'
+                }
+              >
+                {updatingCleanup() && cleanupRunMode() === 'day' ? 'Running day pages...' : 'Day pages'}
               </button>
               <button
                 class="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50"

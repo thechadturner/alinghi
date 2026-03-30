@@ -10,11 +10,26 @@ import { getData, formatTime } from "../../utils/global";
 import { registerActiveComponent, unregisterActiveComponent } from "../../pages/Dashboard";
 import { apiEndpoints } from "@config/env";
 import { persistantStore } from "../../store/persistantStore";
+import { sourcesStore } from "../../store/sourcesStore";
 import { getEventColor, getColorByIndex } from "../../utils/colorScale";
 import { setCurrentDataset, getCurrentDatasetTimezone } from "../../store/datasetTimezoneStore";
 
 import { selectedTime, setSelectedTime, isPlaying, setIsPlaying, playbackSpeed, setIsManualTimeChange, isManualTimeChange, requestTimeControl, releaseTimeControl, timeWindow, getDisplayWindowReferenceTime, smoothPlaybackTimeForTrack } from "../../store/playbackStore";
-import { debug, warn, info, error as logError, data as logData } from "../../utils/console";
+import { debug, warn, info, log, error as logError, data as logData } from "../../utils/console";
+import {
+  applyLineTypeToSegment,
+  normalizeLineType,
+  isFiniteDisplayY,
+  lineTypeDisplayLabel,
+  lineTypeUsesAcrossSegmentCarry,
+  dataResampleLegendBracket,
+  buildExploreResampleFetchPlan,
+  rawReadingPlotKeyForExploreChannel,
+  useRawReadingsForCumulativeLineTypes,
+  type ExploreResampleFetchPlan,
+  type TransformedPoint,
+  type TimeseriesLineType,
+} from "../../utils/timeseriesSeriesTransforms";
 
 const { selectedClassName, selectedProjectId, selectedDatasetId, selectedSourceId, selectedSourceName } = persistantStore;
 
@@ -23,8 +38,22 @@ function seriesDisplayName(series: { label?: string; yaxis?: { name?: string } }
   return series?.label ?? series?.yaxis?.name ?? "Series";
 }
 
+/** Unique sorted line-type labels for fleet chart corner caption (showLegendTable). */
+function fleetChartLineTypeSummary(seriesList: Array<{ lineType?: unknown }>): string {
+  if (!seriesList?.length) {
+    return lineTypeDisplayLabel(undefined);
+  }
+  const unique = new Set<string>();
+  for (const s of seriesList) {
+    unique.add(lineTypeDisplayLabel(s.lineType));
+  }
+  return [...unique].sort((a, b) => a.localeCompare(b)).join(" · ");
+}
+
 // Persist across re-renders so we don't re-run "clear and reset" when effect re-fires after store updates.
 let lastClearedZoomState = '';
+
+let warnedCumulativeLineTypesNoRawProcessSync = false;
 
 // Helper function to safely format a date to ISO string
 const safeToISOString = (date: Date | number | string): string => {
@@ -36,21 +65,412 @@ const safeToISOString = (date: Date | number | string): string => {
   }
 };
 
+function pointTimeMs(x: unknown): number {
+  if (x instanceof Date) return x.getTime();
+  return new Date(x as string | number).getTime();
+}
+
+/** Chronological order so in-window points are contiguous when iterating (merged RAW rows can arrive out of time order). */
+function sortSeriesPointsByTime<T extends { x: unknown }>(data: T[] | undefined | null): T[] {
+  return [...(data ?? [])].sort((a, b) => pointTimeMs(a.x) - pointTimeMs(b.x));
+}
+
+/**
+ * Explore “Raw Value” (standard) with no multi-cut: literally one polyline — all in-window samples, time-sorted.
+ * Avoids the generic segment walker (gaps, merge order) for the common case; still one SVG path via d3.line.
+ */
+function exploreStandardPolylineRawSegments(
+  data: Array<{ x: Date; y: number | null | undefined }>,
+  domainLo: Date,
+  domainHi: Date
+): Array<Array<{ x: Date; y: number }>> {
+  const pts: Array<{ x: Date; y: number }> = [];
+  for (let i = 0; i < data.length; i++) {
+    const d = data[i];
+    if (d.x < domainLo || d.x > domainHi) continue;
+    if (d.y === null || d.y === undefined || Number.isNaN(Number(d.y)) || !isFinite(Number(d.y))) continue;
+    const x = d.x instanceof Date ? d.x : new Date(d.x as unknown as string | number);
+    pts.push({ x, y: Number(d.y) });
+  }
+  if (pts.length === 0) return [];
+  pts.sort((a, b) => pointTimeMs(a.x) - pointTimeMs(b.x));
+  return [pts];
+}
+
+/** Split series into contiguous segments inside [domainLo, domainHi] by time gap and optional cut-range boundaries. */
+function splitSeriesIntoVisibleSegments(
+  data: Array<{ x: Date; y: number | null | undefined }>,
+  domainLo: Date,
+  domainHi: Date,
+  timeThresholdMs: number,
+  getCutRangeIndex?: (point: { x: Date; y: number }) => number
+): Array<Array<{ x: Date; y: number }>> {
+  const segments: Array<Array<{ x: Date; y: number }>> = [];
+  let current: Array<{ x: Date; y: number }> = [];
+  const hasCut = typeof getCutRangeIndex === "function";
+
+  for (let i = 0; i < data.length; i++) {
+    const point = data[i];
+    if (
+      point.x >= domainLo &&
+      point.x <= domainHi &&
+      point.y !== null &&
+      point.y !== undefined &&
+      !Number.isNaN(Number(point.y))
+    ) {
+      const y = Number(point.y);
+      let shouldBreak = false;
+      if (current.length > 0) {
+        const prevPoint = current[current.length - 1];
+        const timeDiff = Math.abs(pointTimeMs(point.x) - pointTimeMs(prevPoint.x));
+        if (timeDiff >= timeThresholdMs) {
+          shouldBreak = true;
+        }
+        if (hasCut) {
+          const prevIdx = getCutRangeIndex!({ x: prevPoint.x, y: prevPoint.y });
+          const currIdx = getCutRangeIndex!({ x: point.x as Date, y });
+          if (prevIdx !== currIdx && (prevIdx >= 0 || currIdx >= 0)) {
+            shouldBreak = true;
+          }
+        }
+      }
+      if (shouldBreak) {
+        if (current.length >= 1) {
+          segments.push([...current]);
+        }
+        current = [{ x: point.x as Date, y }];
+      } else {
+        current.push({ x: point.x as Date, y });
+      }
+    } else if (current.length > 0) {
+      if (current.length >= 1) {
+        segments.push([...current]);
+      }
+      current = [];
+    }
+  }
+  if (current.length >= 1) {
+    segments.push(current);
+  }
+  return segments;
+}
+
+/** Finite raw `y` min/max over all visible segments (for percent_change scaling). */
+function rawYMinMaxAcrossSegments(
+  rawSegs: Array<Array<{ x: Date; y: number }>>
+): { min: number; max: number } | undefined {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const seg of rawSegs) {
+    for (const p of seg) {
+      if (Number.isFinite(p.y)) {
+        min = Math.min(min, p.y);
+        max = Math.max(max, p.y);
+      }
+    }
+  }
+  if (min === Infinity || max === -Infinity) return undefined;
+  return { min, max };
+}
+
+/** Apply transform per segment; cumulative-style line types keep one running total across segments. */
+function applyLineTypeToSegmentsWithOptionalCarry(
+  rawSegs: Array<Array<{ x: Date; y: number }>>,
+  lineType: TimeseriesLineType
+): TransformedPoint[][] {
+  const useCarry = lineTypeUsesAcrossSegmentCarry(lineType);
+  const percentOpts =
+    lineType === "percent_change"
+      ? { rawYRange: rawYMinMaxAcrossSegments(rawSegs) }
+      : undefined;
+  let carry = 0;
+  const out: TransformedPoint[][] = [];
+  for (const seg of rawSegs) {
+    const t = applyLineTypeToSegment(seg, lineType, useCarry ? carry : 0, percentOpts);
+    out.push(t);
+    if (useCarry && t.length > 0) {
+      const last = t[t.length - 1];
+      if (isFiniteDisplayY(last)) {
+        carry = last.displayY;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Hold first/last sample y to the visible x-domain edges so resampled series (1 Hz / 10 Hz) draw to the same
+ * horizontal extent as RAW; avoids polylines that stop short inside a wider zoom/domain.
+ * Only for standard (raw value) lines — other line types need real samples at those times.
+ */
+function extendStandardSegmentsToVisibleDomain(
+  segments: TransformedPoint[][],
+  domainLo: Date,
+  domainHi: Date
+): TransformedPoint[][] {
+  const loMs = domainLo.getTime();
+  const hiMs = domainHi.getTime();
+  if (!Number.isFinite(loMs) || !Number.isFinite(hiMs) || loMs >= hiMs) {
+    return segments;
+  }
+  const n = segments.length;
+  return segments.map((seg, idx) => {
+    const finite = seg.filter(isFiniteDisplayY);
+    if (finite.length === 0) {
+      return seg;
+    }
+    const next = [...seg];
+    const first = finite[0];
+    const last = finite[finite.length - 1];
+    const firstMs = pointTimeMs(first.x);
+    const lastMs = pointTimeMs(last.x);
+    if (idx === 0 && firstMs > loMs) {
+      next.unshift({
+        x: new Date(loMs),
+        y: first.y,
+        displayY: first.displayY,
+      });
+    }
+    if (idx === n - 1 && lastMs < hiMs) {
+      next.push({
+        x: new Date(hiMs),
+        y: last.y,
+        displayY: last.displayY,
+      });
+    }
+    return next.sort((a, b) => pointTimeMs(a.x) - pointTimeMs(b.x));
+  });
+}
+
+function fillColorHalfOpacity(cssColor: string): string {
+  const c = d3.color(cssColor);
+  if (!c) {
+    return "rgba(128, 128, 128, 0.5)";
+  }
+  c.opacity = 0.5;
+  return c.formatRgb();
+}
+
+function collectFiniteDisplayYValues(
+  series: { data: Array<{ x: Date; y: number | null | undefined }>; lineType?: unknown },
+  domainLo: Date,
+  domainHi: Date,
+  timeThresholdMs: number,
+  getCutRangeIndex?: (point: { x: Date; y: number }) => number
+): number[] {
+  const lineType = normalizeLineType(series.lineType);
+  const rawSegs = splitSeriesIntoVisibleSegments(series.data, domainLo, domainHi, timeThresholdMs, getCutRangeIndex);
+  const transformed = applyLineTypeToSegmentsWithOptionalCarry(rawSegs, lineType);
+  const out: number[] = [];
+  for (const t of transformed) {
+    for (const p of t) {
+      if (isFiniteDisplayY(p)) {
+        out.push(p.displayY);
+      }
+    }
+  }
+  return out;
+}
+
+/** Raw finite y values whose x lies in [domainLo, domainHi] (for y-domain when transform path is empty). */
+function collectVisibleWindowRawYValues(
+  series: { data: Array<{ x: Date; y: number | null | undefined }> },
+  domainLo: Date,
+  domainHi: Date
+): number[] {
+  const out: number[] = [];
+  for (const d of series.data) {
+    if (d.x < domainLo || d.x > domainHi) continue;
+    if (d.y === null || d.y === undefined || Number.isNaN(Number(d.y)) || !isFinite(Number(d.y))) continue;
+    out.push(Number(d.y));
+  }
+  return out;
+}
+
+/** Nearest sample's displayY to `targetTimeMs` within segments in x-domain (for legend / tooltips). */
+function getTransformedValueAtClosestTime(
+  series: { data: Array<{ x: Date; y: number | null | undefined }>; lineType?: unknown },
+  targetTimeMs: number,
+  domainLo: Date,
+  domainHi: Date,
+  segmentGapMs: number,
+  getCutRangeIndex?: (point: { x: Date; y: number }) => number,
+  maxSampleDistanceMs: number = CLOSEST_SAMPLE_TOOLTIP_MAX_MS
+): number | undefined {
+  const lineType = normalizeLineType(series.lineType);
+  const rawSegs = splitSeriesIntoVisibleSegments(series.data, domainLo, domainHi, segmentGapMs, getCutRangeIndex);
+  const transformed = applyLineTypeToSegmentsWithOptionalCarry(rawSegs, lineType);
+  let bestT: number | undefined;
+  let bestY: number | undefined;
+  for (const tseg of transformed) {
+    for (const p of tseg) {
+      if (!isFiniteDisplayY(p)) continue;
+      const t = pointTimeMs(p.x);
+      if (bestT === undefined || Math.abs(t - targetTimeMs) < Math.abs(bestT - targetTimeMs)) {
+        bestT = t;
+        bestY = p.displayY;
+      }
+    }
+  }
+  if (bestT !== undefined && bestY !== undefined && Math.abs(bestT - targetTimeMs) <= maxSampleDistanceMs) {
+    return bestY;
+  }
+  // Nearest sample in visible window by raw y (standard line type only; avoids missing Sel on singleton segments / edge cases)
+  if (normalizeLineType(series.lineType) !== "standard") {
+    return undefined;
+  }
+  let rawBestT: number | undefined;
+  let rawBestY: number | undefined;
+  for (const d of series.data) {
+    if (d.x < domainLo || d.x > domainHi) continue;
+    if (d.y === null || d.y === undefined || Number.isNaN(Number(d.y)) || !isFinite(Number(d.y))) continue;
+    const t = pointTimeMs(d.x);
+    if (rawBestT === undefined || Math.abs(t - targetTimeMs) < Math.abs(rawBestT - targetTimeMs)) {
+      rawBestT = t;
+      rawBestY = Number(d.y);
+    }
+  }
+  if (
+    rawBestT !== undefined &&
+    rawBestY !== undefined &&
+    Math.abs(rawBestT - targetTimeMs) <= maxSampleDistanceMs
+  ) {
+    return rawBestY;
+  }
+  return undefined;
+}
+
+/**
+ * One-time transformed timeline for a series in [domainLo, domainHi] (for explore stacked areas).
+ * Avoids re-running split + line-type transforms per stack grid sample.
+ */
+function precomputeTransformedDisplayTimeline(
+  series: { data: Array<{ x: Date; y: number | null | undefined }>; lineType?: unknown },
+  domainLo: Date,
+  domainHi: Date,
+  segmentGapMs: number,
+  getCutRangeIndex?: (point: { x: Date; y: number }) => number
+): { t: number; y: number }[] {
+  const lineType = normalizeLineType(series.lineType);
+  const rawSegs = splitSeriesIntoVisibleSegments(series.data, domainLo, domainHi, segmentGapMs, getCutRangeIndex);
+  const transformed = applyLineTypeToSegmentsWithOptionalCarry(rawSegs, lineType);
+  const pts: { t: number; y: number }[] = [];
+  for (const tseg of transformed) {
+    for (const p of tseg) {
+      if (!isFiniteDisplayY(p)) continue;
+      pts.push({ t: pointTimeMs(p.x), y: p.displayY });
+    }
+  }
+  if (pts.length === 0) return [];
+  pts.sort((a, b) => a.t - b.t);
+  return pts;
+}
+
+function interpSortedTY(pts: { t: number; y: number }[], tMs: number): number | null {
+  if (pts.length === 0) return null;
+  if (tMs <= pts[0].t) return pts[0].y;
+  if (tMs >= pts[pts.length - 1].t) return pts[pts.length - 1].y;
+  let lo = 0;
+  let hi = pts.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].t <= tMs) lo = mid;
+    else hi = mid;
+  }
+  const a = pts[lo];
+  const b = pts[hi];
+  if (a.t === b.t) return a.y;
+  const u = (tMs - a.t) / (b.t - a.t);
+  return a.y + u * (b.y - a.y);
+}
+
+/** Uniform time grid for stacking — avoids collecting/sorting every distinct timestamp in the window. */
+const EXPLORE_STACK_GRID_POINTS = 1000;
+
+function uniformStackGridTimesMs(domainLo: Date, domainHi: Date, pointCount: number): number[] {
+  const lo = pointTimeMs(domainLo);
+  const hi = pointTimeMs(domainHi);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [];
+  const n = Math.max(2, Math.min(pointCount, 2000));
+  if (hi <= lo) {
+    return [lo, lo];
+  }
+  const out: number[] = new Array(n);
+  const span = hi - lo;
+  for (let i = 0; i < n; i++) {
+    out[i] = lo + (span * i) / (n - 1);
+  }
+  return out;
+}
+
+function exploreStackExtent(stacked: d3.Series<Record<string, number>, string>[]): [number, number] {
+  let ymin = Infinity;
+  let ymax = -Infinity;
+  for (const layer of stacked) {
+    for (let j = 0; j < layer.length; j++) {
+      const d = layer[j];
+      ymin = Math.min(ymin, d[0], d[1]);
+      ymax = Math.max(ymax, d[0], d[1]);
+    }
+  }
+  if (!Number.isFinite(ymin) || !Number.isFinite(ymax)) return [0, 1];
+  return [ymin, ymax];
+}
+
+type ExploreStackedPlan = {
+  gridTimes: number[];
+  stacked: d3.Series<Record<string, number>, string>[];
+};
+
+function buildExploreStackedRenderPlan(
+  seriesList: Array<{ data: Array<{ x: Date; y: number | null | undefined }>; lineType?: unknown }>,
+  domainLo: Date,
+  domainHi: Date,
+  segmentGapMs: number,
+  getCutRangeIndex?: (point: { x: Date; y: number }) => number
+): ExploreStackedPlan | null {
+  if (seriesList.length === 0) return null;
+  const gridTimes = uniformStackGridTimesMs(domainLo, domainHi, EXPLORE_STACK_GRID_POINTS);
+  if (gridTimes.length < 2) return null;
+
+  const timelines = seriesList.map((s) =>
+    precomputeTransformedDisplayTimeline(s, domainLo, domainHi, segmentGapMs, getCutRangeIndex)
+  );
+
+  const keys = seriesList.map((_, i) => String(i));
+  const rows: Record<string, number>[] = gridTimes.map((tMs) => {
+    const row: Record<string, number> = {};
+    for (let i = 0; i < seriesList.length; i++) {
+      const y = interpSortedTY(timelines[i], tMs);
+      row[String(i)] = y != null && Number.isFinite(y) ? y : 0;
+    }
+    return row;
+  });
+  const stacker = d3.stack<Record<string, number>>().keys(keys).order(d3.stackOrderNone).offset(d3.stackOffsetNone);
+  const stacked = stacker(rows);
+  return { gridTimes, stacked };
+}
+
 // Helper function to convert stroke style to SVG stroke-dasharray
 const getStrokeDasharray = (strokeStyle: string | null | undefined): string | null => {
-  if (!strokeStyle || strokeStyle === "solid") {
+  if (
+    !strokeStyle ||
+    strokeStyle === "solid" ||
+    strokeStyle === "filled-area" ||
+    strokeStyle === "stacked-area"
+  ) {
     return null; // null means no dasharray (solid line)
   }
-  
-  const styleMap = {
-    "dashed": "5,5",
+
+  const styleMap: Record<string, string> = {
+    dashed: "5,5",
     "dash-dash": "10,5,5,5",
     "bigdash-dash": "15,5,5,5",
-    "dotted": "2,2",
-    "dash-dot": "10,5,2,5"
+    dotted: "2,2",
+    "dash-dot": "10,5,2,5",
   };
-  
-  return styleMap[strokeStyle] || null;
+
+  return styleMap[strokeStyle] ?? null;
 };
 
 /**
@@ -96,6 +516,19 @@ function safeNumericYDomain(values: unknown[]): [number, number] {
 // ----- Legend table (for FleetTimeSeries) -----
 const LEGEND_TABLE_TIME_THRESHOLD_MS = 30000;
 
+/** Time gap (ms) after which fleet charts split polylines. Explore uses Infinity so sparse RAW (merged timeline) stays one connected line; cuts / domain still split. */
+const FLEET_TIME_SERIES_GAP_SPLIT_MS = 30000;
+
+/** Max |sample − hover time| for chart tooltips (ms); skip value when cursor is far from data. */
+const CLOSEST_SAMPLE_TOOLTIP_MAX_MS = 30000;
+
+/** Scrub line, on-chart value dots, legend [Sel]: always use nearest in-window sample (sparse RAW can be ≫30s from click). */
+const CLOSEST_SAMPLE_UI_MARKER_MAX_MS = Number.POSITIVE_INFINITY;
+
+function exploreChartSegmentGapSplitMs(isExploreLayout: boolean): number {
+  return isExploreLayout ? Number.POSITIVE_INFINITY : FLEET_TIME_SERIES_GAP_SPLIT_MS;
+}
+
 function legendTableFormatStat(val: number | undefined | null): string {
   if (val === undefined || val === null || Number.isNaN(val) || !Number.isFinite(val)) return "—";
   return String(Number(Math.round(val * 100) / 100));
@@ -118,12 +551,20 @@ interface LegendChartSeries {
   xaxis?: { name: string };
   yaxis?: { name: string };
   color?: string;
+  lineType?: unknown;
   data: Array<{ x: Date; y: number }>;
 }
 
 interface LegendChartConfig {
   chart?: string;
   series: LegendChartSeries[];
+}
+
+/** Team label for fleet legend rows and swatch highlight (must match table dedupe key). */
+function fleetTeamNameFromSeries(series: { yaxis?: { name?: string } }): string {
+  const channelName = series.yaxis?.name ?? "";
+  const dashIdx = channelName.indexOf(" - ");
+  return dashIdx >= 0 ? channelName.slice(dashIdx + 3).trim() : channelName;
 }
 
 function legendTableToTimestamp(d: Date | number): number {
@@ -151,69 +592,168 @@ function getLegendTableRangeFilter(): LegendTableRangeFilter | null {
   return ranges.length > 0 ? ranges : null;
 }
 
+/** Time-order and split by gap for fleet legend stats (no cut-aware split). */
+function splitPointsByTimeGapForLegend(
+  points: Array<{ x: Date; y: number }>,
+  timeThresholdMs: number
+): Array<Array<{ x: Date; y: number }>> {
+  if (points.length === 0) return [];
+  const sorted = [...points].sort(
+    (a, b) => legendTableToTimestamp(a.x) - legendTableToTimestamp(b.x)
+  );
+  const segments: Array<Array<{ x: Date; y: number }>> = [];
+  let cur: Array<{ x: Date; y: number }> = [];
+  const flush = () => {
+    if (cur.length > 0) {
+      segments.push([...cur]);
+      cur = [];
+    }
+  };
+  for (const p of sorted) {
+    if (cur.length === 0) {
+      cur = [p];
+    } else {
+      const prev = cur[cur.length - 1];
+      if (
+        Math.abs(legendTableToTimestamp(p.x) - legendTableToTimestamp(prev.x)) >= timeThresholdMs
+      ) {
+        flush();
+        cur = [p];
+      } else {
+        cur.push(p);
+      }
+    }
+  }
+  flush();
+  return segments;
+}
+
+function collectDisplayYsForLegendTable(
+  points: Array<{ x: Date; y: number }>,
+  lineTypeRaw: unknown
+): number[] {
+  const lineType = normalizeLineType(lineTypeRaw);
+  const segs = splitPointsByTimeGapForLegend(points, LEGEND_TABLE_TIME_THRESHOLD_MS);
+  const transformed = applyLineTypeToSegmentsWithOptionalCarry(segs, lineType);
+  const out: number[] = [];
+  for (const t of transformed) {
+    for (const p of t) {
+      if (isFiniteDisplayY(p)) {
+        out.push(p.displayY);
+      }
+    }
+  }
+  return out;
+}
+
 function computeLegendRows(
   chart: LegendChartConfig,
   currentTime: Date | null,
-  rangeFilter: LegendTableRangeFilter | null
+  rangeFilter: LegendTableRangeFilter | null,
+  /** When set (fleet chart after draw), stats and Sel use the same visible x-domain and segment rules as the plot (critical for cumulative / derivative / etc.). */
+  visibleXDomain: { lo: Date; hi: Date } | null
 ): LegendRow[] {
   if (!chart.series?.length) return [];
   const seenTeamNames = new Set<string>();
   return chart.series
     .map((series) => {
-    let dataToUse = series.data || [];
-    if (rangeFilter?.length) {
-      dataToUse = dataToUse.filter((d) => {
-        const t = legendTableToTimestamp(d.x);
-        return rangeFilter.some((r) => t >= r.start && t <= r.end);
-      });
-    }
-    const validY = dataToUse
-      .filter((d) => d.y != null && !Number.isNaN(d.y) && Number.isFinite(d.y))
-      .map((d) => d.y as number);
-    const n = validY.length;
-    const min = n > 0 ? Math.min(...validY) : undefined;
-    const max = n > 0 ? Math.max(...validY) : undefined;
-    const avg = n > 0 ? validY.reduce((a, b) => a + b, 0) / n : undefined;
-    const std =
-      n > 0 && avg != null
-        ? Math.sqrt(validY.reduce((s, y) => s + (y - avg) ** 2, 0) / n)
-        : undefined;
-
-    let selected: string = "—";
-    const selectionData = series.data || [];
-    if (currentTime && selectionData.length) {
-      const closest = selectionData.reduce((prev, curr) => {
-        const pt = legendTableToTimestamp(prev.x);
-        const ct = legendTableToTimestamp(curr.x);
-        const t = currentTime.getTime();
-        return Math.abs(ct - t) < Math.abs(pt - t) ? curr : prev;
-      });
-      const ct = legendTableToTimestamp(closest.x);
-      if (
-        Math.abs(ct - currentTime.getTime()) <= LEGEND_TABLE_TIME_THRESHOLD_MS &&
-        closest.y != null &&
-        Number.isFinite(closest.y)
-      ) {
-        selected = legendTableFormatStat(closest.y);
+      let dataToUse = series.data || [];
+      if (rangeFilter?.length) {
+        dataToUse = dataToUse.filter((d) => {
+          const t = legendTableToTimestamp(d.x);
+          return rangeFilter.some((r) => t >= r.start && t <= r.end);
+        });
       }
-    }
+      const validPoints = dataToUse.filter(
+        (d) => d.y != null && !Number.isNaN(d.y) && Number.isFinite(d.y)
+      ) as Array<{ x: Date; y: number }>;
 
-    const fullName = seriesDisplayName(series);
-    const channelName = series.yaxis?.name ?? "";
-    const dashIdx = channelName.indexOf(" - ");
-    const teamName = dashIdx >= 0 ? channelName.slice(dashIdx + 3).trim() : channelName;
+      let displayYs: number[];
+      let min: number | undefined;
+      let max: number | undefined;
+      let avg: number | undefined;
+      let std: number | undefined;
 
-    return {
-      name: fullName,
-      teamName,
-      color: series.color || "#1f77b4",
-      selected,
-      avg: legendTableFormatStat(avg),
-      min: legendTableFormatStat(min),
-      max: legendTableFormatStat(max),
-      std: legendTableFormatStat(std),
-    };
-  })
+      if (visibleXDomain) {
+        const { lo, hi } = visibleXDomain;
+        displayYs = collectFiniteDisplayYValues(
+          { data: series.data || [], lineType: series.lineType },
+          lo,
+          hi,
+          LEGEND_TABLE_TIME_THRESHOLD_MS
+        );
+        const n = displayYs.length;
+        if (n > 0) {
+          min = Math.min(...displayYs);
+          max = Math.max(...displayYs);
+          const mean = displayYs.reduce((a, b) => a + b, 0) / n;
+          avg = mean;
+          std = Math.sqrt(displayYs.reduce((s, y) => s + (y - mean) ** 2, 0) / n);
+        }
+      } else {
+        displayYs = collectDisplayYsForLegendTable(validPoints, series.lineType);
+        const n = displayYs.length;
+        min = n > 0 ? Math.min(...displayYs) : undefined;
+        max = n > 0 ? Math.max(...displayYs) : undefined;
+        avg = n > 0 ? displayYs.reduce((a, b) => a + b, 0) / n : undefined;
+        std =
+          n > 0 && avg != null
+            ? Math.sqrt(displayYs.reduce((s, y) => s + (y - avg) ** 2, 0) / n)
+            : undefined;
+      }
+
+      let selected: string = "—";
+      if (currentTime) {
+        const tMs = currentTime.getTime();
+        if (visibleXDomain) {
+          const selY = getTransformedValueAtClosestTime(
+            { data: series.data || [], lineType: series.lineType },
+            tMs,
+            visibleXDomain.lo,
+            visibleXDomain.hi,
+            LEGEND_TABLE_TIME_THRESHOLD_MS,
+            undefined,
+            CLOSEST_SAMPLE_UI_MARKER_MAX_MS
+          );
+          if (selY !== undefined) {
+            selected = legendTableFormatStat(selY);
+          }
+        } else if (validPoints.length > 0) {
+          const tMin = new Date(
+            Math.min(...validPoints.map((p) => legendTableToTimestamp(p.x)))
+          );
+          const tMax = new Date(
+            Math.max(...validPoints.map((p) => legendTableToTimestamp(p.x)))
+          );
+          const selY = getTransformedValueAtClosestTime(
+            { data: validPoints, lineType: series.lineType },
+            tMs,
+            tMin,
+            tMax,
+            LEGEND_TABLE_TIME_THRESHOLD_MS,
+            undefined,
+            CLOSEST_SAMPLE_UI_MARKER_MAX_MS
+          );
+          if (selY !== undefined) {
+            selected = legendTableFormatStat(selY);
+          }
+        }
+      }
+
+      const fullName = seriesDisplayName(series);
+      const teamName = fleetTeamNameFromSeries(series);
+
+      return {
+        name: fullName,
+        teamName,
+        color: series.color || "#1f77b4",
+        selected,
+        avg: legendTableFormatStat(avg),
+        min: legendTableFormatStat(min),
+        max: legendTableFormatStat(max),
+        std: legendTableFormatStat(std),
+      };
+    })
     .filter((row) => {
       if (seenTeamNames.has(row.teamName)) return false;
       seenTeamNames.add(row.teamName);
@@ -221,42 +761,205 @@ function computeLegendRows(
     });
 }
 
-/** HTML table legend: series name, selected value, min, max, std (used when showLegendTable in FleetTimeSeries) */
-function LegendTable(props: { chart: LegendChartConfig }) {
-  const rows = createMemo(() => {
-    const rangeFilter = getLegendTableRangeFilter();
-    return computeLegendRows(props.chart, selectedTime(), rangeFilter);
+function legendRowsToTsv(rows: LegendRow[]): string {
+  const header = ["Series", "Sel", "Avg", "Min", "Max", "Std"];
+  const lines = [header.join("\t")];
+  for (const row of rows) {
+    lines.push([row.teamName, row.selected, row.avg, row.min, row.max, row.std].join("\t"));
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+type LegendSortKey = "teamName" | "selected" | "avg" | "min" | "max" | "std";
+
+function parseLegendTableStatNumber(s: string): number | null {
+  if (s === "—" || s === "") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Null / missing stats sort after finite numbers (stable relative order among nulls). */
+function compareLegendTableStatCells(a: string, b: string, dir: 1 | -1): number {
+  const na = parseLegendTableStatNumber(a);
+  const nb = parseLegendTableStatNumber(b);
+  const aNull = na === null;
+  const bNull = nb === null;
+  if (aNull && bNull) return 0;
+  if (aNull) return 1;
+  if (bNull) return -1;
+  return (na - nb) * dir;
+}
+
+function sortLegendRows(rows: LegendRow[], key: LegendSortKey, dir: 1 | -1): LegendRow[] {
+  const out = [...rows];
+  out.sort((a, b) => {
+    if (key === "teamName") {
+      return a.teamName.localeCompare(b.teamName, undefined, { sensitivity: "base" }) * dir;
+    }
+    return compareLegendTableStatCells(a[key], b[key], dir);
   });
+  return out;
+}
+
+const LEGEND_TABLE_SORT_KEYS: { key: LegendSortKey; label: string }[] = [
+  { key: "teamName", label: "Series" },
+  { key: "selected", label: "Sel" },
+  { key: "avg", label: "Avg" },
+  { key: "min", label: "Min" },
+  { key: "max", label: "Max" },
+  { key: "std", label: "Std" },
+];
+
+/** HTML table legend: series name, selected value, min, max, std (used when showLegendTable in FleetTimeSeries) */
+function LegendTable(props: {
+  chart: LegendChartConfig;
+  highlightedTeams: () => string[];
+  onToggleTeam: (teamName: string) => void;
+  /** Bumped after each fleet chart draw so zoom/pan (D3) re-runs stats. */
+  chartLayoutEpoch?: () => number;
+  /** Current x zoom domain; must match plot for cumulative / transformed line types. */
+  getVisibleXDomain?: () => { lo: Date; hi: Date } | null;
+}) {
+  const rows = createMemo(() => {
+    props.chartLayoutEpoch?.();
+    const rangeFilter = getLegendTableRangeFilter();
+    const visibleX = props.getVisibleXDomain?.() ?? null;
+    return computeLegendRows(props.chart, selectedTime(), rangeFilter, visibleX);
+  });
+
+  const [sortKey, setSortKey] = createSignal<LegendSortKey>("teamName");
+  const [sortDir, setSortDir] = createSignal<1 | -1>(1);
+
+  const sortedRows = createMemo(() =>
+    sortLegendRows(rows(), sortKey(), sortDir())
+  );
+
+  const toggleLegendSort = (key: LegendSortKey) => {
+    if (sortKey() === key) {
+      setSortDir((d) => (d === 1 ? -1 : 1));
+    } else {
+      setSortKey(key);
+      setSortDir(1);
+    }
+  };
+
+  const [isHovered, setIsHovered] = createSignal(false);
+  const [showCopy, setShowCopy] = createSignal(false);
+  const [copySuccess, setCopySuccess] = createSignal(false);
+
+  createEffect(() => {
+    if (isHovered()) {
+      const timer = setTimeout(() => setShowCopy(true), 2000);
+      onCleanup(() => clearTimeout(timer));
+    } else {
+      setShowCopy(false);
+    }
+  });
+
+  const copyLegendToClipboard = async () => {
+    try {
+      const text = legendRowsToTsv(sortedRows());
+      log("TimeSeries: copy fleet legend table to clipboard", { textLength: text.length });
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        setCopySuccess(true);
+        setTimeout(() => setCopySuccess(false), 2000);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        setCopySuccess(true);
+        setTimeout(() => setCopySuccess(false), 2000);
+      }
+    } catch (err: unknown) {
+      logError("TimeSeries: copy fleet legend table failed", err);
+    }
+  };
+
   return (
-    <table class="timeseries-legend-table">
-      <thead>
-        <tr>
-          <th>Series</th>
-          <th>Sel</th>
-          <th>Avg</th>
-          <th>Min</th>
-          <th>Max</th>
-          <th>Std</th>
-        </tr>
-      </thead>
-      <tbody>
-        <For each={rows()} fallback={null}>
-          {(row) => (
-            <tr>
-              <td>
-                <span class="timeseries-legend-swatch" style={{ "background-color": row.color }} />
-                {row.teamName}
-              </td>
-              <td>{row.selected}</td>
-              <td>{row.avg}</td>
-              <td>{row.min}</td>
-              <td>{row.max}</td>
-              <td>{row.std}</td>
-            </tr>
-          )}
-        </For>
-      </tbody>
-    </table>
+    <div
+      class="copy-table-hover-wrapper"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <table class="timeseries-legend-table">
+        <thead>
+          <tr>
+            <For each={LEGEND_TABLE_SORT_KEYS}>
+              {(col) => {
+                const active = () => sortKey() === col.key;
+                const ariaSort = () =>
+                  active() ? (sortDir() === 1 ? "ascending" : "descending") : "none";
+                return (
+                  <th scope="col" aria-sort={ariaSort()}>
+                    <button
+                      type="button"
+                      class="timeseries-legend-th-btn"
+                      classList={{ "timeseries-legend-th-btn-active": active() }}
+                      onClick={() => toggleLegendSort(col.key)}
+                    >
+                      <span>{col.label}</span>
+                      <span class="timeseries-legend-sort-ind" aria-hidden="true">
+                        {active() ? (sortDir() === 1 ? "▲" : "▼") : ""}
+                      </span>
+                    </button>
+                  </th>
+                );
+              }}
+            </For>
+          </tr>
+        </thead>
+        <tbody>
+          <For each={sortedRows()} fallback={null}>
+            {(row) => (
+              <tr>
+                <td>
+                  <button
+                    type="button"
+                    class="timeseries-legend-swatch"
+                    classList={{
+                      "timeseries-legend-swatch-selected":
+                        props.highlightedTeams().length > 0 &&
+                        props.highlightedTeams().includes(row.teamName),
+                    }}
+                    style={{ "background-color": row.color }}
+                    aria-label={`Highlight series ${row.teamName}`}
+                    aria-pressed={props.highlightedTeams().includes(row.teamName)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      props.onToggleTeam(row.teamName);
+                    }}
+                  />
+                  {row.teamName}
+                </td>
+                <td>{row.selected}</td>
+                <td>{row.avg}</td>
+                <td>{row.min}</td>
+                <td>{row.max}</td>
+                <td>{row.std}</td>
+              </tr>
+            )}
+          </For>
+        </tbody>
+      </table>
+      <Show when={showCopy() && rows().length > 0}>
+        <div class="copy-table-data-actions">
+          <button
+            type="button"
+            class="copy-table-data-btn"
+            classList={{ "copy-table-data-btn-success": copySuccess() }}
+            onClick={copyLegendToClipboard}
+          >
+            {copySuccess() ? "✓ Copied!" : "Copy Table Data"}
+          </button>
+        </div>
+      </Show>
+    </div>
   );
 }
 
@@ -274,6 +977,8 @@ const TimeSeries = (props: TimeSeriesProps) => {
   const [initialPlayState, setInitialPlayState] = createSignal(false);
   const [datasetTimezone, setDatasetTimezone] = createSignal<string | null>(null);
   const [refsReady, setRefsReady] = createSignal(false);
+  /** Incremented after each fleet multi-chart draw so legend table tracks D3 zoom domain. */
+  const [fleetLegendTableEpoch, bumpFleetLegendTableEpoch] = createSignal(0);
   // Remove the signals but keep a ref for tracking last update
   let lastUpdateTime = 0;
   let lastTimeWindowRedrawTime = 0; // Throttle timeWindow-driven redraws when playing (FleetTimeSeries loop fix)
@@ -289,7 +994,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     const className = selectedClassName();
     const projectId = selectedProjectId();
     let datasetId: number | null = null;
-    
+
     if (typeof selectedDatasetId === 'function') {
       const dsId = selectedDatasetId();
       datasetId = dsId ? Number(dsId) : null;
@@ -300,7 +1005,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     if (className && projectId && datasetId && datasetId > 0) {
       await setCurrentDataset(className, projectId, datasetId);
     }
-    
+
     // Always check for timezone (works for both dataset mode and fleet/day mode)
     // In fleet/day mode, timezone is set via setCurrentDataset() from date endpoint
     // Calling getCurrentDatasetTimezone() here tracks the signal so effect re-runs when timezone changes
@@ -310,22 +1015,24 @@ const TimeSeries = (props: TimeSeriesProps) => {
   let isTimeSeriesSettingSelectedRange = false; // Flag to track when TimeSeries component is setting selectedRange
   let isRedrawing = false; // Flag to prevent redraw from triggering selection clearing effect
   let appliedTimeWindowInitialization = false; // Guard to apply timeWindow-based range once on mount
-  
-  // Counters to track effect calls
-  let chartChangesEffectCount = 0;
+
+  // Sliding-window burst detection for chart effect (lifetime counter falsely tripped after several legitimate fleet/filter updates)
+  let chartChangesEffectTimestamps: number[] = [];
+  const CHART_EFFECT_BURST_MS = 2000;
+  const CHART_EFFECT_BURST_MAX = 20;
   let mapFilteringEffectCount = 0;
   let processDataForChartsCount = 0;
   let lastChartEffectTime = 0;
   let getDataFromUnifiedStoreCount = 0;
-  
+
   // Brush activation functions (moved to component scope for cleanup)
   let activateBrush: (() => void) | null = null;
   let deactivateBrush: (() => void) | null = null;
-  
+
   // SVG and wheel handler (moved to component scope for cleanup)
   let svg: d3.Selection<SVGElement, unknown, null, undefined> | null = null;
   let wheelHandler: ((event: WheelEvent) => void) | null = null;
-  
+
   // Flags to prevent infinite loops
   let isProcessingData = false;
   let isFetchingData = false;
@@ -333,23 +1040,41 @@ const TimeSeries = (props: TimeSeriesProps) => {
   let lastFetchDataTime = 0;
   let chartEffectTimeout: ReturnType<typeof setTimeout> | null = null;
   let mapFilterEffectTimeout: ReturnType<typeof setTimeout> | null = null;
-  
+
   // Resize detection variables
   let resizeObserver: ResizeObserver | null = null;
   let mutationObserver: MutationObserver | null = null;
-  
+
   // Data fetching signals
   const [charts, setCharts] = createSignal<any[]>([]);
+  const [fleetLegendHighlightNames, setFleetLegendHighlightNames] = createSignal<string[]>([]);
   const [isLoading, setIsLoading] = createSignal(false);
   const [dataLoadingMessage, setDataLoadingMessage] = createSignal<string>('');
   const [isDataLoading, setIsDataLoading] = createSignal(false);
-  
+
   let containerRef: HTMLElement | null = null;
+
+  const requestFleetChartRedraw = () => {
+    if (!containerRef) return;
+    const refs = d3.select(containerRef).property("__timeSeriesRefs") as { redraw?: () => void } | undefined;
+    refs?.redraw?.();
+  };
+
+  const toggleFleetLegendHighlight = (teamName: string) => {
+    const key = String(teamName ?? "").trim();
+    if (!key) return;
+    setFleetLegendHighlightNames((prev) =>
+      prev.includes(key) ? prev.filter((n) => n !== key) : [...prev, key]
+    );
+    queueMicrotask(() => {
+      requestFleetChartRedraw();
+    });
+  };
 
   // Centralized filtering function for time series data
   const applyFilters = (data: any[]): any[] => {
     if (!data || !Array.isArray(data)) return data;
-    
+
     // For time series, we need to filter the underlying data points
     // This assumes the data structure has the same format as map data
     const filterState = getCurrentFilterState();
@@ -367,13 +1092,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
       isFetchingData,
       timestamp: new Date().toISOString()
     });
-    
+
+    // Fleet day explore (FleetTimeSeries): parent fetches per-boat data; global source is often "ALL".
+    // Never run single-source channel-values with ALL — it always fails and spams unifiedDataAPI errors.
+    if (props.showLegendTable) {
+      debug('[TimeSeries] getDataFromUnifiedStore skipped: fleet explore (showLegendTable); data comes from parent only');
+      return [];
+    }
+
     // Prevent infinite loops
     if (isFetchingData) {
       warn('🔄 TimeSeries: getDataFromUnifiedStore already running, skipping');
       return [];
     }
-    
+
     // Prevent rapid successive calls
     const now = Date.now();
     if (now - lastFetchDataTime < 100) {
@@ -381,9 +1113,9 @@ const TimeSeries = (props: TimeSeriesProps) => {
       return [];
     }
     lastFetchDataTime = now;
-    
+
     isFetchingData = true;
-    
+
     if (!props.chart) {
       debug('🔄 TimeSeries: No chart, returning empty array');
       isFetchingData = false;
@@ -399,12 +1131,12 @@ const TimeSeries = (props: TimeSeriesProps) => {
     }
 
     // Check if charts already have data (from fleet mode or other pre-populated scenarios)
-    const hasPrePopulatedData = chartsToProcess.some(chart => 
-      chart.series && chart.series.some(series => 
+    const hasPrePopulatedData = chartsToProcess.some(chart =>
+      chart.series && chart.series.some(series =>
         series.data && Array.isArray(series.data) && series.data.length > 0
       )
     );
-    
+
     if (hasPrePopulatedData) {
       debug('🔄 TimeSeries: Charts already have data, skipping data fetch');
       isFetchingData = false;
@@ -449,28 +1181,28 @@ const TimeSeries = (props: TimeSeriesProps) => {
         });
       }
     });
-      
+
     // Use the same logic as Overlay component - start with Datetime and add other channels
-    let channel_items = [{'name': 'Datetime', 'type': 'datetime'}];
+    let channel_items = [{ 'name': 'Datetime', 'type': 'datetime' }];
     requiredChannels.forEach(channel => {
       if (channel !== 'Datetime') {
-        channel_items.push({'name': channel, 'type': 'float'});
+        channel_items.push({ 'name': channel, 'type': 'float' });
       }
     });
-    
+
     // Extract just the channel names for the API call
     // CRITICAL: Use channel names directly from chart objects - they already have the correct case
     // Chart objects preserve original case like 'Twa_deg', 'Tws_avg_kph', 'Bsp_kph'
     // No normalization needed - use them as-is
     const validChannels = channel_items.map(item => item.name);
-    
+
     // Ensure common filter channels are present for downstream filtering (with correct case)
     ['Race_number', 'Leg_number', 'Grade'].forEach((ch) => {
       if (!validChannels.includes(ch)) {
         validChannels.push(ch);
       }
     });
-    
+
     // Debug logging for channel requests
     warn(`[TimeSeries] 🔍 CHANNEL EXTRACTION DEBUG:`, {
       requiredChannelsFromChartObjects: requiredChannels,
@@ -485,9 +1217,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
       note: 'These channels should be in original case from chart objects. If lowercase, chart objects themselves are lowercase.'
     });
 
+    const datasetIdForResample = selectedDatasetId();
+    const exploreResampleFetchPlan: ExploreResampleFetchPlan | null | undefined =
+      !datasetIdForResample || datasetIdForResample === 0
+        ? undefined
+        : buildExploreResampleFetchPlan(chartsToProcess) ?? undefined;
+    const validChannelsForDataPoints = [
+      ...new Set([...validChannels, ...(exploreResampleFetchPlan?.mergedYKeys ?? [])]),
+    ];
+
     // Get dataset date for proper API calls
     // In fleet mode (selectedDatasetId = 0), use selectedDate from persistent store instead
     let formattedDate = '';
+    /** Primary source for this dataset (from /datasets/info); used when global selection is fleet sentinel ALL */
+    let datasetPrimarySourceName: string | null = null;
     if (!selectedDatasetId() || selectedDatasetId() === 0) {
       // Fleet mode - use selectedDate
       const { selectedDate } = persistantStore;
@@ -502,15 +1245,78 @@ const TimeSeries = (props: TimeSeriesProps) => {
     } else {
       // Regular mode - fetch from dataset info
       const datasetInfoResponse = await getData(`${apiEndpoints.app.datasets}/info?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&dataset_id=${encodeURIComponent(selectedDatasetId())}`);
-      
+
       if (!datasetInfoResponse.success || !datasetInfoResponse.data) {
         isFetchingData = false;
         throw new Error("Failed to fetch dataset metadata.");
       }
-      
-      const { date: rawDate } = datasetInfoResponse.data;
-      formattedDate = rawDate.replace(/-/g, "");
+
+      const di = datasetInfoResponse.data as Record<string, unknown>;
+      const rawDate = di.date;
+      formattedDate = String(rawDate ?? "").replace(/-/g, "");
+      const sn = di.source_name ?? di.Source_name;
+      if (typeof sn === "string" && sn.trim()) {
+        datasetPrimarySourceName = sn.trim();
+      }
     }
+
+    // Dataset explore timeseries must use a real boat for channel-values, not fleet sentinel "ALL"
+    const datasetIdNum = selectedDatasetId();
+    let effectiveSourceName = selectedSourceName();
+    let effectiveSourceId = selectedSourceId();
+    if (datasetIdNum != null && datasetIdNum !== 0) {
+      const persistedName = effectiveSourceName == null ? "" : String(effectiveSourceName).trim();
+      const needsConcreteSource =
+        !persistedName || persistedName.toUpperCase() === "ALL" || effectiveSourceId === 0;
+
+      if (needsConcreteSource) {
+        if (datasetPrimarySourceName) {
+          effectiveSourceName = datasetPrimarySourceName;
+          if (!sourcesStore.isReady()) {
+            let w = 0;
+            while (!sourcesStore.isReady() && w < 50) {
+              await new Promise((r) => setTimeout(r, 100));
+              w++;
+            }
+          }
+          const rid = sourcesStore.getSourceId(effectiveSourceName);
+          if (rid != null && rid !== 0) {
+            effectiveSourceId = rid;
+          }
+        }
+        if (
+          (!effectiveSourceName || String(effectiveSourceName).trim().toUpperCase() === "ALL" || effectiveSourceId === 0) &&
+          sourcesStore.isReady()
+        ) {
+          const allSrc = sourcesStore.sources();
+          if (allSrc.length > 0) {
+            effectiveSourceName = allSrc[0].source_name;
+            effectiveSourceId = allSrc[0].source_id;
+            warn(`[TimeSeries] Global source was ALL/unknown; using first project source for channel-values`, {
+              effectiveSourceName,
+              effectiveSourceId,
+              datasetId: datasetIdNum,
+            });
+          }
+        }
+      }
+      const finalName = effectiveSourceName == null ? "" : String(effectiveSourceName).trim();
+      if (!finalName || finalName.toUpperCase() === "ALL") {
+        isFetchingData = false;
+        throw new Error(
+          "Dataset timeseries needs a boat source, but the current source is ALL (fleet). Open this dataset from the sidebar or pick a source."
+        );
+      }
+    }
+
+    debug(`[TimeSeries] Channel-values source resolution`, {
+      persistedName: selectedSourceName(),
+      persistedId: selectedSourceId(),
+      effectiveSourceName,
+      effectiveSourceId,
+      datasetPrimarySourceName,
+      datasetId: datasetIdNum,
+    });
 
     // Get data from unified data store using fetchDataWithChannelChecking
     // IMPORTANT: TimeSeries should ALWAYS load the full dataset, never filter by selectedRange
@@ -520,62 +1326,62 @@ const TimeSeries = (props: TimeSeriesProps) => {
       projectId: selectedProjectId().toString(),
       className: selectedClassName(),
       datasetId: selectedDatasetId().toString(),
-      sourceName: selectedSourceName(),
+      sourceName: effectiveSourceName,
+      sourceId: effectiveSourceId,
       date: formattedDate,
       note: 'Always fetching full dataset - selectedRange only affects zoom, not data filtering'
     });
-    
-    // Determine if any chart specifies its own filters
-    const hasChartSpecificFilters = chartsToProcess.some(c => Array.isArray(c?.filters) && c.filters.length > 0);
-    
+
     // Set up loading state monitoring
     setIsDataLoading(true);
     setDataLoadingMessage('Loading data...'); // Set initial message
     let loadingInterval: ReturnType<typeof setInterval> | null = null;
-    
+
     try {
-        const checkLoadingState = () => {
-          const message = unifiedDataStore.getDataLoadingMessage('ts', selectedClassName(), selectedSourceId());
-          debug(`[TimeSeries] Loading state check:`, { message });
-          
-          // Update message if we have a specific one
-          if (message && message !== 'Loading data...') {
-            setDataLoadingMessage(message);
-          }
-          
-          // Keep loading visible if we have a specific loading message
-          // The default "Loading data..." means we're waiting for specific loading states to be set
-          const isActivelyLoading = message !== 'Loading data...' && message !== '';
-          setIsDataLoading(isActivelyLoading);
-        };
-        
-        // Check loading state periodically while fetching
-        // Start checking after a small delay to allow loading states to be set
-        loadingInterval = setInterval(checkLoadingState, 100);
-        
-        // CRITICAL: Never pass timeRange to fetchDataWithChannelCheckingFromFile for TimeSeries
-        // TimeSeries needs the full dataset to allow scrolling, selectedRange only controls zoom
-        // Use skipTimeRangeFilter flag to ensure the store never filters by timeRange for TimeSeries
-        // Validates channels against file server (matching FileChannelPicker)
-        let data = await unifiedDataStore.fetchDataWithChannelCheckingFromFile(
+      const checkLoadingState = () => {
+        const message = unifiedDataStore.getDataLoadingMessage('ts', selectedClassName(), effectiveSourceId);
+        debug(`[TimeSeries] Loading state check:`, { message });
+
+        // Update message if we have a specific one
+        if (message && message !== 'Loading data...') {
+          setDataLoadingMessage(message);
+        }
+
+        // Keep loading visible if we have a specific loading message
+        // The default "Loading data..." means we're waiting for specific loading states to be set
+        const isActivelyLoading = message !== 'Loading data...' && message !== '';
+        setIsDataLoading(isActivelyLoading);
+      };
+
+      // Check loading state periodically while fetching
+      // Start checking after a small delay to allow loading states to be set
+      loadingInterval = setInterval(checkLoadingState, 100);
+
+      // CRITICAL: Never pass timeRange to fetchDataWithChannelCheckingFromFile for TimeSeries
+      // TimeSeries needs the full dataset to allow scrolling, selectedRange only controls zoom
+      // Use skipTimeRangeFilter flag to ensure the store never filters by timeRange for TimeSeries
+      // Validates channels against file server (matching FileChannelPicker)
+      let data = await unifiedDataStore.fetchDataWithChannelCheckingFromFile(
         'ts',
         selectedClassName(),
-        selectedSourceId().toString(),
+        effectiveSourceId.toString(),
         validChannels,
         {
           projectId: selectedProjectId().toString(),
           className: selectedClassName(),
           datasetId: selectedDatasetId().toString(),
-          sourceName: selectedSourceName(),
+          sourceName: effectiveSourceName,
+          sourceId: effectiveSourceId,
           date: formattedDate,
-          applyGlobalFilters: !hasChartSpecificFilters,
-          skipTimeRangeFilter: true // CRITICAL: TimeSeries should NEVER filter by timeRange
+          applyGlobalFilters: false,
+          skipTimeRangeFilter: true, // CRITICAL: TimeSeries should NEVER filter by timeRange
+          exploreResampleFetchPlan: exploreResampleFetchPlan ?? undefined,
           // NOTE: We intentionally do NOT pass timeRange here
           // TimeSeries should always load full dataset and use zoom to show selection
         },
         'timeseries'
       );
-      
+
       debug(`[TimeSeries] Received data:`, data ? `${data.length} points` : 'undefined');
       debug(`[TimeSeries] Data fetch complete - full dataset loaded (not filtered by selectedRange)`);
 
@@ -602,45 +1408,47 @@ const TimeSeries = (props: TimeSeriesProps) => {
           // Case-insensitive check
           return !availableFieldsLower.has(channel.toLowerCase());
         });
-        
+
         if (missingChannels.length > 0) {
           warn(`[TimeSeries] Missing channels in data:`, missingChannels);
           warn(`[TimeSeries] Available fields:`, availableFields);
           warn(`[TimeSeries] Required channels:`, validChannels);
-          
+
           // Try to fetch missing channels using unifiedDataStore
           try {
             debug(`[TimeSeries] Attempting to fetch missing channels:`, missingChannels);
-            
+
             const completeData = await unifiedDataStore.fetchDataWithChannelCheckingFromFile(
               'ts',
               selectedClassName(),
-              selectedSourceId().toString(),
+              effectiveSourceId.toString(),
               validChannels,
               {
                 projectId: selectedProjectId().toString(),
                 className: selectedClassName(),
                 datasetId: selectedDatasetId().toString(),
-                sourceName: selectedSourceName(),
+                sourceName: effectiveSourceName,
+                sourceId: effectiveSourceId,
                 date: formattedDate,
-                applyGlobalFilters: !hasChartSpecificFilters,
-                skipTimeRangeFilter: true
+                applyGlobalFilters: false,
+                skipTimeRangeFilter: true,
+                exploreResampleFetchPlan: exploreResampleFetchPlan ?? undefined,
               },
               'timeseries'
             );
-            
+
             if (completeData && completeData.length > 0) {
               debug(`[TimeSeries] Successfully fetched complete data with all channels:`, completeData.length, 'records');
               // Update the data variable to use the complete data
               data = completeData;
-              
+
               // Verify that the missing channels are now present (case-insensitive)
               const updatedAvailableFields = Object.keys(data[0] || {});
               const updatedAvailableFieldsLower = new Set(updatedAvailableFields.map(f => f.toLowerCase()));
-              const stillMissingChannels = missingChannels.filter(channel => 
+              const stillMissingChannels = missingChannels.filter(channel =>
                 !updatedAvailableFieldsLower.has(channel.toLowerCase())
               );
-              
+
               if (stillMissingChannels.length === 0) {
                 debug(`[TimeSeries] All missing channels successfully added to data`);
               } else {
@@ -670,19 +1478,19 @@ const TimeSeries = (props: TimeSeriesProps) => {
       const currentSelectedRange = selectedRange();
       const hasCuts = Array.isArray(currentCutEvents) && currentCutEvents.length > 0 && currentIsCut;
       const hasSelection = Array.isArray(currentSelectedRange) && currentSelectedRange.length > 0;
-      
+
       if (hasCuts) {
         // CUT MODE: Filter data to only include cut ranges
         debug(`[TimeSeries] Cut mode active - filtering data to cut ranges only`, {
           cutRangesCount: currentCutEvents.length,
           beforeFilter: filteredData.length
         });
-        
+
         // Helper to get timestamp from data point (before processing adds 'x' field)
         // Use case-insensitive matching to handle various datetime field name formats
         const getTimestamp = (d: any): number => {
           if (!d) return 0;
-          
+
           // Try common datetime field names (case-insensitive)
           const commonDatetimeFields = ['Datetime', 'datetime', 'timestamp', 'Timestamp', 'TIME', 'time'];
           for (const field of commonDatetimeFields) {
@@ -693,7 +1501,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               }
             }
           }
-          
+
           // Try case-insensitive search through all fields
           const datetimeLower = 'datetime';
           for (const key in d) {
@@ -707,38 +1515,38 @@ const TimeSeries = (props: TimeSeriesProps) => {
               }
             }
           }
-          
+
           // Fallback to x field if it exists (shouldn't at this point, but handle it)
           if (d.x instanceof Date) {
             return d.x.getTime();
           }
-          
+
           return 0;
         };
-        
+
         filteredData = filteredData.filter((d) => {
           const timestamp = getTimestamp(d);
           if (timestamp === 0) {
             warn(`[TimeSeries] Could not extract timestamp from data point:`, d);
             return false; // Exclude data points without valid timestamps
           }
-          
+
           return currentCutEvents.some(range => {
             // Handle both time range objects and event IDs (for backward compatibility)
             if (typeof range === 'number') {
               return false; // Skip if it's an event ID instead of a time range
             }
-            
+
             if (range.start_time && range.end_time) {
               const startTime = new Date(range.start_time).getTime();
               const endTime = new Date(range.end_time).getTime();
               return timestamp >= startTime && timestamp <= endTime;
             }
-            
+
             return false;
           });
         });
-        
+
         debug(`[TimeSeries] Cut filtering applied - data length: ${filteredData.length} (only cut data)`);
       } else if (hasSelection) {
         // SELECTION MODE: Keep ALL data, selectedRange will only control zoom
@@ -755,24 +1563,31 @@ const TimeSeries = (props: TimeSeriesProps) => {
       }
 
       // Process data for time series format
-      const processedData = filteredData.map(item => {
-        const dataPoint = {
-          Datetime: item.Datetime
+      const processedData = filteredData.map((item) => {
+        const dataPoint: Record<string, unknown> = {
+          Datetime: item.Datetime,
         };
-        
-        // Add all channel data to the data point
-        validChannels.forEach(channelName => {
-          if (item[channelName] !== undefined) {
-            dataPoint[channelName] = item[channelName];
+
+        const getItemChannelValue = (name: string): any => {
+          if (item[name] !== undefined) return item[name];
+          const key = Object.keys(item).find((k) => k.toLowerCase() === name.toLowerCase());
+          return key !== undefined ? item[key] : undefined;
+        };
+
+        // Include disambiguated Y columns when the same source channel is plotted at multiple resolutions
+        validChannelsForDataPoints.forEach((channelName) => {
+          const value = getItemChannelValue(channelName);
+          if (value !== undefined) {
+            dataPoint[channelName] = value;
           }
         });
-        
+
         // Set x value from the first series xaxis (assuming all series use the same x-axis)
         // Use case-insensitive matching with fallbacks to common datetime field names
         if (chartsToProcess[0].series.length > 0 && chartsToProcess[0].series[0].xaxis && chartsToProcess[0].series[0].xaxis.name) {
           const xChannelName = chartsToProcess[0].series[0].xaxis.name;
           let timestamp: any = undefined;
-          
+
           // Try exact match first
           if (item[xChannelName] !== undefined) {
             timestamp = item[xChannelName];
@@ -786,7 +1601,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               }
             }
           }
-          
+
           // Fallback to common datetime field names if xaxis name not found
           if (timestamp === undefined) {
             const commonDatetimeFields = ['Datetime', 'datetime', 'timestamp', 'Timestamp', 'TIME', 'time'];
@@ -797,7 +1612,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               }
             }
           }
-          
+
           if (timestamp !== undefined) {
             // Convert timestamp to Date object for proper x-axis handling
             dataPoint.x = new Date(timestamp);
@@ -812,7 +1627,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
             }
           }
         }
-        
+
         return dataPoint;
       });
 
@@ -823,21 +1638,21 @@ const TimeSeries = (props: TimeSeriesProps) => {
       });
 
       debug(`[TimeSeries] Sorted ${sortedProcessedData.length} data points by timestamp`);
-      
+
       // Debug: Log first and last few timestamps to check for timeline issues
       if (sortedProcessedData.length > 0) {
         const firstFew = sortedProcessedData.slice(0, 3).map(d => d.x?.toISOString());
         const lastFew = sortedProcessedData.slice(-3).map(d => d.x?.toISOString());
         debug(`[TimeSeries] First 3 timestamps:`, firstFew);
         debug(`[TimeSeries] Last 3 timestamps:`, lastFew);
-        
+
         // Check for any invalid timestamps
         const invalidTimestamps = sortedProcessedData.filter(d => !d.x || isNaN(d.x.getTime()));
         if (invalidTimestamps.length > 0) {
           warn(`[TimeSeries] Found ${invalidTimestamps.length} invalid timestamps:`, invalidTimestamps.slice(0, 5));
         }
       }
-      
+
       return sortedProcessedData;
     } catch (error: any) {
       // Clear loading interval and state on error
@@ -871,57 +1686,97 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
 
   // Async chart processing for large datasets
-  const processChartsAsync = async (chartsToProcess, data) => {
+  const processChartsAsync = async (
+    chartsToProcess: any[],
+    data: any[],
+    explorePlan?: ExploreResampleFetchPlan | null
+  ) => {
     // For small datasets, process synchronously
     if (data.length < 1000) {
-      return chartsToProcess.map(chart => processChartSync(chart, data));
+      return chartsToProcess.map((chart, idx) => processChartSync(chart, data, idx, explorePlan));
     }
-    
+
     // For large datasets, process in chunks
-    return new Promise((resolve) => {
-      const processedCharts = [];
+    return new Promise<any[]>((resolve) => {
+      const processedCharts: any[] = [];
       let chartIndex = 0;
-      
+
       const processChart = () => {
         if (chartIndex >= chartsToProcess.length) {
           resolve(processedCharts);
           return;
         }
-        
+
         const chart = chartsToProcess[chartIndex];
-        const processedChart = processChartSync(chart, data);
+        const processedChart = processChartSync(chart, data, chartIndex, explorePlan);
         processedCharts.push(processedChart);
-        
+
         chartIndex++;
-        
+
         // Yield control and continue processing
         setTimeout(processChart, 0);
       };
-      
+
       processChart();
     });
   };
 
   // Synchronous chart processing (for small datasets or fallback)
-  const processChartSync = (chart, data) => {
+  const processChartSync = (
+    chart: any,
+    data: any[],
+    chartIndex: number,
+    explorePlan?: ExploreResampleFetchPlan | null
+  ) => {
     return {
       ...chart,
-      series: chart.series.map(series => {
+      series: chart.series.map((series: any, seriesIndex: number) => {
         const xName = series.xaxis.name;
         const yName = series.yaxis.name;
-        
+        const yPlotKey =
+          explorePlan?.seriesYPlotKeyByChartSeries[`${chartIndex}-${seriesIndex}`] ??
+          series.yDataKey ??
+          yName;
+
+        const rawReadingKey =
+          useRawReadingsForCumulativeLineTypes(series.lineType) && explorePlan
+            ? rawReadingPlotKeyForExploreChannel(chart, chartIndex, yName, explorePlan)
+            : null;
+        if (
+          useRawReadingsForCumulativeLineTypes(series.lineType) &&
+          explorePlan &&
+          !rawReadingKey &&
+          !warnedCumulativeLineTypesNoRawProcessSync
+        ) {
+          warnedCumulativeLineTypesNoRawProcessSync = true;
+          warn(
+            "TimeSeries: cumulative / abs cumulative / abs cumulative diff need a RAW column for native samples; none found — using resampled y (bucket means)."
+          );
+        }
+
+        const getFieldCaseInsensitive = (item: any, fieldName: string): any => {
+          if (item[fieldName] !== undefined) return item[fieldName];
+          const key = Object.keys(item).find((k) => k.toLowerCase() === fieldName.toLowerCase());
+          return key !== undefined ? item[key] : undefined;
+        };
+
         // Helper function to get y value with fallback logic
-        // Prefer item.y if it exists (TimeSeriesPage already sets it), then try item[yName], then case-insensitive matching
         const getYValue = (item: any): any => {
-          // First, try item.y (already set by TimeSeriesPage)
           if (item.y !== undefined && item.y !== null) {
             return item.y;
           }
-          // Second, try exact field name match
+          if (item[yPlotKey] !== undefined && item[yPlotKey] !== null) {
+            return item[yPlotKey];
+          }
           if (item[yName] !== undefined && item[yName] !== null) {
             return item[yName];
           }
-          // Third, try case-insensitive matching
+          const lowerPlot = yPlotKey.toLowerCase();
+          for (const key in item) {
+            if (key.toLowerCase() === lowerPlot && item[key] !== undefined && item[key] !== null) {
+              return item[key];
+            }
+          }
           const lowerYName = yName.toLowerCase();
           for (const key in item) {
             if (key.toLowerCase() === lowerYName && item[key] !== undefined && item[key] !== null) {
@@ -930,26 +1785,47 @@ const TimeSeries = (props: TimeSeriesProps) => {
           }
           return undefined;
         };
-        
-        // Data is already processed with proper x values (Date objects)
-        const seriesData = data
-          .filter(item => {
-            const yVal = getYValue(item);
-            return item.x !== undefined && yVal !== undefined;
-          })
-          .map(item => {
-            const yVal = getYValue(item);
-            return {
-              x: item.x, // Already a Date object from getDataFromUnifiedStore
-              y: yVal,
-              Datetime: item.Datetime,
-              [xName]: item[xName],
-              [yName]: yVal
-            };
-          });
-          
-        return { ...series, data: seriesData };
-      })
+
+        const getPathYValue = (item: any): any => {
+          if (rawReadingKey) {
+            const rv = getFieldCaseInsensitive(item, rawReadingKey);
+            if (rv !== undefined && rv !== null) return rv;
+          }
+          return getYValue(item);
+        };
+
+        const bucketYForPlotKey = (item: any): any => {
+          if (!rawReadingKey || rawReadingKey === yPlotKey) {
+            return undefined;
+          }
+          const bv = getFieldCaseInsensitive(item, yPlotKey);
+          if (bv !== undefined && bv !== null) return bv;
+          return undefined;
+        };
+
+        const seriesData = sortSeriesPointsByTime(
+          data
+            .filter((item: any) => {
+              const yVal = getPathYValue(item);
+              return item.x !== undefined && yVal !== undefined && yVal !== null;
+            })
+            .map((item: any) => {
+              const yVal = getPathYValue(item);
+              const bucket = bucketYForPlotKey(item);
+              const plotKeyStored = bucket !== undefined ? bucket : yVal;
+              return {
+                x: item.x,
+                y: yVal,
+                Datetime: item.Datetime,
+                [xName]: item[xName],
+                [yName]: yVal,
+                [yPlotKey]: plotKeyStored,
+              };
+            })
+        );
+
+        return { ...series, yDataKey: yPlotKey, data: seriesData };
+      }),
     };
   };
 
@@ -963,13 +1839,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
       timestamp: new Date().toISOString(),
       stackTrace: new Error().stack?.split('\n').slice(1, 5).join('\n')
     });
-    
+
     // Prevent infinite loops
     if (isProcessingData) {
       debug('🔄 TimeSeries: processDataForCharts already running, skipping');
       return;
     }
-    
+
     // Prevent rapid successive calls (debounce)
     const now = Date.now();
     if (now - lastProcessDataTime < 100) {
@@ -977,13 +1853,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
       return;
     }
     lastProcessDataTime = now;
-    
+
     isProcessingData = true;
-    
+
     try {
       setIsLoading(true);
       debug('🔄 TimeSeries: Set loading to true');
-      
+
       if (!props.chart) {
         debug('🔄 TimeSeries: No chart, setting empty charts array');
         setCharts([]);
@@ -997,38 +1873,56 @@ const TimeSeries = (props: TimeSeriesProps) => {
       const chartsToProcess = Array.isArray(props.chart) ? props.chart : [props.chart];
 
       // Check if charts already have data (from fleet mode or other pre-populated scenarios)
-      const hasPrePopulatedData = chartsToProcess.some(chart => 
-        chart.series && chart.series.some(series => 
+      const hasPrePopulatedData = chartsToProcess.some(chart =>
+        chart.series && chart.series.some(series =>
           series.data && Array.isArray(series.data) && series.data.length > 0
         )
       );
-      
+
       let processedCharts;
-      
+
       if (hasPrePopulatedData) {
         debug('[TimeSeries] Charts already have data, using pre-populated data');
-        // Charts already have data, just use them directly
-        processedCharts = chartsToProcess;
+        processedCharts = chartsToProcess.map((chart) => ({
+          ...chart,
+          series: (chart.series || []).map((ser: any) => ({
+            ...ser,
+            data: sortSeriesPointsByTime(ser.data),
+          })),
+        }));
+      } else if (props.showLegendTable) {
+        // FleetTimeSeries: empty series means parent has no points yet or all filtered out — do not fetch with global ALL.
+        debug('[TimeSeries] Fleet explore charts with no points yet — using parent series as-is (no unified store)');
+        processedCharts = chartsToProcess.map((chart) => ({
+          ...chart,
+          series: (chart.series || []).map((ser: any) => ({
+            ...ser,
+            data: sortSeriesPointsByTime(Array.isArray(ser.data) ? ser.data : []),
+          })),
+        }));
       } else {
         // Get data from unified store
         debug('🔄 TimeSeries: Calling getDataFromUnifiedStore');
         const data = await getDataFromUnifiedStore();
-        
+
         debug('[TimeSeries] Data from unified store:', {
           hasData: !!data,
           dataLength: data?.length || 0,
           dataType: typeof data,
           sampleData: data?.[0] || null
         });
-        
+
         if (!data || data.length === 0) {
           warn('[TimeSeries] No data returned from unified store');
           setCharts([]);
           return;
         }
 
-        // Process each chart asynchronously for large datasets
-        processedCharts = await processChartsAsync(chartsToProcess, data);
+        const explorePlanForProcess =
+          selectedDatasetId() && selectedDatasetId() !== 0
+            ? buildExploreResampleFetchPlan(chartsToProcess) ?? undefined
+            : undefined;
+        processedCharts = await processChartsAsync(chartsToProcess, data, explorePlanForProcess);
       }
 
 
@@ -1060,37 +1954,39 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
   const margin = { top: 25, right: 25, bottom: 25, left: 25 };
   const rowGap = 30;
-  
+
   // Calculate dynamic height based on chart count - allow SVG to overflow
   const getChartHeight = () => {
     const chartsData = charts();
     const chartCount = chartsData.length;
-    
+
     if (chartCount === 0) return 200;
-    
+
     // Use a fixed height per chart to allow SVG to grow beyond container
     // This allows the SVG to overflow and be scrollable
     const heightPerChart = 300; // Fixed height per chart
-    
+
     return heightPerChart;
   };
-  
+
   const drawPlots = () => {
     debug('🎨 TimeSeries: drawPlots() called');
-    
+
     // Safety check for containerRef
     if (!containerRef) {
       warn('🎨 TimeSeries: containerRef is null, skipping draw');
       return;
     }
-    
+
     const chartsData = charts();
-    
+
     // Don't draw if there's no data
     if (!chartsData || chartsData.length === 0) {
       debug('🎨 TimeSeries: No chart data, skipping draw');
       return;
     }
+
+    const segmentGapForLayout = exploreChartSegmentGapSplitMs(!props.showLegendTable);
 
     // Multi-container path: one div per chart+table (FleetTimeSeries with legend table)
     if (props.showLegendTable) {
@@ -1210,80 +2106,154 @@ const TimeSeries = (props: TimeSeriesProps) => {
         const group = singleSvg.append("g").attr("class", `chart-group chart-group-${idx}`);
         const chart = chartsData[idx];
         const yOffset = 0;
+        const multiDomainLo = xZoomMulti.domain()[0];
+        const multiDomainHi = xZoomMulti.domain()[1];
+        const multiTimeThreshold = segmentGapForLayout;
         const visibleData = chart.series.flatMap((series) =>
-          series.data.filter((d) => d.x >= xZoomMulti.domain()[0] && d.x <= xZoomMulti.domain()[1])
+          series.data.filter((d) => d.x >= multiDomainLo && d.x <= multiDomainHi)
         );
-        const allYValues = visibleData.length > 0 ? visibleData.map((d) => d.y) : chart.series.flatMap((s) => s.data.map((d) => d.y));
+        const allYFromTransforms = chart.series.flatMap((s) =>
+          collectFiniteDisplayYValues(s, multiDomainLo, multiDomainHi, multiTimeThreshold)
+        );
+        const allYValues =
+          allYFromTransforms.length > 0
+            ? allYFromTransforms
+            : chart.series.flatMap((s) =>
+              s.data
+                .map((d) => d.y)
+                .filter((v) => v != null && Number.isFinite(Number(v)))
+                .map((v) => Number(v))
+            );
         let yDomain = safeNumericYDomain(allYValues);
         if (visibleData.length > 0 && yDomain[1] > yDomain[0]) {
           yDomain = [yDomain[0], yDomain[1] + (yDomain[1] - yDomain[0]) * 0.2];
         }
         const yScale = d3.scaleLinear().domain(yDomain).range([multiHeight, 0]);
         const yScaleTranslated = (value: number) => yScale(value) + yOffset;
+        const areaBaseY = yScaleTranslated(0);
+
+        const highlightNames = fleetLegendHighlightNames();
+        const hasHighlight = highlightNames.length > 0;
+
+        type FleetMultiSegOp = {
+          drawOrder: number;
+          seriesIndex: number;
+          segIndex: number;
+          color: string;
+          strokeWidth: number;
+          strokeDasharray: string | null;
+          useFilledArea: boolean;
+          tseg: TransformedPoint[];
+        };
+
+        const fleetSegOps: FleetMultiSegOp[] = [];
         chart.series.forEach((series, seriesIndex) => {
-          const xDomain = xZoomMulti.domain();
-          const domainStart = xDomain[0] instanceof Date ? xDomain[0].getTime() : new Date(xDomain[0]).getTime();
-          const domainEnd = xDomain[1] instanceof Date ? xDomain[1].getTime() : new Date(xDomain[1]).getTime();
-          const buffer = (domainEnd - domainStart) * 0.01;
-          const visibleSeriesData = series.data.filter((d) => {
-            const t = d.x instanceof Date ? d.x.getTime() : new Date(d.x).getTime();
-            return t >= domainStart - buffer && t <= domainEnd + buffer;
-          });
-          const validVisible = visibleSeriesData.filter((d) => d.y != null && !Number.isNaN(d.y) && Number.isFinite(d.y));
-          let min: number | undefined = validVisible.length > 0 ? d3.min(validVisible, (d) => d.y) : undefined;
-          let max: number | undefined = validVisible.length > 0 ? d3.max(validVisible, (d) => d.y) : undefined;
-          if (min === undefined || max === undefined) {
-            const allValid = series.data.filter((d) => d.y != null && !Number.isNaN(d.y) && Number.isFinite(d.y));
-            if (allValid.length > 0) {
-              min = d3.min(allValid, (d) => d.y);
-              max = d3.max(allValid, (d) => d.y);
-            }
-          }
           const color = series.color;
-          const lineGen = d3.line()
-            .x((d) => xZoomMulti(d.x) + multiXOffset)
-            .y((d) => yScaleTranslated(Number(d.y)))
-            .defined((d) => !Number.isNaN(Number(d.y)) && Number.isFinite(Number(d.y)));
-          const timeThreshold = 30000;
-          let segments: typeof series.data[] = [];
-          let currentSegment: typeof series.data = [];
-          for (let j = 0; j < series.data.length; j++) {
-            const point = series.data[j];
-            if (point.x >= xZoomMulti.domain()[0] && point.x <= xZoomMulti.domain()[1] && point.y != null && !Number.isNaN(point.y)) {
-              let shouldBreak = false;
-              if (currentSegment.length > 0) {
-                const prev = currentSegment[currentSegment.length - 1];
-                if (Math.abs((point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime()) - (prev.x instanceof Date ? prev.x.getTime() : new Date(prev.x).getTime())) >= timeThreshold) {
-                  shouldBreak = true;
-                }
-              }
-              if (shouldBreak) {
-                if (currentSegment.length > 1) segments.push([...currentSegment]);
-                currentSegment = [point];
-              } else {
-                currentSegment.push(point);
-              }
-            } else if (currentSegment.length > 0) {
-              if (currentSegment.length > 1) segments.push([...currentSegment]);
-              currentSegment = [];
-            }
-          }
-          if (currentSegment.length > 1) segments.push(currentSegment);
+          const lineType = normalizeLineType(series.lineType);
+          const rawSegs = splitSeriesIntoVisibleSegments(
+            series.data,
+            multiDomainLo,
+            multiDomainHi,
+            multiTimeThreshold
+          );
+          const transformedSegs = applyLineTypeToSegmentsWithOptionalCarry(rawSegs, lineType);
+          const segmentsForDrawFleet =
+            lineType === "standard"
+              ? extendStandardSegmentsToVisibleDomain(transformedSegs, multiDomainLo, multiDomainHi)
+              : transformedSegs;
           const strokeWidth = series.strokeWidth ?? 1;
           const strokeDasharray = getStrokeDasharray(series.strokeStyle);
-          segments.forEach((seg) => {
-            const path = group.append("path")
-              .datum(seg)
-              .attr("class", `line-${chart.chart}-${seriesIndex}`)
-              .attr("fill", "none")
-              .attr("stroke", color)
-              .attr("stroke-width", strokeWidth)
-              .attr("clip-path", `url(#${clipId})`)
-              .attr("user-select", "none")
-              .attr("pointer-events", "none")
-              .attr("d", lineGen);
-            if (strokeDasharray) path.attr("stroke-dasharray", strokeDasharray);
+          const useFilledArea = series.strokeStyle === "filled-area";
+          const teamName = fleetTeamNameFromSeries(series);
+          const isSeriesHighlighted = !hasHighlight || highlightNames.includes(teamName);
+          const drawOrder = hasHighlight ? (isSeriesHighlighted ? 1 : 0) : 0;
+          let segIndex = 0;
+          segmentsForDrawFleet.forEach((tseg) => {
+            if (tseg.length === 0) return;
+            if (tseg.length === 1 && !isFiniteDisplayY(tseg[0])) return;
+            fleetSegOps.push({
+              drawOrder,
+              seriesIndex,
+              segIndex: segIndex++,
+              color: color || "#888",
+              strokeWidth,
+              strokeDasharray,
+              useFilledArea,
+              tseg,
+            });
           });
+        });
+
+        fleetSegOps.sort((a, b) => {
+          if (a.drawOrder !== b.drawOrder) return a.drawOrder - b.drawOrder;
+          if (a.seriesIndex !== b.seriesIndex) return a.seriesIndex - b.seriesIndex;
+          return a.segIndex - b.segIndex;
+        });
+
+        fleetSegOps.forEach((op) => {
+          const isBright = !hasHighlight || op.drawOrder === 1;
+          const effStrokeW = hasHighlight
+            ? isBright
+              ? Math.max(op.strokeWidth, 2.5)
+              : Math.min(op.strokeWidth, 0.5)
+            : op.strokeWidth;
+          const strokeOpacity = hasHighlight ? (isBright ? 1 : 0.2) : 1;
+          const fillOpacity = hasHighlight ? (isBright ? 1 : 0.2) : 1;
+
+          const finitePts = op.tseg.filter(isFiniteDisplayY);
+          if (finitePts.length === 0) return;
+
+          if (op.useFilledArea && finitePts.length >= 2) {
+            const areaGen = d3
+              .area<TransformedPoint>()
+              .x((d) => xZoomMulti(d.x) + multiXOffset)
+              .y0(areaBaseY)
+              .y1((d) => yScaleTranslated(d.displayY))
+              .defined((d) => isFiniteDisplayY(d));
+            group
+              .append("path")
+              .datum(op.tseg)
+              .attr("class", `area-${chart.chart}-${op.seriesIndex}`)
+              .attr("fill", fillColorHalfOpacity(op.color))
+              .attr("fill-opacity", fillOpacity)
+              .attr("stroke", "none")
+              .attr("clip-path", `url(#${clipId})`)
+              .attr("pointer-events", "none")
+              .attr("d", areaGen);
+          }
+
+          const lineGen = d3
+            .line<TransformedPoint>()
+            .x((d) => xZoomMulti(d.x) + multiXOffset)
+            .y((d) => yScaleTranslated(d.displayY))
+            .defined((d) => isFiniteDisplayY(d));
+
+          let pathD: string;
+          let lineCap: "round" | "butt" = "butt";
+          if (finitePts.length === 1) {
+            const p0 = finitePts[0];
+            const cx = xZoomMulti(p0.x) + multiXOffset;
+            const cy = yScaleTranslated(p0.displayY);
+            pathD = `M${cx},${cy}L${cx},${cy}`;
+            lineCap = "round";
+          } else {
+            pathD = lineGen(op.tseg) ?? "";
+          }
+
+          const path = group
+            .append("path")
+            .datum(op.tseg)
+            .attr("class", `line-${chart.chart}-${op.seriesIndex}`)
+            .attr("fill", "none")
+            .attr("stroke", op.color)
+            .attr("stroke-width", effStrokeW)
+            .attr("stroke-opacity", strokeOpacity)
+            .attr("stroke-linecap", lineCap)
+            .attr("clip-path", `url(#${clipId})`)
+            .attr("user-select", "none")
+            .attr("pointer-events", "none")
+            .attr("d", pathD);
+          if (op.strokeDasharray) path.attr("stroke-dasharray", op.strokeDasharray);
         });
         if (chart.series.length > 0) {
           const firstName = seriesDisplayName(chart.series[0]);
@@ -1291,12 +2261,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
           group.append("text")
             .attr("class", "chart-channel-label")
             .attr("x", 20)
-            .attr("y", yOffset + 15)
+            .attr("y", yOffset + 14)
             .attr("fill", "white")
             .attr("font-size", "13px")
             .attr("user-select", "none")
             .attr("pointer-events", "none")
             .text(channelName);
+          group
+            .append("text")
+            .attr("class", "chart-line-type-label")
+            .attr("x", 20)
+            .attr("y", yOffset + 28)
+            .attr("user-select", "none")
+            .attr("pointer-events", "none")
+            .text(fleetChartLineTypeSummary(chart.series));
         }
         group.append("g")
           .attr("class", "y-axis")
@@ -1333,7 +2311,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         verticalLinesMulti.push(vertLine);
         selectedTimeLinesMulti.push(selLine);
         allSvgs.push(singleSvg);
-        mouseOverlayRect.on("click", function(event: MouseEvent) {
+        mouseOverlayRect.on("click", function (event: MouseEvent) {
           const svgEl = chartEl.querySelector("svg") as SVGElement | null;
           const range = xZoomMulti.range() as [number, number];
           const clampedX = multiChartEventToClampedX(event, svgEl, multiContainerWidth, margin.left, multiXOffset, range)
@@ -1368,14 +2346,32 @@ const TimeSeries = (props: TimeSeriesProps) => {
             line.attr("visibility", "hidden");
           }
         });
-        const timeThreshold = 30000;
+        const timeThreshold = segmentGapForLayout;
+        const mLo = domain[0];
+        const mHi = domain[1];
+        const dotHighlightNames = fleetLegendHighlightNames();
+        const dotHasHighlight = dotHighlightNames.length > 0;
         chartsData.forEach((chart, chartIndex) => {
           const visibleData = chart.series.flatMap((series) =>
-            series.data.filter((d) => d.x >= domain[0] && d.x <= domain[1])
+            series.data.filter((d) => d.x >= mLo && d.x <= mHi)
           );
-          const allYValues = visibleData.length > 0
-            ? visibleData.map((d) => d.y)
-            : chart.series.flatMap((s) => s.data.map((d) => d.y));
+          const perSeriesMulti = chart.series.map((s) =>
+            collectFiniteDisplayYValues(s, mLo, mHi, timeThreshold, undefined)
+          );
+          const allYFromT = perSeriesMulti.flat();
+          const supplementMulti = chart.series.flatMap((s, i) =>
+            perSeriesMulti[i].length === 0 ? collectVisibleWindowRawYValues(s, mLo, mHi) : []
+          );
+          const mergedMulti = [...allYFromT, ...supplementMulti];
+          const allYValues =
+            mergedMulti.length > 0
+              ? mergedMulti
+              : chart.series.flatMap((s) =>
+                s.data
+                  .map((d) => d.y)
+                  .filter((v) => v != null && Number.isFinite(Number(v)))
+                  .map((v) => Number(v))
+              );
           let yDomain = safeNumericYDomain(allYValues);
           if (visibleData.length > 0 && yDomain[1] > yDomain[0]) {
             yDomain = [yDomain[0], yDomain[1] + (yDomain[1] - yDomain[0]) * 0.2];
@@ -1384,20 +2380,21 @@ const TimeSeries = (props: TimeSeriesProps) => {
           const pointData: Array<{ id: string; x: number; y: number; color: string }> = [];
           chart.series.forEach((series, seriesIndex) => {
             if (series.data.length === 0) return;
-            const closestPoint = series.data.reduce((prev, curr) =>
-              Math.abs((curr.x instanceof Date ? curr.x.getTime() : new Date(curr.x).getTime()) - time.getTime()) <
-              Math.abs((prev.x instanceof Date ? prev.x.getTime() : new Date(prev.x).getTime()) - time.getTime())
-                ? curr
-                : prev
+            if (dotHasHighlight && !dotHighlightNames.includes(fleetTeamNameFromSeries(series))) {
+              return;
+            }
+            const yDisp = getTransformedValueAtClosestTime(
+              series,
+              time.getTime(),
+              mLo,
+              mHi,
+              timeThreshold,
+              undefined,
+              CLOSEST_SAMPLE_UI_MARKER_MAX_MS
             );
-            const closestTime = closestPoint.x instanceof Date ? closestPoint.x.getTime() : new Date(closestPoint.x).getTime();
-            if (
-              Math.abs(closestTime - time.getTime()) <= timeThreshold &&
-              closestPoint.y != null && !Number.isNaN(closestPoint.y) && Number.isFinite(closestPoint.y)
-            ) {
+            if (yDisp !== undefined) {
               const xPos = xZoomMulti(time) + multiXOffset;
-              const yNum = Number(closestPoint.y);
-              const yPos = yScale(yNum);
+              const yPos = yScale(yDisp);
               if (
                 !isNaN(xPos) && isFinite(xPos) && !isNaN(yPos) && isFinite(yPos) &&
                 yPos >= 0 && yPos <= multiHeight && xPos >= 0 && xPos <= multiWidth + multiXOffset
@@ -1581,7 +2578,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         .style("position", "absolute").style("background", "#fff").style("border", "1px solid #ccc")
         .style("padding", "5px").style("border-radius", "5px").style("pointer-events", "none").style("visibility", "hidden");
       allSvgs.forEach((s, i) => {
-        s.on("mousemove", function(event: MouseEvent) {
+        s.on("mousemove", function (event: MouseEvent) {
           // When window is narrow the media-container is CSS-scaled (e.g. <1620px). Use SVG's
           // getBoundingClientRect() so client coords are converted to chart logical coords correctly.
           const svgEl = (s.node() as SVGElement).ownerSVGElement;
@@ -1607,18 +2604,26 @@ const TimeSeries = (props: TimeSeriesProps) => {
             return;
           }
           let content = `Time: ${formatTime(xValueDate, datasetTimezone()) || xValueDate.toLocaleTimeString()}`;
+          const tipD0 = xZoomMulti.domain()[0];
+          const tipD1 = xZoomMulti.domain()[1];
           chartsData[i].series.forEach((series) => {
             if (series.data.length === 0) return;
-            const closest = series.data.reduce((prev, curr) =>
-              Math.abs(curr.x.getTime() - timeMs) < Math.abs(prev.x.getTime() - timeMs) ? curr : prev
+            const tipY = getTransformedValueAtClosestTime(
+              series,
+              timeMs,
+              tipD0,
+              tipD1,
+              segmentGapForLayout,
+              undefined,
+              CLOSEST_SAMPLE_TOOLTIP_MAX_MS
             );
-            if (Math.abs(closest.x.getTime() - timeMs) <= 30000 && closest.y != null && !Number.isNaN(closest.y)) {
-              content += `<br>${seriesDisplayName(series)}: ${Round(closest.y, 2)}`;
+            if (tipY !== undefined) {
+              content += `<br>${seriesDisplayName(series)}: ${Round(tipY, 2)}`;
             }
           });
           tooltipMulti.style("top", `${event.clientY}px`).style("left", `${event.clientX}px`).style("visibility", "visible").html(content);
         });
-        s.on("mouseout", function() {
+        s.on("mouseout", function () {
           if (!isPlaying()) verticalLinesMulti[i].attr("visibility", "hidden");
           tooltipMulti.style("visibility", "hidden");
         });
@@ -1706,18 +2711,19 @@ const TimeSeries = (props: TimeSeriesProps) => {
       if (containerRef) {
         containerRef.addEventListener('wheel', wheelHandler, { passive: false, capture: true });
       }
+      bumpFleetLegendTableEpoch((n) => n + 1);
       setTimeout(() => { isProgrammaticallyUpdatingBrush = false; }, 150);
       return;
     }
-    
+
     debug('🎨 TimeSeries: Drawing charts with data:', {
       chartCount: chartsData.length,
       timestamp: new Date().toISOString()
     });
-  
+
     const containerWidth = containerRef?.offsetWidth || 0;
     const width = Math.max(containerWidth - margin.left - margin.right, 0);
-    
+
     // Additional safety check for valid dimensions
     if (containerWidth <= 0) {
       warn('🎨 TimeSeries: Container has no width, skipping draw');
@@ -1725,10 +2731,10 @@ const TimeSeries = (props: TimeSeriesProps) => {
     }
     const height = getChartHeight();
     const totalHeight = chartsData.length * (height + rowGap) - rowGap + margin.top + margin.bottom;
-  
+
     // Define xOffset at the outer scope so it's available to all functions
     const xOffset = 10;
-  
+
     // Clear the container before redrawing
     debug('🎨 TimeSeries: Clearing existing SVG');
     // Prevent brush "end" (from teardown or new brush init) from clearing selectedRange
@@ -1740,7 +2746,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     d3.select(containerRef).select("svg").remove();
     svg = null;
     wheelHandler = null;
-  
+
     // Create a new SVG container
     debug('🎨 TimeSeries: Creating new SVG container', {
       containerWidth,
@@ -1754,7 +2760,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       .attr("height", totalHeight)
       .append("g")
       .attr("transform", `translate(${margin.left},${margin.top})`);
-  
+
     svg
       .append("defs")
       .append("clipPath")
@@ -1762,7 +2768,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       .append("rect")
       .attr("width", width + xOffset) // Include offset in the clip path width
       .attr("height", totalHeight - margin.bottom);
-  
+
     // Extract and filter all x values (timestamps) from chart data
     // Debug: Log data structure to diagnose x value extraction
     if (chartsData.length > 0 && chartsData[0].series && chartsData[0].series.length > 0) {
@@ -1777,9 +2783,9 @@ const TimeSeries = (props: TimeSeriesProps) => {
         totalDataPoints: chartsData.reduce((sum, chart) => sum + (chart.series?.reduce((s: number, ser: any) => s + (ser.data?.length || 0), 0) || 0), 0)
       });
     }
-    
+
     const allXValues = chartsData.flatMap((chart) =>
-      chart.series.flatMap((series) => 
+      chart.series.flatMap((series) =>
         series.data
           .filter((d) => {
             // Check if y value is valid (not null, undefined, or NaN)
@@ -1789,47 +2795,47 @@ const TimeSeries = (props: TimeSeriesProps) => {
           .map((d) => d.x)
       )
     )
-    .filter((x): x is Date => {
-      // Filter out null, undefined, and invalid Date values
-      if (x === null || x === undefined) return false;
-      if (!(x instanceof Date)) return false;
-      const time = x.getTime();
-      
-      // Filter out invalid dates
-      if (isNaN(time) || !isFinite(time)) return false;
-      
-      // Filter out epoch dates (1970-01-01) and dates very close to epoch (within 1 day)
-      // to catch timezone-adjusted epoch dates
-      const oneDayInMs = 24 * 60 * 60 * 1000;
-      if (time <= oneDayInMs) return false;
-      
-      // Filter out dates that are too far in the future (likely errors)
-      // Use a reasonable upper bound: 100 years from now
-      const now = Date.now();
-      const oneHundredYearsInMs = 100 * 365 * 24 * 60 * 60 * 1000;
-      if (time > now + oneHundredYearsInMs) return false;
-      
-      // Filter out dates that are too far in the past (before year 1900, likely errors)
-      const year1900 = new Date('1900-01-01').getTime();
-      if (time < year1900) return false;
-      
-      return true;
-    });
+      .filter((x): x is Date => {
+        // Filter out null, undefined, and invalid Date values
+        if (x === null || x === undefined) return false;
+        if (!(x instanceof Date)) return false;
+        const time = x.getTime();
+
+        // Filter out invalid dates
+        if (isNaN(time) || !isFinite(time)) return false;
+
+        // Filter out epoch dates (1970-01-01) and dates very close to epoch (within 1 day)
+        // to catch timezone-adjusted epoch dates
+        const oneDayInMs = 24 * 60 * 60 * 1000;
+        if (time <= oneDayInMs) return false;
+
+        // Filter out dates that are too far in the future (likely errors)
+        // Use a reasonable upper bound: 100 years from now
+        const now = Date.now();
+        const oneHundredYearsInMs = 100 * 365 * 24 * 60 * 60 * 1000;
+        if (time > now + oneHundredYearsInMs) return false;
+
+        // Filter out dates that are too far in the past (before year 1900, likely errors)
+        const year1900 = new Date('1900-01-01').getTime();
+        if (time < year1900) return false;
+
+        return true;
+      });
 
     // Calculate extent using a more robust method to avoid outliers
     let xExtent: [Date, Date] | [undefined, undefined] = [undefined, undefined];
-    
+
     // Check if dataset event time range is provided (for dataset or fleet mode)
     const datasetEventTimeRange = props.datasetEventTimeRange as { start: Date | string | number; end: Date | string | number } | undefined;
     if (datasetEventTimeRange && datasetEventTimeRange.start && datasetEventTimeRange.end) {
       // Use dataset event time range to limit x-scale
-      const startTime = typeof datasetEventTimeRange.start === 'number' 
+      const startTime = typeof datasetEventTimeRange.start === 'number'
         ? new Date(datasetEventTimeRange.start)
         : new Date(datasetEventTimeRange.start);
       const endTime = typeof datasetEventTimeRange.end === 'number'
         ? new Date(datasetEventTimeRange.end)
         : new Date(datasetEventTimeRange.end);
-      
+
       if (!isNaN(startTime.getTime()) && !isNaN(endTime.getTime()) && startTime.getTime() < endTime.getTime()) {
         xExtent = [startTime, endTime];
         debug('🎨 TimeSeries: Using dataset event time range for x-scale', {
@@ -1845,21 +2851,21 @@ const TimeSeries = (props: TimeSeriesProps) => {
         });
       }
     }
-    
+
     // If dataset event time range not provided or invalid, calculate from data
     if (!xExtent[0] || !xExtent[1]) {
       if (allXValues.length > 0) {
         // Sort timestamps to enable outlier detection
         const sortedTimes = allXValues.map(d => d.getTime()).sort((a, b) => a - b);
-        
+
         const fullMin = sortedTimes[0];
         const fullMax = sortedTimes[sortedTimes.length - 1];
         const fullRange = fullMax - fullMin;
-        
+
         // Check for outliers: if the first/last few points are way outside the main cluster
         // Only use percentile filtering if we detect significant outliers
         let hasOutliers = false;
-        
+
         if (sortedTimes.length > 100) {
           // Calculate interquartile range (IQR) to detect outliers
           const q1Index = Math.floor(sortedTimes.length * 0.25);
@@ -1867,22 +2873,22 @@ const TimeSeries = (props: TimeSeriesProps) => {
           const q1 = sortedTimes[q1Index];
           const q3 = sortedTimes[q3Index];
           const iqr = q3 - q1;
-          
+
           // Check if min/max are outliers (more than 3 IQRs away from Q1/Q3)
           const outlierThreshold = 3 * iqr;
           const minOutlier = (fullMin < q1 - outlierThreshold);
           const maxOutlier = (fullMax > q3 + outlierThreshold);
-          
+
           hasOutliers = minOutlier || maxOutlier;
-          
+
           if (hasOutliers) {
             // Use 1st and 99th percentile to exclude outliers
             const percentile1 = Math.floor(sortedTimes.length * 0.01);
             const percentile99 = Math.floor(sortedTimes.length * 0.99);
-            
+
             const minTime = sortedTimes[Math.max(0, percentile1)];
             const maxTime = sortedTimes[Math.min(sortedTimes.length - 1, percentile99)];
-            
+
             xExtent = [new Date(minTime), new Date(maxTime)];
             debug('🎨 TimeSeries: Detected outliers, using percentile-based extent (1st-99th)', {
               totalPoints: sortedTimes.length,
@@ -1895,7 +2901,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
             });
           }
         }
-        
+
         // If no outliers detected, use full extent
         if (!hasOutliers) {
           xExtent = d3.extent(allXValues) as [Date, Date] | [undefined, undefined];
@@ -1908,7 +2914,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         }
       }
     }
-    
+
     // Full data extent from chart data (for wheel pan: isActuallyZoomed and pan bounds when parent passes zoomed range as datasetEventTimeRange)
     const fullDataExtent: [Date, Date] | null = allXValues.length > 0
       ? (d3.extent(allXValues) as [Date, Date])
@@ -1923,7 +2929,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     const xScale = d3
       .scaleTime()
       .range([0, width]);
-  
+
     // Set domain only if we have valid extent values
     if (xExtent[0] && xExtent[1] && !isNaN(xExtent[0].getTime()) && !isNaN(xExtent[1].getTime()) && xExtent[0].getTime() !== xExtent[1].getTime()) {
       xScale.domain(xExtent as [Date, Date]);
@@ -1937,10 +2943,10 @@ const TimeSeries = (props: TimeSeriesProps) => {
         xExtent: xExtent.map(d => d ? d.toISOString() : 'undefined')
       });
     }
-  
+
     // Ensure xScale has a valid domain before creating xZoom
     const xDomain = xScale.domain();
-    
+
     const xZoom = xScale.copy();
 
     // Apply zoom domain from selectedRange immediately if it exists
@@ -1950,7 +2956,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       const rangeItem = currentSelectedRange[0];
       const startTime = new Date(rangeItem.start_time);
       const endTime = new Date(rangeItem.end_time);
-      
+
       // Validate the times are within the full domain
       const fullDomain = xScale.domain();
       if (startTime >= fullDomain[0] && endTime <= fullDomain[1] && startTime < endTime) {
@@ -1970,91 +2976,119 @@ const TimeSeries = (props: TimeSeriesProps) => {
       if (props.showLegendTable) return; // Fleet mode: use side table only, no in-chart legend
       const time = selectedTime();
       const chartsData = charts();
-      
+
       if (!chartsData || chartsData.length === 0) {
         return;
       }
-      
+
       // Get the current xZoom from refs
       const refs = d3.select(containerRef).property("__timeSeriesRefs");
       const currentXZoom = refs?.xZoom || xZoom;
-      
+
       if (!currentXZoom || !currentXZoom.domain || currentXZoom.domain().length === 0) {
         return;
       }
-      
+
       const height = getChartHeight();
-      
+
+      const ltIsCut = isCut();
+      const ltCutEvents = cutEvents();
+      const ltHasMultipleCutRanges = ltIsCut && ltCutEvents && ltCutEvents.length > 1;
+      const getCutRangeIndexLt = (point: { x: Date; y: number }) => {
+        if (!ltHasMultipleCutRanges) return -1;
+        const pointTime = point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime();
+        for (let ci = 0; ci < ltCutEvents.length; ci++) {
+          const range = ltCutEvents[ci];
+          if (typeof range === "number") continue;
+          if (range.start_time && range.end_time) {
+            const startTime = new Date(range.start_time).getTime();
+            const endTime = new Date(range.end_time).getTime();
+            if (pointTime >= startTime && pointTime <= endTime) {
+              return ci;
+            }
+          }
+        }
+        return -1;
+      };
+
+      const ltLo = currentXZoom.domain()[0];
+      const ltHi = currentXZoom.domain()[1];
+      const ltTimeTh = segmentGapForLayout;
+
       chartsData.forEach((chart, chartIndex) => {
-        const yOffset = chartIndex * (height + rowGap);
-        
         // Calculate max label length for padding (same as in redraw)
         const maxLabelLength = Math.max(
           ...chart.series.map(series => seriesDisplayName(series).length)
         );
         const paddedLength = maxLabelLength + 3;
-        
-        // Filter visible data based on current x domain
-        const visibleData = chart.series.flatMap(series => 
-          series.data.filter(d => 
-            d.x >= currentXZoom.domain()[0] && 
-            d.x <= currentXZoom.domain()[1]
-          )
-        );
-        
+
         chart.series.forEach((series, seriesIndex) => {
           // Find the legend text element
           const legendText = svg.select(`.chart-group-${chartIndex} .legend-${seriesIndex}`);
-          
+
           if (legendText.empty()) {
             return; // Legend doesn't exist yet
           }
-          
-          // Filter visible data for this series
-          const xDomain = currentXZoom.domain();
-          const domainStart = xDomain[0] instanceof Date ? xDomain[0].getTime() : new Date(xDomain[0]).getTime();
-          const domainEnd = xDomain[1] instanceof Date ? xDomain[1].getTime() : new Date(xDomain[1]).getTime();
-          const buffer = (domainEnd - domainStart) * 0.01;
-          
-          const seriesVisibleData = series.data.filter((d) => {
-            const dTime = d.x instanceof Date ? d.x.getTime() : new Date(d.x).getTime();
-            return dTime >= (domainStart - buffer) && dTime <= (domainEnd + buffer);
-          });
-          
-          // Filter to only valid y values for statistics
-          const validVisibleData = seriesVisibleData.filter(
-            (d) => d.y !== null && d.y !== undefined && !isNaN(d.y) && isFinite(d.y)
+
+          const lineType = normalizeLineType(series.lineType);
+          const rawSegsLt = splitSeriesIntoVisibleSegments(
+            series.data,
+            ltLo,
+            ltHi,
+            ltTimeTh,
+            ltHasMultipleCutRanges ? getCutRangeIndexLt : undefined
           );
-          
-          // Calculate statistics from visible data
+
+          const transformedLt = applyLineTypeToSegmentsWithOptionalCarry(rawSegsLt, lineType);
+          const flatDisplayLt: number[] = [];
+          for (const tpts of transformedLt) {
+            for (const p of tpts) {
+              if (isFiniteDisplayY(p)) {
+                flatDisplayLt.push(p.displayY);
+              }
+            }
+          }
+
           let min: number | undefined;
           let max: number | undefined;
           let avg: number | undefined;
           let std: number | undefined;
-          
-          if (validVisibleData.length > 0) {
-            min = d3.min(validVisibleData, (d) => d.y);
-            max = d3.max(validVisibleData, (d) => d.y);
-            avg = d3.mean(validVisibleData, (d) => d.y);
-            std = avg !== undefined && avg !== null && !isNaN(avg) && validVisibleData.length > 0
-              ? Math.sqrt(d3.mean(validVisibleData, (d) => Math.pow(d.y - avg, 2)) ?? 0)
-              : undefined;
-          } else {
-            // Fallback to all valid data
-            const allValidData = series.data.filter(
-              (d) => d.y !== null && d.y !== undefined && !isNaN(d.y) && isFinite(d.y)
-            );
-            
-            if (allValidData.length > 0) {
-              min = d3.min(allValidData, (d) => d.y);
-              max = d3.max(allValidData, (d) => d.y);
-              avg = d3.mean(allValidData, (d) => d.y);
-              std = avg !== undefined && avg !== null && !isNaN(avg) && allValidData.length > 0
-                ? Math.sqrt(d3.mean(allValidData, (d) => Math.pow(d.y - avg, 2)) ?? 0)
+
+          if (flatDisplayLt.length > 0) {
+            min = d3.min(flatDisplayLt);
+            max = d3.max(flatDisplayLt);
+            avg = d3.mean(flatDisplayLt);
+            std =
+              avg !== undefined && avg !== null && !isNaN(avg) && flatDisplayLt.length > 0
+                ? Math.sqrt(d3.mean(flatDisplayLt, (y) => Math.pow(y - avg!, 2)) ?? 0)
                 : undefined;
+          } else {
+            const visibleRawLt = series.data.filter(
+              (d) =>
+                d.x >= ltLo &&
+                d.x <= ltHi &&
+                d.y !== null &&
+                d.y !== undefined &&
+                !isNaN(Number(d.y)) &&
+                isFinite(Number(d.y))
+            );
+            const statSourceLt =
+              visibleRawLt.length > 0
+                ? visibleRawLt
+                : series.data.filter(
+                  (d) => d.y !== null && d.y !== undefined && !isNaN(d.y) && isFinite(d.y)
+                );
+            if (statSourceLt.length > 0) {
+              min = d3.min(statSourceLt, (d) => Number(d.y));
+              max = d3.max(statSourceLt, (d) => Number(d.y));
+              avg = d3.mean(statSourceLt, (d) => Number(d.y));
+              std =
+                avg !== undefined && avg !== null && !isNaN(avg) && statSourceLt.length > 0
+                  ? Math.sqrt(d3.mean(statSourceLt, (d) => Math.pow(Number(d.y) - avg, 2)) ?? 0)
+                  : undefined;
             }
           }
-          
+
           // Format statistics
           const formatStat = (val: number | undefined | null) => {
             if (val === undefined || val === null || isNaN(val) || !isFinite(val)) {
@@ -2062,35 +3096,32 @@ const TimeSeries = (props: TimeSeriesProps) => {
             }
             return Round(val, 2);
           };
-          
-          // Find closest point to selected time
+
           let selectedValueText = '';
           if (time && series.data.length > 0) {
-            const closestPoint = series.data.reduce((prev, curr) => {
-              const prevTime = prev.x instanceof Date ? prev.x.getTime() : new Date(prev.x).getTime();
-              const currTime = curr.x instanceof Date ? curr.x.getTime() : new Date(curr.x).getTime();
-              const selectedTimeMs = time.getTime();
-              return Math.abs(currTime - selectedTimeMs) < Math.abs(prevTime - selectedTimeMs) ? curr : prev;
-            });
-            
-            // Only show if point is reasonably close to selected time (30 seconds threshold)
-            const timeThreshold = 30000;
-            const closestTime = closestPoint.x instanceof Date ? closestPoint.x.getTime() : new Date(closestPoint.x).getTime();
-            if (Math.abs(closestTime - time.getTime()) <= timeThreshold && 
-                closestPoint.y !== null && closestPoint.y !== undefined && !isNaN(closestPoint.y) && isFinite(closestPoint.y)) {
-              selectedValueText = ` [Sel: ${formatStat(closestPoint.y)}]`;
+            const selDisp = getTransformedValueAtClosestTime(
+              series,
+              time.getTime(),
+              ltLo,
+              ltHi,
+              ltTimeTh,
+              ltHasMultipleCutRanges ? getCutRangeIndexLt : undefined,
+              CLOSEST_SAMPLE_UI_MARKER_MAX_MS
+            );
+            if (selDisp !== undefined) {
+              selectedValueText = ` [Sel: ${formatStat(selDisp)}]`;
             }
           }
-          
+
           // Build the legend text
           const displayName = seriesDisplayName(series);
           let paddedName = displayName;
           if (displayName.length + 3 != paddedLength) {
             paddedName = displayName.padEnd(paddedLength, "\u00A0");
           }
-          
-          const legendTextContent = `${paddedName}${selectedValueText} [Min: ${formatStat(min)}] [Max: ${formatStat(max)}] [Avg: ${formatStat(avg)}] [Std: ${formatStat(std)}]`;
-          
+
+          const legendTextContent = `${paddedName}${selectedValueText} [Min: ${formatStat(min)}] [Max: ${formatStat(max)}] [Avg: ${formatStat(avg)}] [Std: ${formatStat(std)}]${dataResampleLegendBracket(series.dataResample)} [Type: ${lineTypeDisplayLabel(series.lineType)}]`;
+
           // Update the text
           legendText.text(legendTextContent);
         });
@@ -2101,33 +3132,33 @@ const TimeSeries = (props: TimeSeriesProps) => {
     const updateSelectedTimeLine = () => {
       if (!selectedTimeLine) return; // Not yet created (avoid TDZ / early call)
       const time = selectedTime();
-      
+
       if (!time) {
         selectedTimeLine.attr("visibility", "hidden");
         // Update legend text even when time is null to clear Sel value
         updateLegendText();
         return;
       }
-      
+
       // Check if xZoom is properly initialized
       if (!xZoom || !xZoom.domain || xZoom.domain().length === 0) {
-        
+
         selectedTimeLine.attr("visibility", "hidden");
         return;
       }
-      
+
       // Check if time is within the domain
       const domain = xZoom.domain();
       const isTimeVisible = time >= domain[0] && time <= domain[1];
-      
+
       if (!isTimeVisible) {
         selectedTimeLine.attr("visibility", "hidden");
       }
-      
+
       // Update the persistent selected time line only if time is visible
       if (isTimeVisible) {
         const xPos = xZoom(time) + xOffset;
-        
+
         // Check for NaN values and hide the line if invalid
         if (isNaN(xPos) || !isFinite(xPos)) {
           selectedTimeLine.attr("visibility", "hidden");
@@ -2138,82 +3169,125 @@ const TimeSeries = (props: TimeSeriesProps) => {
             .attr("visibility", "visible");
         }
       }
-      
+
       // Prepare data for all points that should be shown at the selected time (circles always; labels only when not using side table)
       const allPointData: Array<{ id: string; x: number; y: number; color: string; text: string; textX: number; textY: number }> = [];
 
       const height = getChartHeight();
+      const stIsCut = isCut();
+      const stCutEvents = cutEvents();
+      const stHasMultipleCutRanges = stIsCut && stCutEvents && stCutEvents.length > 1;
+      const getCutRangeIndexSt = (point: { x: Date; y: number }) => {
+        if (!stHasMultipleCutRanges) return -1;
+        const pointTime = point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime();
+        for (let ci = 0; ci < stCutEvents.length; ci++) {
+          const range = stCutEvents[ci];
+          if (typeof range === "number") continue;
+          if (range.start_time && range.end_time) {
+            const startTime = new Date(range.start_time).getTime();
+            const endTime = new Date(range.end_time).getTime();
+            if (pointTime >= startTime && pointTime <= endTime) {
+              return ci;
+            }
+          }
+        }
+        return -1;
+      };
+      const stLo = xZoom.domain()[0];
+      const stHi = xZoom.domain()[1];
+      const stTimeTh = segmentGapForLayout;
+
       chartsData.forEach((chart, chartIndex) => {
         const yOffset = chartIndex * (height + rowGap);
 
-        const visibleData = chart.series.flatMap(series =>
-          series.data.filter(d =>
-            d.x >= xZoom.domain()[0] &&
-            d.x <= xZoom.domain()[1]
-          )
+        const visibleData = chart.series.flatMap((series) =>
+          series.data.filter((d) => d.x >= stLo && d.x <= stHi)
+        );
+        const allYFromT = chart.series.flatMap((s) =>
+          collectFiniteDisplayYValues(s, stLo, stHi, stTimeTh, stHasMultipleCutRanges ? getCutRangeIndexSt : undefined)
         );
         const allYValuesForTime =
-          visibleData.length > 0
-            ? visibleData.map((d) => d.y)
-            : chart.series.flatMap((series) => series.data.map((d) => d.y));
+          allYFromT.length > 0
+            ? allYFromT
+            : chart.series.flatMap((series) =>
+              series.data
+                .map((d) => d.y)
+                .filter((v) => v != null && Number.isFinite(Number(v)))
+                .map((v) => Number(v))
+            );
         let yDomainForTime = safeNumericYDomain(allYValuesForTime);
         if (visibleData.length > 0 && yDomainForTime[1] > yDomainForTime[0]) {
           const yPadding = (yDomainForTime[1] - yDomainForTime[0]) * 0.2;
           yDomainForTime = [yDomainForTime[0], yDomainForTime[1] + yPadding];
         }
-        const yScale = d3.scaleLinear()
-          .domain(yDomainForTime)
-          .range([height, 0]);
+        const yScale = d3.scaleLinear().domain(yDomainForTime).range([height, 0]);
 
         chart.series.forEach((series, seriesIndex) => {
           if (series.data.length === 0) return;
           const timeMs = time.getTime();
-          const getXTime = (d: { x: Date | number }) =>
-            d.x instanceof Date ? d.x.getTime() : new Date(d.x).getTime();
-          const closestPoint = series.data.reduce((prev, curr) =>
-            Math.abs(getXTime(curr) - timeMs) < Math.abs(getXTime(prev) - timeMs) ? curr : prev
+          const yDisp = getTransformedValueAtClosestTime(
+            series,
+            timeMs,
+            stLo,
+            stHi,
+            stTimeTh,
+            stHasMultipleCutRanges ? getCutRangeIndexSt : undefined,
+            CLOSEST_SAMPLE_UI_MARKER_MAX_MS
           );
-          const timeThreshold = 30000;
-          const closestTimeMs = getXTime(closestPoint);
-          if (Math.abs(closestTimeMs - timeMs) <= timeThreshold &&
-              closestPoint.y !== null && closestPoint.y !== undefined && !isNaN(closestPoint.y)) {
-            const pointTime = isTimeVisible ? time : (closestPoint.x instanceof Date ? closestPoint.x : new Date(closestPoint.x));
+          if (yDisp !== undefined) {
+            const closestPoint = series.data.reduce((prev, curr) => {
+              const pt = prev.x instanceof Date ? prev.x.getTime() : new Date(prev.x).getTime();
+              const ct = curr.x instanceof Date ? curr.x.getTime() : new Date(curr.x).getTime();
+              return Math.abs(ct - timeMs) < Math.abs(pt - timeMs) ? curr : prev;
+            });
+            const pointTime = isTimeVisible
+              ? time
+              : closestPoint.x instanceof Date
+                ? closestPoint.x
+                : new Date(closestPoint.x);
             const xPos = xZoom(pointTime) + xOffset;
-            const yNum = Number(closestPoint.y);
-            const yPos = (!Number.isNaN(yNum) && Number.isFinite(yNum) ? yScale(yNum) : NaN) + yOffset;
-            if (!isNaN(xPos) && isFinite(xPos) && !isNaN(yPos) && isFinite(yPos) &&
-                yPos >= 0 && yPos <= totalHeight && xPos >= 0 && xPos <= width + xOffset) {
+            const yPos = yScale(yDisp) + yOffset;
+            if (
+              !isNaN(xPos) &&
+              isFinite(xPos) &&
+              !isNaN(yPos) &&
+              isFinite(yPos) &&
+              yPos >= 0 &&
+              yPos <= totalHeight &&
+              xPos >= 0 &&
+              xPos <= width + xOffset
+            ) {
               allPointData.push({
                 id: `${chartIndex}-${seriesIndex}`,
                 x: xPos,
                 y: yPos,
                 color: series.color,
-                text: `${seriesDisplayName(series)}: ${Round(closestPoint.y, 2)}`,
+                text: `${seriesDisplayName(series)}: ${Round(yDisp, 2)}`,
                 textX: xPos + 5,
-                textY: yPos + 4
+                textY: yPos + 4,
               });
             }
           }
         });
       });
-      
+
       // Determine if transitions should be used based on playback speed
       const isNormalSpeed = !isPlaying() || playbackSpeed() === 1;
       const transitionDuration = isNormalSpeed && isPlaying() ? 250 : 0;
-      
+
       // Use D3's data join pattern for smooth transitions
-      
+
       // Update circles
       const circles = svg.selectAll("circle.time-value-label")
         .data(allPointData, d => d.id);
-        
+
       // Exit old circles
       circles.exit()
         .transition()
         .duration(transitionDuration)
         .style("opacity", 0)
         .remove();
-        
+
       // Enter new circles
       circles.enter()
         .append("circle")
@@ -2229,7 +3303,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         .transition()
         .duration(transitionDuration)
         .style("opacity", 1);
-        
+
       // Update existing circles
       circles
         .attr("clip-path", "url(#clip)") // Ensure clip path is applied
@@ -2238,7 +3312,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         .attr("cx", d => d.x)
         .attr("cy", d => d.y)
         .attr("fill", d => d.color);
-      
+
       // Update text labels (only when not using side legend table - points/circles always shown)
       const labelData = props.showLegendTable ? [] : allPointData;
       const texts = svg.selectAll("text.time-value-label")
@@ -2275,26 +3349,26 @@ const TimeSeries = (props: TimeSeriesProps) => {
         .attr("x", (d: { textX: number }) => d.textX)
         .attr("y", (d: { textY: number }) => d.textY - 10)
         .attr("fill", (d: { color: string }) => d.color);
-      
+
       // Update legend text with new Sel value
       updateLegendText();
     };
-  
+
     // Modify the redraw function to properly handle segments when zoomed
     const redraw = () => {
       // Get the current xZoom from refs to ensure we're using the latest domain
       const refs = d3.select(containerRef).property("__timeSeriesRefs");
       const currentXZoom = refs?.xZoom || xZoom;
-      
+
       debug('🔄 TimeSeries: Redraw called', {
         xZoomDomain: currentXZoom.domain(),
         xZoomDomainFormatted: currentXZoom.domain().map(d => safeToISOString(d)),
         isRedrawing
       });
-      
+
       // Set flag to prevent selection clearing effect from triggering
       isRedrawing = true;
-      
+
       // Clear all previously drawn chart features
       svg.selectAll(".chart-group").remove();
 
@@ -2312,234 +3386,259 @@ const TimeSeries = (props: TimeSeriesProps) => {
         const height = getChartHeight();
         const yOffset = i * (height + rowGap);
         const group = d3.select(this);
-        
-        // Filter visible data based on current x domain
-        const visibleData = chart.series.flatMap(series => 
-          series.data.filter(d => 
-            d.x >= currentXZoom.domain()[0] && 
-            d.x <= currentXZoom.domain()[1]
-          )
+
+        const currentIsCut = isCut();
+        const currentCutEvents = cutEvents();
+        const hasMultipleCutRanges = currentIsCut && currentCutEvents && currentCutEvents.length > 1;
+
+        const getCutRangeIndex = (point: { x: Date; y: number }) => {
+          if (!hasMultipleCutRanges) return -1;
+          const pointTime = point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime();
+          for (let ci = 0; ci < currentCutEvents.length; ci++) {
+            const range = currentCutEvents[ci];
+            if (typeof range === "number") continue;
+            if (range.start_time && range.end_time) {
+              const startTime = new Date(range.start_time).getTime();
+              const endTime = new Date(range.end_time).getTime();
+              if (pointTime >= startTime && pointTime <= endTime) {
+                return ci;
+              }
+            }
+          }
+          return -1;
+        };
+
+        const zoLo = currentXZoom.domain()[0];
+        const zoHi = currentXZoom.domain()[1];
+        const timeTh = segmentGapForLayout;
+
+        const stackedAreaActive =
+          chart.stackedArea === true && !props.showLegendTable && chart.series.length > 0;
+        const stackedPlan = stackedAreaActive
+          ? buildExploreStackedRenderPlan(
+              chart.series,
+              zoLo,
+              zoHi,
+              timeTh,
+              hasMultipleCutRanges ? getCutRangeIndex : undefined
+            )
+          : null;
+        const stackedDrawing = Boolean(stackedPlan && stackedPlan.stacked.length > 0);
+
+        const visibleData = chart.series.flatMap((series) =>
+          series.data.filter((d) => d.x >= zoLo && d.x <= zoHi)
         );
-        
-        // Calculate y domain from only the visible data points (numeric values only for scaleLinear; handles Race_number, "TRAINING", etc.)
-        const allYValues = visibleData.length > 0
-          ? visibleData.map((d) => d.y)
-          : chart.series.flatMap((series) => series.data.map((d) => d.y));
-        let yDomain = safeNumericYDomain(allYValues);
-        if (visibleData.length > 0 && yDomain[1] > yDomain[0]) {
-          const yPadding = (yDomain[1] - yDomain[0]) * 0.2;
-          yDomain = [yDomain[0], yDomain[1] + yPadding];
+
+        let yDomain: [number, number];
+        if (stackedDrawing && stackedPlan) {
+          const [smin, smax] = exploreStackExtent(stackedPlan.stacked);
+          yDomain = safeNumericYDomain([smin, smax]);
+          if (visibleData.length > 0 && yDomain[1] > yDomain[0]) {
+            const yPadding = (yDomain[1] - yDomain[0]) * 0.2;
+            yDomain = [yDomain[0], yDomain[1] + yPadding];
+          }
+        } else {
+          const perSeriesY = chart.series.map((s) =>
+            collectFiniteDisplayYValues(s, zoLo, zoHi, timeTh, hasMultipleCutRanges ? getCutRangeIndex : undefined)
+          );
+          const allYFromTransforms = perSeriesY.flat();
+          const supplementY = chart.series.flatMap((s, i) =>
+            perSeriesY[i].length === 0 ? collectVisibleWindowRawYValues(s, zoLo, zoHi) : []
+          );
+          const mergedYDomain = [...allYFromTransforms, ...supplementY];
+          const allYValues =
+            mergedYDomain.length > 0
+              ? mergedYDomain
+              : chart.series.flatMap((series) =>
+                  series.data
+                    .map((d) => d.y)
+                    .filter((v) => v != null && Number.isFinite(Number(v)))
+                    .map((v) => Number(v))
+                );
+          yDomain = safeNumericYDomain(allYValues);
+          if (visibleData.length > 0 && yDomain[1] > yDomain[0]) {
+            const yPadding = (yDomain[1] - yDomain[0]) * 0.2;
+            yDomain = [yDomain[0], yDomain[1] + yPadding];
+          }
         }
-  
-        const yScale = d3
-          .scaleLinear()
-          .domain(yDomain)
-          .range([height, 0]);
-  
-        // Adjust the yScale for the vertical offset
+
+        const yScale = d3.scaleLinear().domain(yDomain).range([height, 0]);
+
         const yScaleTranslated = (value: number) => yScale(value) + yOffset;
+        const areaBaseY = yScaleTranslated(0);
 
         group.selectAll(".y-axis").remove();
         group.selectAll(".x-axis").remove();
         group.selectAll("[class^='legend-']").remove(); // Remove legend text to ensure it updates
-        group.selectAll(".chart-channel-label").remove();
+        group.selectAll(".chart-channel-label, .chart-line-type-label").remove();
 
         chart.series.forEach((series, seriesIndex) => {
-          // Filter data based on visible x domain with a small buffer to ensure we don't miss points
           const xDomain = currentXZoom.domain();
-          // Convert domain to timestamps for reliable comparison
           const domainStart = xDomain[0] instanceof Date ? xDomain[0].getTime() : new Date(xDomain[0]).getTime();
           const domainEnd = xDomain[1] instanceof Date ? xDomain[1].getTime() : new Date(xDomain[1]).getTime();
-          const buffer = (domainEnd - domainStart) * 0.01; // 1% buffer on each side
-          
-          const visibleData = series.data.filter(
-            (d) => {
-              // Convert d.x to timestamp for reliable comparison
-              const dTime = d.x instanceof Date ? d.x.getTime() : new Date(d.x).getTime();
-              return dTime >= (domainStart - buffer) && dTime <= (domainEnd + buffer);
+
+          const lineType = normalizeLineType(series.lineType);
+          const rawSegs =
+            !props.showLegendTable && lineType === "standard" && !hasMultipleCutRanges
+              ? exploreStandardPolylineRawSegments(series.data, zoLo, zoHi)
+              : splitSeriesIntoVisibleSegments(
+                  series.data,
+                  zoLo,
+                  zoHi,
+                  timeTh,
+                  hasMultipleCutRanges ? getCutRangeIndex : undefined
+                );
+
+          const transformedSegsRedraw = applyLineTypeToSegmentsWithOptionalCarry(rawSegs, lineType);
+          const segmentsForDraw =
+            lineType === "standard"
+              ? extendStandardSegmentsToVisibleDomain(transformedSegsRedraw, zoLo, zoHi)
+              : transformedSegsRedraw;
+
+          const flatDisplay: number[] = [];
+          for (const tpts of transformedSegsRedraw) {
+            for (const p of tpts) {
+              if (isFiniteDisplayY(p)) {
+                flatDisplay.push(p.displayY);
+              }
             }
-          );
+          }
 
-          // Filter to only valid y values for statistics computation
-          const validVisibleData = visibleData.filter(
-            (d) => d.y !== null && d.y !== undefined && !isNaN(d.y) && isFinite(d.y)
-          );
-
-          // Compute statistics from valid visible data, with fallback to all valid data if visible is empty
           let min: number | undefined;
           let max: number | undefined;
           let avg: number | undefined;
           let std: number | undefined;
 
-          if (validVisibleData.length > 0) {
-            // Calculate from visible data
-            min = d3.min(validVisibleData, (d) => d.y);
-            max = d3.max(validVisibleData, (d) => d.y);
-            avg = d3.mean(validVisibleData, (d) => d.y);
-            std = avg !== undefined && avg !== null && !isNaN(avg) && validVisibleData.length > 0
-              ? Math.sqrt(d3.mean(validVisibleData, (d) => Math.pow(d.y - avg, 2)) ?? 0)
-              : undefined;
-          } else {
-            // Fallback: calculate from all valid data in the series if visible data is empty
-            const allValidData = series.data.filter(
-              (d) => d.y !== null && d.y !== undefined && !isNaN(d.y) && isFinite(d.y)
-            );
-            
-            if (allValidData.length > 0) {
-              debug(`[TimeSeries] No valid visible data for ${series.yaxis.name}, using all valid data (${allValidData.length} points) for statistics`);
-              min = d3.min(allValidData, (d) => d.y);
-              max = d3.max(allValidData, (d) => d.y);
-              avg = d3.mean(allValidData, (d) => d.y);
-              std = avg !== undefined && avg !== null && !isNaN(avg) && allValidData.length > 0
-                ? Math.sqrt(d3.mean(allValidData, (d) => Math.pow(d.y - avg, 2)) ?? 0)
+          if (flatDisplay.length > 0) {
+            min = d3.min(flatDisplay);
+            max = d3.max(flatDisplay);
+            avg = d3.mean(flatDisplay);
+            std =
+              avg !== undefined && avg !== null && !isNaN(avg) && flatDisplay.length > 0
+                ? Math.sqrt(d3.mean(flatDisplay, (y) => Math.pow(y - avg!, 2)) ?? 0)
                 : undefined;
+          } else {
+            const visibleRawRedraw = series.data.filter(
+              (d) =>
+                d.x >= zoLo &&
+                d.x <= zoHi &&
+                d.y !== null &&
+                d.y !== undefined &&
+                !isNaN(Number(d.y)) &&
+                isFinite(Number(d.y))
+            );
+            const statSourceRedraw =
+              visibleRawRedraw.length > 0
+                ? visibleRawRedraw
+                : series.data.filter(
+                  (d) => d.y !== null && d.y !== undefined && !isNaN(d.y) && isFinite(d.y)
+                );
+            if (statSourceRedraw.length > 0) {
+              debug(
+                `[TimeSeries] No valid visible display points for ${series.yaxis.name}, using ${visibleRawRedraw.length > 0 ? "visible-window" : "global"} raw data (${statSourceRedraw.length} points) for statistics`
+              );
+              min = d3.min(statSourceRedraw, (d) => Number(d.y));
+              max = d3.max(statSourceRedraw, (d) => Number(d.y));
+              avg = d3.mean(statSourceRedraw, (d) => Number(d.y));
+              std =
+                avg !== undefined && avg !== null && !isNaN(avg) && statSourceRedraw.length > 0
+                  ? Math.sqrt(d3.mean(statSourceRedraw, (d) => Math.pow(Number(d.y) - avg, 2)) ?? 0)
+                  : undefined;
             } else {
-              // No valid data at all - log for debugging
               debug(`[TimeSeries] No valid data found for ${series.yaxis.name}`, {
                 totalDataPoints: series.data.length,
-                visibleDataPoints: visibleData.length,
-                sampleData: series.data.slice(0, 3).map(d => ({ x: d.x, y: d.y, yType: typeof d.y }))
+                segmentCount: rawSegs.length,
+                sampleData: series.data.slice(0, 3).map((d) => ({ x: d.x, y: d.y, yType: typeof d.y })),
               });
             }
           }
 
-          // Debug logging for statistics calculation
           if (min === undefined || max === undefined || avg === undefined || std === undefined) {
             debug(`[TimeSeries] Statistics calculation for ${series.yaxis.name}`, {
               min,
               max,
               avg,
               std,
-              validVisibleDataCount: validVisibleData.length,
-              visibleDataCount: visibleData.length,
+              flatDisplayCount: flatDisplay.length,
               totalDataCount: series.data.length,
               domainStart: new Date(domainStart).toISOString(),
               domainEnd: new Date(domainEnd).toISOString(),
-              hasValidYValues: series.data.some(d => d.y !== null && d.y !== undefined && !isNaN(d.y) && isFinite(d.y))
+              hasValidYValues: series.data.some(
+                (d) => d.y !== null && d.y !== undefined && !isNaN(d.y) && isFinite(d.y)
+              ),
             });
           }
-        
+
           const color = series.color;
-        
-          // Replace single path with segmented paths to handle discontinuities
-          // **** KEY FIX: Use currentXZoom instead of xScale for drawing the line after zooming ****
-          const lineGenerator = d3.line()
-            .x((d) => currentXZoom(d.x) + xOffset) // Use currentXZoom instead of xScale
-            .y((d) => {
-              const num = Number(d.y);
-              return yScaleTranslated(num);
-            })
-            .defined((d) => {
-              const num = Number(d.y);
-              return !Number.isNaN(num) && Number.isFinite(num);
-            });
-          
-          // Split data into segments where there are gaps
-          const timeThreshold = 30000; // 30 seconds - adjust based on your data's typical sampling rate
-          let segments = [];
-          let currentSegment = [];
-          
-          // Check if we're in cut mode and get cut ranges for gap detection
-          const currentIsCut = isCut();
-          const currentCutEvents = cutEvents();
-          const hasMultipleCutRanges = currentIsCut && currentCutEvents && currentCutEvents.length > 1;
-          
-          // Helper function to check which cut range a point belongs to (if any)
-          const getCutRangeIndex = (point) => {
-            if (!hasMultipleCutRanges) return -1;
-            const pointTime = point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime();
-            
-            for (let i = 0; i < currentCutEvents.length; i++) {
-              const range = currentCutEvents[i];
-              if (typeof range === 'number') continue; // Skip event IDs
-              
-              if (range.start_time && range.end_time) {
-                const startTime = new Date(range.start_time).getTime();
-                const endTime = new Date(range.end_time).getTime();
-                if (pointTime >= startTime && pointTime <= endTime) {
-                  return i;
-                }
-              }
-            }
-            return -1; // Point doesn't belong to any cut range
-          };
-          
-          for (let i = 0; i < series.data.length; i++) {
-            const point = series.data[i];
-            
-            // Check if point is valid and within visible range
-            if (point.x >= currentXZoom.domain()[0] && point.x <= currentXZoom.domain()[1] && 
-                point.y !== null && point.y !== undefined && !isNaN(point.y)) {
-              
-              // Check if we should break segment due to time gap or cut range boundary
-              let shouldBreak = false;
-              if (currentSegment.length > 0) {
-                // Get the last point that was added to the current segment
-                const prevPoint = currentSegment[currentSegment.length - 1];
-                const timeDiff = Math.abs(point.x - prevPoint.x);
-                
-                // Break on time gap
-                if (timeDiff >= timeThreshold) {
-                  shouldBreak = true;
-                }
-                
-                // Break on cut range boundary (check this even if time gap is small)
-                if (hasMultipleCutRanges) {
-                  const prevRangeIndex = getCutRangeIndex(prevPoint);
-                  const currRangeIndex = getCutRangeIndex(point);
-                  // Break if points belong to different cut ranges
-                  // Also break if one is in a range and the other isn't (shouldn't happen with filtered data, but be safe)
-                  if (prevRangeIndex !== currRangeIndex && (prevRangeIndex >= 0 || currRangeIndex >= 0)) {
-                    shouldBreak = true;
-                  }
-                }
-              }
-              
-              if (shouldBreak) {
-                // There's a gap, so start a new segment
-                if (currentSegment.length > 1) {
-                  segments.push([...currentSegment]);
-                }
-                currentSegment = [point];
-              } else {
-                // Add to current segment
-                currentSegment.push(point);
-              }
-            } else if (currentSegment.length > 0) {
-              // Invalid point, end current segment
-              if (currentSegment.length > 1) {
-                segments.push([...currentSegment]);
-              }
-              currentSegment = [];
-            }
-          }
-          
-          // Add the last segment if it exists
-          if (currentSegment.length > 1) {
-            segments.push(currentSegment);
-          }
-          
-          // Draw each segment as a separate path with consistent offset
           const strokeWidth = series.strokeWidth ?? 1;
           const strokeDasharray = getStrokeDasharray(series.strokeStyle);
-          
-          segments.forEach(segment => {
-            const path = group.append("path")
-              .datum(segment)
-              .attr("class", `line-${chart.chart}-${seriesIndex}`)
-              .attr("fill", "none")
-              .attr("stroke", color)
-              .attr("stroke-width", strokeWidth)
-              .attr("clip-path", "url(#clip)")
-              .attr("user-select", "none")
-              .attr("pointer-events", "none")
-              .attr("d", lineGenerator); // Line generator now uses xZoom
-            
-            // Set stroke-dasharray only if not solid (null means solid line)
-            if (strokeDasharray !== null) {
-              path.attr("stroke-dasharray", strokeDasharray);
-            }
-          });
+          const useFilledArea = series.strokeStyle === "filled-area";
+
+          if (!stackedDrawing) {
+            segmentsForDraw.forEach((tseg) => {
+              if (tseg.length === 0) {
+                return;
+              }
+
+              const lineGenerator = d3
+                .line<TransformedPoint>()
+                .x((d) => currentXZoom(d.x) + xOffset)
+                .y((d) => yScaleTranslated(d.displayY))
+                .defined((d) => isFiniteDisplayY(d));
+
+              const finitePts = tseg.filter(isFiniteDisplayY);
+              if (finitePts.length === 0) {
+                return;
+              }
+
+              if (useFilledArea && finitePts.length >= 2) {
+                const areaGen = d3
+                  .area<TransformedPoint>()
+                  .x((d) => currentXZoom(d.x) + xOffset)
+                  .y0(areaBaseY)
+                  .y1((d) => yScaleTranslated(d.displayY))
+                  .defined((d) => isFiniteDisplayY(d));
+                group
+                  .append("path")
+                  .datum(tseg)
+                  .attr("class", `area-${chart.chart}-${seriesIndex}`)
+                  .attr("fill", fillColorHalfOpacity(color || "#888"))
+                  .attr("stroke", "none")
+                  .attr("clip-path", "url(#clip)")
+                  .attr("pointer-events", "none")
+                  .attr("d", areaGen);
+              }
+
+              let pathD: string;
+              let lineCap: "round" | "butt" = "butt";
+              if (finitePts.length === 1) {
+                const p0 = finitePts[0];
+                const cx = currentXZoom(p0.x) + xOffset;
+                const cy = yScaleTranslated(p0.displayY);
+                pathD = `M${cx},${cy}L${cx},${cy}`;
+                lineCap = "round";
+              } else {
+                pathD = lineGenerator(tseg) ?? "";
+              }
+
+              const path = group
+                .append("path")
+                .datum(tseg)
+                .attr("class", `line-${chart.chart}-${seriesIndex}`)
+                .attr("fill", "none")
+                .attr("stroke", color)
+                .attr("stroke-width", strokeWidth)
+                .attr("stroke-linecap", lineCap)
+                .attr("clip-path", "url(#clip)")
+                .attr("user-select", "none")
+                .attr("pointer-events", "none")
+                .attr("d", pathD);
+
+              if (strokeDasharray !== null) {
+                path.attr("stroke-dasharray", strokeDasharray);
+              }
+            });
+          }
 
           // LEGEND: per-series legend only when not using side table (Fleet)
           if (!props.showLegendTable) {
@@ -2547,11 +3646,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
               ...chart.series.map(series => seriesDisplayName(series).length)
             );
             const paddedLength = maxLabelLength + 3;
+            // Stacked: first series is bottom layer, last is top — match legend top-to-bottom to stack top-to-bottom
+            const legendSlot = stackedDrawing ? chart.series.length - 1 - seriesIndex : seriesIndex;
             group
               .append("text")
               .attr("class", `legend-${seriesIndex}`)
               .attr("x", 20)
-              .attr("y", yOffset + 15 + seriesIndex * 20)
+              .attr("y", yOffset + 15 + legendSlot * 20)
               .attr("fill", color)
               .attr("font-size", "13px")
               .attr("user-select", "none")
@@ -2569,25 +3670,90 @@ const TimeSeries = (props: TimeSeriesProps) => {
                 let selectedValueText = '';
                 const currentSelectedTime = selectedTime();
                 if (currentSelectedTime && series.data.length > 0) {
-                  const closestPoint = series.data.reduce((prev, curr) => {
-                    const prevTime = prev.x instanceof Date ? prev.x.getTime() : new Date(prev.x).getTime();
-                    const currTime = curr.x instanceof Date ? curr.x.getTime() : new Date(curr.x).getTime();
-                    const selectedTimeMs = currentSelectedTime.getTime();
-                    return Math.abs(currTime - selectedTimeMs) < Math.abs(prevTime - selectedTimeMs) ? curr : prev;
-                  });
-                  const timeThreshold = 30000;
-                  const closestTime = closestPoint.x instanceof Date ? closestPoint.x.getTime() : new Date(closestPoint.x).getTime();
-                  if (Math.abs(closestTime - currentSelectedTime.getTime()) <= timeThreshold &&
-                      closestPoint.y !== null && closestPoint.y !== undefined && !isNaN(closestPoint.y) && isFinite(closestPoint.y)) {
-                    selectedValueText = ` [Sel: ${formatStat(closestPoint.y)}]`;
+                  const selDisp = getTransformedValueAtClosestTime(
+                    series,
+                    currentSelectedTime.getTime(),
+                    zoLo,
+                    zoHi,
+                    timeTh,
+                    hasMultipleCutRanges ? getCutRangeIndex : undefined,
+                    CLOSEST_SAMPLE_UI_MARKER_MAX_MS
+                  );
+                  if (selDisp !== undefined) {
+                    selectedValueText = ` [Sel: ${formatStat(selDisp)}]`;
                   }
                 }
-                return `${paddedName}${selectedValueText} [Min: ${formatStat(min)}] [Max: ${formatStat(max)}] [Avg: ${formatStat(avg)}] [Std: ${formatStat(std)}]`;
+                return `${paddedName}${selectedValueText} [Min: ${formatStat(min)}] [Max: ${formatStat(max)}] [Avg: ${formatStat(avg)}] [Std: ${formatStat(std)}]${dataResampleLegendBracket(series.dataResample)} [Type: ${lineTypeDisplayLabel(series.lineType)}]`;
               });
           }
         });
 
-        // Fleet mode: single white channel name in upper left of each chart
+        if (stackedDrawing && stackedPlan) {
+          const { gridTimes, stacked } = stackedPlan;
+          stacked.forEach((layer, seriesIndex) => {
+            const series = chart.series[seriesIndex];
+            const color = series.color || "#888";
+            const strokeWidth = series.strokeWidth ?? 1;
+            const strokeDasharray = getStrokeDasharray(series.strokeStyle);
+            const pts: Array<{ x: Date; y0: number; y1: number }> = gridTimes.map((t, j) => ({
+              x: new Date(t),
+              y0: layer[j][0],
+              y1: layer[j][1],
+            }));
+            const areaGen = d3
+              .area<{ x: Date; y0: number; y1: number }>()
+              .x((d) => currentXZoom(d.x) + xOffset)
+              .y0((d) => yScaleTranslated(d.y0))
+              .y1((d) => yScaleTranslated(d.y1))
+              .defined((d) => Number.isFinite(d.y0) && Number.isFinite(d.y1));
+            if (pts.length >= 2) {
+              group
+                .append("path")
+                .datum(pts)
+                .attr("class", `area-stack-${chart.chart}-${seriesIndex}`)
+                .attr("fill", fillColorHalfOpacity(color))
+                .attr("stroke", "none")
+                .attr("clip-path", "url(#clip)")
+                .attr("pointer-events", "none")
+                .attr("d", areaGen);
+            }
+            const lineGen = d3
+              .line<{ x: Date; y0: number; y1: number }>()
+              .x((d) => currentXZoom(d.x) + xOffset)
+              .y((d) => yScaleTranslated(d.y1))
+              .defined((d) => Number.isFinite(d.y1));
+            const finiteY1 = pts.filter((d) => Number.isFinite(d.y1));
+            if (finiteY1.length === 0) return;
+            let pathD: string;
+            let lineCap: "round" | "butt" = "butt";
+            if (finiteY1.length === 1) {
+              const p0 = finiteY1[0];
+              const cx = currentXZoom(p0.x) + xOffset;
+              const cy = yScaleTranslated(p0.y1);
+              pathD = `M${cx},${cy}L${cx},${cy}`;
+              lineCap = "round";
+            } else {
+              pathD = lineGen(pts) ?? "";
+            }
+            const path = group
+              .append("path")
+              .datum(pts)
+              .attr("class", `line-${chart.chart}-${seriesIndex}`)
+              .attr("fill", "none")
+              .attr("stroke", color)
+              .attr("stroke-width", strokeWidth)
+              .attr("stroke-linecap", lineCap)
+              .attr("clip-path", "url(#clip)")
+              .attr("user-select", "none")
+              .attr("pointer-events", "none")
+              .attr("d", pathD);
+            if (strokeDasharray !== null) {
+              path.attr("stroke-dasharray", strokeDasharray);
+            }
+          });
+        }
+
+        // Fleet mode: white channel name + small line-type summary in upper left of each chart
         if (props.showLegendTable && chart.series.length > 0) {
           const firstName = seriesDisplayName(chart.series[0]);
           const channelName = firstName.includes(' - ') ? firstName.split(' - ')[0].trim() : firstName;
@@ -2595,12 +3761,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
             .append("text")
             .attr("class", "chart-channel-label")
             .attr("x", 20)
-            .attr("y", yOffset + 15)
+            .attr("y", yOffset + 14)
             .attr("fill", "white")
             .attr("font-size", "13px")
             .attr("user-select", "none")
             .attr("pointer-events", "none")
             .text(channelName);
+          group
+            .append("text")
+            .attr("class", "chart-line-type-label")
+            .attr("x", 20)
+            .attr("y", yOffset + 28)
+            .attr("user-select", "none")
+            .attr("pointer-events", "none")
+            .text(fleetChartLineTypeSummary(chart.series));
         }
 
         // Add the same offset to the chart axes
@@ -2614,7 +3788,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               .scale(yScale)
               .ticks(5)
           );
-  
+
         group
           .append("g")
           .attr("class", "x-axis")
@@ -2628,17 +3802,17 @@ const TimeSeries = (props: TimeSeriesProps) => {
               )
           );
       });
-      
+
       // Update the selected time line after redrawing
       updateSelectedTimeLine();
-      
+
       // Draw event overlays after redrawing
       drawEventOverlays();
-      
+
       // Reset flag after redraw is complete
       isRedrawing = false;
     };
-  
+
     // Add a transparent overlay for mouse interactions with correct offset
     const mouseOverlay = svg.append("rect")
       .attr("class", "mouse-overlay")
@@ -2650,7 +3824,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       .style("cursor", "pointer"); // Add cursor for clickable indication
 
     // Add click handler to the mouse overlay
-    mouseOverlay.on("click", function(event) {
+    mouseOverlay.on("click", function (event) {
       debug('🖱️ TimeSeries: Mouse overlay click received!', {
         target: event.target,
         targetClass: event.target?.className,
@@ -2658,7 +3832,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         clientX: event.clientX,
         clientY: event.clientY
       });
-      
+
       // Get mouse coordinates relative to the SVG container
       const svgPoint = d3.pointer(event);
       const rawX = svgPoint[0] - xOffset;
@@ -2669,7 +3843,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       const clampedX = rangeMax > rangeMin ? Math.max(rangeMin, Math.min(rangeMax, rawX)) : rangeMin;
       const time = xZoom.invert(clampedX);
       const timeMs = time instanceof Date ? time.getTime() : typeof time === 'number' ? time : NaN;
-      
+
       if (Number.isFinite(timeMs)) {
         debug('🖱️ TimeSeries: Timeline click detected', {
           mouseX: svgPoint[0],
@@ -2694,11 +3868,11 @@ const TimeSeries = (props: TimeSeriesProps) => {
           debug('🖱️ TimeSeries: Time control denied - another component has higher priority');
         }
       }
-      
+
       // Force update of the visualization to reflect the new selected time
       debug('🖱️ TimeSeries: Calling updateSelectedTimeLine');
       updateSelectedTimeLine();
-      
+
       // Prevent event from propagating further to ensure no other handlers interfere
       event.stopPropagation();
     });
@@ -2728,45 +3902,45 @@ const TimeSeries = (props: TimeSeriesProps) => {
           selection: event.selection,
           isProgrammaticallyUpdatingBrush
         });
-        
+
         // Ignore end caused by programmatic move(null)
         if (isProgrammaticallyUpdatingBrush) {
           debug('🖌️ TimeSeries: Brush end ignored due to programmatic update');
           // Do NOT reset isProgrammaticallyUpdatingBrush here; let the setTimeout in the caller handle it
           return;
         }
-        
+
         if (event.selection) {
           const [x0, x1] = event.selection.map(x => xZoom.invert(x - xOffset));
           const t0 = x0 instanceof Date ? x0.getTime() : typeof x0 === 'number' ? x0 : NaN;
           const t1 = x1 instanceof Date ? x1.getTime() : typeof x1 === 'number' ? x1 : NaN;
           if (!Number.isFinite(t0) || !Number.isFinite(t1)) return;
-          
+
           debug('🖌️ TimeSeries: Brush selection made', {
             startTime: new Date(t0).toISOString(),
             endTime: new Date(t1).toISOString(),
             duration: t1 - t0
           });
-          
+
           // Selections work normally on cut data - treat selections the same whether cut data or full dataset
           // Zoom the chart to the brush selection
           xZoom.domain([x0, x1]);
-          
+
           // Set the selectedRange to match the brush selection (works normally on cut data)
-          const range = {"start_time": new Date(t0).toISOString(), "end_time": new Date(t1).toISOString()};
+          const range = { "start_time": new Date(t0).toISOString(), "end_time": new Date(t1).toISOString() };
           debug('🖌️ TimeSeries: Setting selectedRange', range);
           setSelectedRange([range]);
-          
+
           // Set the selectedTime to the start of the brush selection
           const selectedTimeValue = new Date(t0);
           debug('🖌️ TimeSeries: Setting selectedTime to brush start', selectedTimeValue.toISOString());
           if (requestTimeControl('timeseries')) {
             setSelectedTime(selectedTimeValue, 'timeseries');
           }
-          
+
           // Redraw and update states
           debug('🖌️ TimeSeries: Calling redraw...');
-          
+
           // Save scroll position before redraw to maintain user's scroll position
           const savedScrollY = window.scrollY;
           const savedScrollX = window.scrollX;
@@ -2776,24 +3950,24 @@ const TimeSeries = (props: TimeSeriesProps) => {
             savedContainerScrollTop = containerRef.scrollTop;
             savedContainerScrollLeft = containerRef.scrollLeft;
           }
-          
+
           setZoom(true);
           setHasSelection(true);
-          
+
           // Set flag to skip brush restoration after this zoom
           // restoreBrushSelection() will check this flag and clear the brush instead of restoring it
           shouldSkipBrushRestoreAfterZoom = true;
-          
+
           // Clear the brush immediately before redraw to prevent it from being restored
           if (brushGroup && !brushGroup.empty()) {
             isProgrammaticallyUpdatingBrush = true;
             brushGroup.call(brush.move, null);
             debug('🖌️ TimeSeries: Brush cleared immediately before redraw');
           }
-          
+
           // Redraw the chart (restoreBrushSelection will be called, but will skip restoration due to flag)
           redraw();
-          
+
           // Restore scroll position after redraw completes
           // Use multiple requestAnimationFrame calls to ensure DOM has fully updated
           requestAnimationFrame(() => {
@@ -2805,7 +3979,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               }
             });
           });
-          
+
           // Ensure brush stays cleared after redraw completes (only if this SVG/brush is still current)
           setTimeout(() => {
             const currentBrushGroup = svg.select(".brush");
@@ -2900,53 +4074,53 @@ const TimeSeries = (props: TimeSeriesProps) => {
         cutEventsLength: cutEvents().length,
         shouldSkipBrushRestoreAfterZoom
       });
-      
+
       if (!brush) {
         debug('🔄 TimeSeries: No brush available, skipping restoration');
         return;
       }
-      
+
       // Get the brush group from the DOM
       const brushGroup = svg.select(".brush");
       if (brushGroup.empty()) {
         debug('🔄 TimeSeries: No brush group found, skipping restoration');
         return;
       }
-      
+
       // If we just zoomed from a brush selection, skip restoration and clear the brush
       if (shouldSkipBrushRestoreAfterZoom) {
         debug('🔄 TimeSeries: Skipping brush restoration after zoom, clearing brush');
         isProgrammaticallyUpdatingBrush = true;
         brushGroup.call(brush.move, null);
         // Don't reset the flag here - let the setTimeout in brush end handler do it
-        setTimeout(() => { 
+        setTimeout(() => {
           isProgrammaticallyUpdatingBrush = false;
         }, 100);
         return;
       }
-      
+
       // Check if we're in cut mode
       const currentIsCut = isCut();
       const currentCutEvents = cutEvents();
       const hasActiveCuts = currentIsCut && currentCutEvents && currentCutEvents.length > 0;
       const hasSelection = selectedRange().length > 0;
-      
+
       // Set flag to prevent brush end handler from firing during programmatic updates
       isProgrammaticallyUpdatingBrush = true;
-      
+
       // If there's a selection, restore brush normally (even in cut mode - selections work on cut data)
       if (hasSelection) {
         const rangeItem = selectedRange()[0];
         const startTime = new Date(rangeItem.start_time);
         const endTime = new Date(rangeItem.end_time);
-        
+
         debug('🔄 TimeSeries: Restoring brush from selectedRange', {
           rangeItem,
           startTime: startTime.toISOString(),
           endTime: endTime.toISOString(),
           isCut: hasActiveCuts
         });
-        
+
         const x0 = xZoom(startTime) + xOffset;
         const x1 = xZoom(endTime) + xOffset;
         brushGroup.call(brush.move, [x0, x1]);
@@ -2961,7 +4135,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         debug('🔄 TimeSeries: No ranges, clearing brush');
         brushGroup.call(brush.move, null);
       }
-      
+
       // Reset flag after a delay to ensure the brush event fully propagates
       setTimeout(() => { isProgrammaticallyUpdatingBrush = false; }, 100);
     };
@@ -3015,48 +4189,48 @@ const TimeSeries = (props: TimeSeriesProps) => {
       svg.selectAll(".cut-overlay").remove();
       svg.selectAll(".event-overlays-group").remove();
       svg.selectAll(".cut-overlays-group").remove();
-      
+
       const events = selectedEvents();
       const ranges = selectedRanges();
       const currentIsCut = isCut();
       const currentCutEvents = cutEvents();
-      
+
       // Create a group for event overlays (behind everything else)
       const overlayGroup = svg.insert("g", ":first-child")
         .attr("class", "event-overlays-group")
         .attr("clip-path", "url(#clip)");
-      
+
       // Draw overlays for selected events (active selections)
       if (events && events.length > 0 && ranges && ranges.length > 0) {
         debug('🎨 TimeSeries: Drawing event overlays', {
           eventCount: events.length,
           rangeCount: ranges.length
         });
-        
+
         // Draw an overlay for each selected event
         ranges.forEach((range) => {
           const eventId = range.event_id;
           if (!eventId || !range.start_time || !range.end_time) {
             return;
           }
-          
+
           // Get color for this event
           const color = getEventColor(eventId, events);
-          
+
           // Convert time strings to Date objects
           const startTime = new Date(range.start_time);
           const endTime = new Date(range.end_time);
-          
+
           // Calculate x positions using xZoom scale
           const x0 = xZoom(startTime) + xOffset;
           const x1 = xZoom(endTime) + xOffset;
-          
+
           // Only draw if the range is visible in the current zoom
           const domain = xZoom.domain();
           if (endTime < domain[0] || startTime > domain[1]) {
             return; // Range is outside visible domain
           }
-          
+
           // Draw a semi-transparent rectangle covering the full height
           overlayGroup.append("rect")
             .attr("class", "event-overlay")
@@ -3070,45 +4244,45 @@ const TimeSeries = (props: TimeSeriesProps) => {
             .style("mix-blend-mode", "multiply"); // Blend nicely with chart lines
         });
       }
-      
+
       // Draw overlays for cut ranges (cut data)
       // Only show overlays if there are multiple cut ranges (skip single range)
       if (currentIsCut && currentCutEvents && currentCutEvents.length > 1) {
         debug('🎨 TimeSeries: Drawing cut overlays', {
           cutRangesCount: currentCutEvents.length
         });
-        
+
         // Create a separate group for cut overlays (behind event overlays)
         const cutOverlayGroup = svg.insert("g", ":first-child")
           .attr("class", "cut-overlays-group")
           .attr("clip-path", "url(#clip)");
-        
+
         // Draw an overlay for each cut range
         currentCutEvents.forEach((range, index) => {
           // Skip if it's an event ID instead of a time range
           if (typeof range === 'number') return;
-          
+
           if (!range.start_time || !range.end_time) {
             return;
           }
-          
+
           // Convert time strings to Date objects
           const startTime = new Date(range.start_time);
           const endTime = new Date(range.end_time);
-          
+
           // Calculate x positions using xZoom scale
           const x0 = xZoom(startTime) + xOffset;
           const x1 = xZoom(endTime) + xOffset;
-          
+
           // Only draw if the range is visible in the current zoom
           const domain = xZoom.domain();
           if (endTime < domain[0] || startTime > domain[1]) {
             return; // Range is outside visible domain
           }
-          
+
           // Use colorscale.ts to get consistent colors for multiple ranges
           const cutColor = getColorByIndex(index);
-          
+
           // Draw a semi-transparent rectangle covering the full height
           cutOverlayGroup.append("rect")
             .attr("class", "cut-overlay")
@@ -3121,7 +4295,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
             .attr("pointer-events", "none") // Don't interfere with interactions
             .style("mix-blend-mode", "multiply"); // Blend nicely with chart lines
         });
-        
+
         debug('🎨 TimeSeries: Cut overlays drawn', {
           overlayCount: cutOverlayGroup.selectAll(".cut-overlay").size()
         });
@@ -3129,13 +4303,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
         // Single cut range - skip drawing overlay
         debug('🎨 TimeSeries: Skipping cut overlay for single range');
       }
-      
+
       debug('🎨 TimeSeries: All overlays drawn', {
         eventOverlayCount: overlayGroup.selectAll(".event-overlay").size(),
         cutOverlayCount: svg.selectAll(".cut-overlay").size()
       });
     };
-    
+
     // Add a spacer div at the end to ensure last chart is fully visible when scrolling
     // This matches the approach used in maneuver timeseries (chartHeight * 1.5)
     // This is especially important when content is scaled with CSS transform
@@ -3148,14 +4322,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
       .style("height", `${chartHeight * 1.5}px`)
       .style("width", "100%")
       .style("flex-shrink", "0");
-    
+
     // Store references for access in the reactive effects (after brush is initialized)
     d3.select(containerRef).property("__timeSeriesRefs", {
       verticalLine,
       selectedTimeLine,
       xZoom,
       xScale,  // Store xScale reference for domain access
-      xOffset, 
+      xOffset,
       totalHeight,
       svg,
       updateSelectedTimeLine, // Store reference to the function
@@ -3196,7 +4370,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     setTimeout(() => { isProgrammaticallyUpdatingBrush = false; }, 150);
 
     // Add direct click handler to main SVG (simpler than adding layers)
-    svg.on("click", function(event) {
+    svg.on("click", function (event) {
       debug('🖱️ TimeSeries: Click event received!', {
         target: event.target,
         targetClass: event.target?.className,
@@ -3206,14 +4380,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
         clientX: event.clientX,
         clientY: event.clientY
       });
-      
+
       debug('🖱️ TimeSeries: Click event received', {
         target: event.target,
         targetClass: event.target?.className,
         isBrushTarget: event.target && event.target.closest('.brush'),
         eventType: event.type
       });
-      
+
       // Skip if we're clicking on the brush (but only if brush is active)
       // For now, let's disable this check since brush should be disabled by default
       if (false && event.target && event.target.closest('.brush') && brushGroup.attr('pointer-events') === 'all') {
@@ -3221,7 +4395,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         debug('🖱️ TimeSeries: Click ignored - clicked on active brush');
         return;
       }
-      
+
       // Get mouse coordinates relative to the SVG container
       const svgPoint = d3.pointer(event);
       const rawX = svgPoint[0] - xOffset;
@@ -3232,7 +4406,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       const clampedX = rangeMax > rangeMin ? Math.max(rangeMin, Math.min(rangeMax, rawX)) : rangeMin;
       const time = xZoom.invert(clampedX);
       const timeMs = time instanceof Date ? time.getTime() : typeof time === 'number' ? time : NaN;
-      
+
       if (Number.isFinite(timeMs)) {
         debug('🖱️ TimeSeries: SVG Timeline click detected', {
           mouseX: svgPoint[0],
@@ -3257,11 +4431,11 @@ const TimeSeries = (props: TimeSeriesProps) => {
           debug('🖱️ TimeSeries: Time control denied - another component has higher priority');
         }
       }
-      
+
       // Force update of the visualization to reflect the new selected time
       debug('🖱️ TimeSeries: Calling updateSelectedTimeLine');
       updateSelectedTimeLine();
-      
+
       // Prevent event from propagating further to ensure no other handlers interfere
       event.stopPropagation();
     });
@@ -3269,38 +4443,60 @@ const TimeSeries = (props: TimeSeriesProps) => {
     // Brush is now enabled by default - no key activation needed
 
     // Add hover effects (mousemove), but without the red indicators
-    svg.on("mousemove", function(event) {
+    svg.on("mousemove", function (event) {
       // Skip hover effects during playback
       if (isPlaying()) return;
-      
+
       // Regular hover behavior when not playing
       const mouseX = d3.pointer(event)[0];
       const xValue = xZoom.invert(mouseX - xOffset);
       const xValueDate = new Date(xValue); // Convert timestamp to Date object
-      
+
       verticalLine.attr("x1", mouseX).attr("x2", mouseX).attr("visibility", "visible");
 
       // Format tooltip content from the data
       const timezone = datasetTimezone();
       const timeString = formatTime(xValueDate, timezone) || xValueDate.toLocaleTimeString();
       let tooltipContent = `Time: ${timeString}`;
-      
-      const height = getChartHeight();
-      chartsData.forEach((chart, i) => {
-        const yOffset = i * (height + rowGap);
-        
-        chart.series.forEach((series, seriesIndex) => {
+
+      const htLo = xZoom.domain()[0];
+      const htHi = xZoom.domain()[1];
+      const htTimeTh = segmentGapForLayout;
+      const htIsCut = isCut();
+      const htCutEvents = cutEvents();
+      const htHasMultipleCutRanges = htIsCut && htCutEvents && htCutEvents.length > 1;
+      const getCutRangeIndexHt = (point: { x: Date; y: number }) => {
+        if (!htHasMultipleCutRanges) return -1;
+        const pointTime = point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime();
+        for (let ci = 0; ci < htCutEvents.length; ci++) {
+          const range = htCutEvents[ci];
+          if (typeof range === "number") continue;
+          if (range.start_time && range.end_time) {
+            const startTime = new Date(range.start_time).getTime();
+            const endTime = new Date(range.end_time).getTime();
+            if (pointTime >= startTime && pointTime <= endTime) {
+              return ci;
+            }
+          }
+        }
+        return -1;
+      };
+
+      chartsData.forEach((chart) => {
+        chart.series.forEach((series) => {
           if (series.data.length === 0) return;
-          
-          const closestData = series.data.reduce((prev, curr) =>
-            Math.abs(curr.x.getTime() - xValueDate.getTime()) < Math.abs(prev.x.getTime() - xValueDate.getTime()) ? curr : prev
+
+          const tipY = getTransformedValueAtClosestTime(
+            series,
+            xValueDate.getTime(),
+            htLo,
+            htHi,
+            htTimeTh,
+            htHasMultipleCutRanges ? getCutRangeIndexHt : undefined,
+            CLOSEST_SAMPLE_TOOLTIP_MAX_MS
           );
-          
-          // Only include if point is reasonably close to hover position
-          const timeThreshold = 30000; // 30 seconds
-          if (Math.abs(closestData.x.getTime() - xValueDate.getTime()) <= timeThreshold && 
-              closestData.y !== null && closestData.y !== undefined && !isNaN(closestData.y)) {
-            tooltipContent += `<br>${seriesDisplayName(series)}: ${Round(closestData.y, 2)}`;
+          if (tipY !== undefined) {
+            tooltipContent += `<br>${seriesDisplayName(series)}: ${Round(tipY, 2)}`;
           }
         });
       });
@@ -3310,14 +4506,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
         .style("visibility", "visible")
         .html(tooltipContent);
     });
-    
+
     // Also update mouseout to respect playing state
-    svg.on("mouseout", function() {
+    svg.on("mouseout", function () {
       if (!isPlaying()) {
         // Only hide the line when not playing
         verticalLine.attr("visibility", "hidden");
       }
-      
+
       tooltip.style("visibility", "hidden");
       svg.selectAll(".temp-hover-indicator").remove();
     });
@@ -3336,7 +4532,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       let currentXZoom: d3.ScaleTime<number, number> | null = null;
       let currentXScale: d3.ScaleTime<number, number> | null = null;
       let currentRedraw: (() => void) | null = null;
-      
+
       if (containerRef) {
         const refs = d3.select(containerRef).property("__timeSeriesRefs");
         if (refs && refs.xZoom && refs.xScale) {
@@ -3345,26 +4541,26 @@ const TimeSeries = (props: TimeSeriesProps) => {
           currentRedraw = refs.redraw || null;
         }
       }
-      
+
       // Fallback to local xZoom/xScale if refs aren't available
       if (!currentXZoom || !currentXScale) {
         currentXZoom = xZoom;
         currentXScale = xScale;
         currentRedraw = redraw;
       }
-      
+
       if (!currentXZoom || !currentXScale) {
         debug('🖱️ TimeSeries: Wheel handler - no scales available');
         return;
       }
-      
+
       const zoomDomain = currentXZoom.domain();
       const scaleDomain = currentXScale.domain();
-      
+
       if (zoomDomain.length !== 2 || scaleDomain.length !== 2) {
         return;
       }
-      
+
       // Use full data extent from refs when available (FleetTimeSeries passes zoomed range as datasetEventTimeRange so xScale === xZoom)
       let dataMin: Date;
       let dataMax: Date;
@@ -3377,7 +4573,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         dataMin = scaleDomain[0];
         dataMax = scaleDomain[1];
       }
-      
+
       // Zoomed = visible window is narrower than or shifted from full data extent (so we can pan)
       const zoomSpan = zoomDomain[1].getTime() - zoomDomain[0].getTime();
       const dataSpan = dataMax.getTime() - dataMin.getTime();
@@ -3386,7 +4582,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         Math.abs(zoomDomain[0].getTime() - dataMin.getTime()) > 1000 ||
         Math.abs(zoomDomain[1].getTime() - dataMax.getTime()) > 1000
       );
-      
+
       if (isActuallyZoomed) {
         // Consume wheel only when zoomed so we can pan; when not zoomed let the event through for vertical scroll
         event.preventDefault();
@@ -3399,11 +4595,11 @@ const TimeSeries = (props: TimeSeriesProps) => {
           zoomDomain: zoomDomain.map(d => d.toISOString()),
           dataExtent: [dataMin, dataMax].map(d => d.toISOString())
         });
-        
+
         const [minX, maxX] = zoomDomain;
         const extent = maxX.getTime() - minX.getTime();
         const panAmount = extent * 0.1; // Adjust sensitivity
-      
+
         // Horizontal pan: use deltaX (trackpad horizontal swipe) when present, else deltaY (vertical wheel)
         // Positive delta = scroll right = pan view right (later time); negative = pan left (earlier time)
         const deltaX = typeof event.deltaX === 'number' ? event.deltaX : 0;
@@ -3411,11 +4607,11 @@ const TimeSeries = (props: TimeSeriesProps) => {
         const hasHorizontal = Math.abs(deltaX) > 0;
         const delta = hasHorizontal ? deltaX : deltaY;
         const direction = Math.sign(delta); // -1 = pan left (earlier), +1 = pan right (later)
-      
+
         // Calculate new domain
         let x0 = new Date(minX.getTime() + direction * panAmount);
         let x1 = new Date(maxX.getTime() + direction * panAmount);
-        
+
         // Check if pan would go outside data bounds - if so, just stop (no zooming)
         if (x0 < dataMin || x1 > dataMax) {
           debug('🖱️ TimeSeries: Wheel pan hit boundary - stopping pan (no zoom)', {
@@ -3427,7 +4623,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
           });
           return; // Don't update zoom domain, just stop scrolling
         }
-        
+
         debug('🖱️ TimeSeries: Wheel pan calculation', {
           currentDomain: [minX, maxX].map(d => d.toISOString()),
           dataExtent: [dataMin, dataMax].map(d => d.toISOString()),
@@ -3436,27 +4632,27 @@ const TimeSeries = (props: TimeSeriesProps) => {
           direction,
           newDomain: [x0, x1].map(d => d.toISOString())
         });
-        
+
         // Check if we have an active selection
         const currentSelectedRange = selectedRange();
         const hasSelection = currentSelectedRange && currentSelectedRange.length > 0;
-        
+
         // Update the x domain for scrolling (within data limits)
         currentXZoom.domain([x0, x1]);
-        
+
         // Update selectedRange if we have an active selection (works normally on cut data too)
         // If no selection, just pan without creating one (whether in cut mode or not)
         if (hasSelection) {
           // Update selectedRange to match the new zoom domain (selections work normally on cut data)
-          const range = {"type": "range", "start_time": x0.toISOString(), "end_time": x1.toISOString()};
+          const range = { "type": "range", "start_time": x0.toISOString(), "end_time": x1.toISOString() };
           debug('🖱️ TimeSeries: Setting selectedRange from wheel pan', range);
           setSelectedRange([range]);
-          
+
           // Check if selectedTime is outside the brush range and snap to start time if needed
           const currentSelectedTime = selectedTime();
           const brushStartTime = x0;
           const brushEndTime = x1;
-          
+
           if (currentSelectedTime && (currentSelectedTime < brushStartTime || currentSelectedTime > brushEndTime)) {
             debug('🖱️ TimeSeries: selectedTime is outside brush range, snapping to start time', {
               currentSelectedTime: currentSelectedTime.toISOString(),
@@ -3464,7 +4660,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               brushEndTime: brushEndTime.toISOString(),
               isOutsideRange: currentSelectedTime < brushStartTime || currentSelectedTime > brushEndTime
             });
-            
+
             // Request control and update selectedTime to brush start time
             if (requestTimeControl('timeseries')) {
               setIsManualTimeChange(true);
@@ -3477,7 +4673,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         } else {
           debug('🖱️ TimeSeries: No active selection - panning without creating selection');
         }
-        
+
         // Redraw with rescaled y-axis based on visible data
         debug('🖱️ TimeSeries: Calling redraw after wheel pan');
         if (currentRedraw) {
@@ -3493,7 +4689,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         });
       }
     };
-    
+
     // Always attach wheel handler to containerRef with capture: true to catch all wheel events
     // This ensures we capture events even if they occur on child elements like brush overlays
     if (containerRef) {
@@ -3506,15 +4702,15 @@ const TimeSeries = (props: TimeSeriesProps) => {
     // Double-click handler - clear selection and reset zoom
     svg.on("dblclick", () => {
       debug('🖱️ TimeSeries: Double-click detected - clearing selection and resetting zoom');
-      
+
       // Reset manual change flag to allow clearing effect to work
       setIsManualTimeChange(false);
-      
+
       // Check if we're in cut mode - if so, only clear active selection (keep cut data)
       const currentIsCut = isCut();
       const currentCutEvents = cutEvents();
       const hasActiveCuts = currentIsCut && currentCutEvents && currentCutEvents.length > 0;
-      
+
       if (hasActiveCuts) {
         // In cut mode: clear selection but keep cut data
         debug('🖱️ TimeSeries: Double-click in cut mode - clearing selection, keeping cut data');
@@ -3524,7 +4720,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         debug('🖱️ TimeSeries: Double-click - clearing all selections');
         clearSelection();
       }
-      
+
       // Reset zoom to full domain (will be cut data extent if in cut mode, full dataset otherwise)
       const fullDomain = xScale.domain();
       debug('🖱️ TimeSeries: Resetting zoom domain', {
@@ -3532,20 +4728,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
         to: fullDomain,
         isCut: hasActiveCuts
       });
-      
+
       xZoom.domain(fullDomain);
-      
+
       debug('🖱️ TimeSeries: Calling redraw after double-click');
       redraw();
-      
+
       debug('🖱️ TimeSeries: Double-click reset completed');
     });
 
     redraw();
-    
+
     // Draw event overlays on initial render
     drawEventOverlays();
-    
+
     // Clear brush selection on initialization (don't restore from selectedRange)
     // Use setTimeout to ensure the brush is fully rendered before attempting to clear
     setTimeout(() => {
@@ -3554,24 +4750,24 @@ const TimeSeries = (props: TimeSeriesProps) => {
         brushGroup.call(brush.move, null);
       }
     }, 0);
-    
+
     // Ensure selectedTime is properly initialized after chart is drawn
     setTimeout(() => {
       if (!selectedTime() || selectedTime() < new Date('1971-01-01T12:00:00Z')) {
         const refs = d3.select(containerRef).property("__timeSeriesRefs");
         if (refs && refs.xScale) {
           const domain = refs.xScale.domain();
-          
+
           // Check if domain is valid before proceeding
           if (domain && domain.length === 2 && !isNaN(domain[0]) && !isNaN(domain[1]) && domain[0] !== domain[1]) {
             const initialTime = domain[0];
-            
+
             debug('⏰ TimeSeries: Delayed selectedTime initialization', {
               domain: domain.map(d => safeToISOString(d)),
               initialTime: safeToISOString(initialTime),
               currentSelectedTime: selectedTime()?.toISOString()
             });
-            
+
             if (requestTimeControl('timeseries')) {
               debug('⏰ TimeSeries: Delayed time control granted, setting selectedTime');
               setSelectedTime(new Date(initialTime), 'timeseries');
@@ -3587,26 +4783,26 @@ const TimeSeries = (props: TimeSeriesProps) => {
         }
       }
     }, 100); // Small delay to ensure chart is fully rendered
-    
+
     // Initialize selectedTime if it's not set or is 0
     if (!selectedTime() || selectedTime() < new Date('1971-01-01T12:00:00Z')) {
       const domain = xScale.domain();
-      
+
       // Check if domain is valid before proceeding
       if (!domain || domain.length !== 2 || isNaN(domain[0]) || isNaN(domain[1]) || domain[0] === domain[1]) {
         debug('⏰ TimeSeries: Invalid domain for selectedTime initialization, skipping');
         return;
       }
-      
+
       // Use the first data point (minimum time) instead of the middle
       const initialTime = domain[0];
-      
+
       debug('⏰ TimeSeries: Initializing selectedTime', {
         domain: domain.map(d => safeToISOString(d)),
         initialTime: safeToISOString(initialTime),
         currentSelectedTime: selectedTime()?.toISOString()
       });
-      
+
       if (requestTimeControl('timeseries')) {
         debug('⏰ TimeSeries: Time control granted, setting selectedTime');
         setSelectedTime(new Date(initialTime), 'timeseries');
@@ -3628,15 +4824,23 @@ const TimeSeries = (props: TimeSeriesProps) => {
         // Wrap async operation to catch all promise rejections
         (async () => {
           try {
-            chartChangesEffectCount++;
-
-            // Add aggressive debugging for infinite loop detection
-            if (chartChangesEffectCount > 5) {
-              logError('🚨 INFINITE LOOP DETECTED: Chart changes effect called', chartChangesEffectCount, 'times!');
+            const burstNow = Date.now();
+            chartChangesEffectTimestamps = chartChangesEffectTimestamps.filter(
+              (t) => burstNow - t < CHART_EFFECT_BURST_MS
+            );
+            chartChangesEffectTimestamps.push(burstNow);
+            if (chartChangesEffectTimestamps.length > CHART_EFFECT_BURST_MAX) {
+              logError(
+                '🚨 Chart changes effect burst: too many runs in',
+                CHART_EFFECT_BURST_MS,
+                'ms (possible loop). Count:',
+                chartChangesEffectTimestamps.length
+              );
               logError('🚨 Chart data:', chart);
               logError('🚨 Processing flags:', { isProcessingData, isFetchingData });
               logError('🚨 Stack trace:', new Error().stack);
-              return; // Prevent further execution
+              chartChangesEffectTimestamps = [];
+              return;
             }
 
             // Prevent effect from running if already processing
@@ -3697,7 +4901,6 @@ const TimeSeries = (props: TimeSeriesProps) => {
               message: error.message,
               stack: error.stack,
               name: error.name,
-              callCount: chartChangesEffectCount
             });
           }
         })().catch((error: unknown) => {
@@ -3721,64 +4924,64 @@ const TimeSeries = (props: TimeSeriesProps) => {
     (async () => {
       try {
         mapFilteringEffectCount++;
-        
-      // Add aggressive debugging for infinite loop detection
-      if (mapFilteringEffectCount > 5) {
-        logError('🚨 INFINITE LOOP DETECTED: Map filtering effect called', mapFilteringEffectCount, 'times!');
-        logError('🚨 Map filtered value:', unifiedDataStore.mapDataFiltered());
-        logError('🚨 Chart data:', props.chart);
-        logError('🚨 Processing flags:', { isProcessingData, isFetchingData });
-        logError('🚨 Stack trace:', new Error().stack);
-        return; // Prevent further execution
-      }
-      
-      const mapFiltered = unifiedDataStore.mapDataFiltered();
-    
-    // Only proceed if the value actually changed (increased)
-    // This prevents infinite loops when the value stays > 0
-    if (mapFiltered > lastMapFilteredValue && mapFiltered > 0 && props.chart) {
-      lastMapFilteredValue = mapFiltered; // Update tracked value
-      
-      // Clear any existing timeout
-      if (mapFilterEffectTimeout) {
-        clearTimeout(mapFilterEffectTimeout);
-      }
-      
-      // Debounce the effect to prevent rapid successive calls
-      mapFilterEffectTimeout = setTimeout(async () => {
-        try {
-          // Check if we're already processing data to prevent infinite loops
-          if (isProcessingData || isFetchingData) {
-            return;
-          }
-          
-          await processDataForCharts();
-          drawPlots();
-        } catch (error: any) {
-          logError('🔄 TimeSeries: Error in map filter effect timeout callback:', {
-            error: error,
-            message: error.message,
-            stack: error.stack,
-            name: error.name
-          });
+
+        // Add aggressive debugging for infinite loop detection
+        if (mapFilteringEffectCount > 5) {
+          logError('🚨 INFINITE LOOP DETECTED: Map filtering effect called', mapFilteringEffectCount, 'times!');
+          logError('🚨 Map filtered value:', unifiedDataStore.mapDataFiltered());
+          logError('🚨 Chart data:', props.chart);
+          logError('🚨 Processing flags:', { isProcessingData, isFetchingData });
+          logError('🚨 Stack trace:', new Error().stack);
+          return; // Prevent further execution
         }
-      }, 200); // Standardized 200ms debounce
-    } else if (mapFiltered === 0) {
-      // Reset tracked value when mapDataFiltered is reset to 0
-      lastMapFilteredValue = 0;
-      mapFilteringEffectCount = 0; // Reset counter when value resets
-    } else {
-      debug('🗺️ TimeSeries: No map filtering change or chart data, skipping processing');
-    }
-    } catch (error: any) {
-      logError('🔄 TimeSeries: Map filtering effect Error Details:', {
-        error: error,
-        message: error.message,
-        stack: error.stack,
-        name: error.name,
-        callCount: mapFilteringEffectCount
-      });
-    }
+
+        const mapFiltered = unifiedDataStore.mapDataFiltered();
+
+        // Only proceed if the value actually changed (increased)
+        // This prevents infinite loops when the value stays > 0
+        if (mapFiltered > lastMapFilteredValue && mapFiltered > 0 && props.chart) {
+          lastMapFilteredValue = mapFiltered; // Update tracked value
+
+          // Clear any existing timeout
+          if (mapFilterEffectTimeout) {
+            clearTimeout(mapFilterEffectTimeout);
+          }
+
+          // Debounce the effect to prevent rapid successive calls
+          mapFilterEffectTimeout = setTimeout(async () => {
+            try {
+              // Check if we're already processing data to prevent infinite loops
+              if (isProcessingData || isFetchingData) {
+                return;
+              }
+
+              await processDataForCharts();
+              drawPlots();
+            } catch (error: any) {
+              logError('🔄 TimeSeries: Error in map filter effect timeout callback:', {
+                error: error,
+                message: error.message,
+                stack: error.stack,
+                name: error.name
+              });
+            }
+          }, 200); // Standardized 200ms debounce
+        } else if (mapFiltered === 0) {
+          // Reset tracked value when mapDataFiltered is reset to 0
+          lastMapFilteredValue = 0;
+          mapFilteringEffectCount = 0; // Reset counter when value resets
+        } else {
+          debug('🗺️ TimeSeries: No map filtering change or chart data, skipping processing');
+        }
+      } catch (error: any) {
+        logError('🔄 TimeSeries: Map filtering effect Error Details:', {
+          error: error,
+          message: error.message,
+          stack: error.stack,
+          name: error.name,
+          callCount: mapFilteringEffectCount
+        });
+      }
     })().catch((error) => {
       // Catch any unhandled promise rejections from the async effect
       logError('🔄 TimeSeries: Unhandled promise rejection in map filtering effect:', {
@@ -3813,7 +5016,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         previousLength: lastSelectedRangeLength,
         currentLength: currentRangeLength
       });
-      
+
       // Debounce to avoid rapid successive calls and give the main effect a chance to run first
       selectedRangeReloadTimeout = setTimeout(async () => {
         try {
@@ -3833,7 +5036,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         }
       }, 300); // Longer delay to let main effect run first
     }
-    
+
     // Cleanup function
     return () => {
       if (selectedRangeReloadTimeout) {
@@ -3855,16 +5058,16 @@ const TimeSeries = (props: TimeSeriesProps) => {
     const cutsWereSet = lastCutEventsLength === 0 && currentCutEventsLength > 0 && currentIsCut;
     const cutsWereCleared = lastCutEventsLength > 0 && currentCutEventsLength === 0;
     const cutModeChanged = lastIsCut !== currentIsCut;
-    
+
     lastCutEventsLength = currentCutEventsLength;
     lastIsCut = currentIsCut;
-    
+
     // Clear any existing timeout
     if (cutEventsReloadTimeout) {
       clearTimeout(cutEventsReloadTimeout);
       cutEventsReloadTimeout = null;
     }
-    
+
     // Reload data when cuts are set or cleared, or when cut mode changes
     if ((cutsWereSet || cutsWereCleared || cutModeChanged) && props.chart && !isProcessingData && !isFetchingData) {
       debug('🔄 TimeSeries: Cut events changed, reloading data', {
@@ -3875,11 +5078,11 @@ const TimeSeries = (props: TimeSeriesProps) => {
         currentIsCut,
         previousLength: lastCutEventsLength,
         previousIsCut: lastIsCut,
-        note: cutsWereSet || (currentIsCut && currentCutEventsLength > 0) 
-          ? 'Will filter to cut ranges only' 
+        note: cutsWereSet || (currentIsCut && currentCutEventsLength > 0)
+          ? 'Will filter to cut ranges only'
           : 'Will load full dataset'
       });
-      
+
       // Debounce to avoid rapid successive calls
       cutEventsReloadTimeout = setTimeout(async () => {
         try {
@@ -3887,7 +5090,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
             debug('🔄 TimeSeries: Reloading data after cut events change');
             await processDataForCharts();
             drawPlots();
-            
+
             // When cuts are set, treat it as a fresh dataset - reset all zoom/selection state
             // When cuts are cleared, reset zoom to show full dataset
             if ((cutsWereSet || cutsWereCleared) && containerRef) {
@@ -3918,14 +5121,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
                   }
                 }, 150); // Wait for drawPlots to complete
               }
-              
+
               // Wait a bit for drawPlots to complete and refs to be available
               setTimeout(() => {
                 const refs = d3.select(containerRef).property("__timeSeriesRefs");
                 if (refs && refs.xZoom && refs.xScale && typeof refs.xZoom.domain === 'function') {
                   // Get the full domain from the current xScale (which reflects the current data - cut or full)
                   const fullDomain = refs.xScale.domain();
-                  
+
                   debug('🔄 TimeSeries: Resetting zoom domain to full extent after cut change', {
                     cutsWereSet,
                     cutsWereCleared,
@@ -3934,16 +5137,16 @@ const TimeSeries = (props: TimeSeriesProps) => {
                     fullDomain: fullDomain,
                     fullDomainFormatted: fullDomain.map(d => safeToISOString(d))
                   });
-                  
+
                   // Reset zoom to show full extent of the current data
                   refs.xZoom.domain(fullDomain);
-                  
+
                   // Call redraw to update the visualization
                   if (typeof refs.redraw === 'function') {
                     debug('🔄 TimeSeries: Calling redraw after zoom reset for cut data');
                     refs.redraw();
                   }
-                  
+
                   setZoom(false); // Reset zoom state since we're showing full extent
                 } else {
                   debug('🔄 TimeSeries: Skipping zoom reset - refs not ready yet', {
@@ -3954,7 +5157,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
                 }
               }, 100); // Small delay to ensure drawPlots has completed
             }
-            
+
             debug('🔄 TimeSeries: Data reloaded after cut events change');
           } else {
             debug('🔄 TimeSeries: Reload skipped - data already being processed');
@@ -3966,7 +5169,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         }
       }, 200);
     }
-    
+
     // Cleanup function
     return () => {
       if (cutEventsReloadTimeout) {
@@ -3979,23 +5182,23 @@ const TimeSeries = (props: TimeSeriesProps) => {
   onMount(() => {
     // Register this component as active
     registerActiveComponent('timeseries');
-    
-    
+
+
     // Add global error handler for unhandled errors
     const handleError = (event) => {
       // Skip null errors (often from resource loading failures, CORS, etc.)
       if (!event.error && !event.message && !event.filename) {
         return;
       }
-      
+
       // Filter out ResizeObserver warnings (benign browser warning when callbacks trigger layout changes)
       const errorMessage = event.error?.message || event.message || '';
       if (errorMessage.includes('ResizeObserver loop completed with undelivered notifications') ||
-          errorMessage.includes('ResizeObserver loop limit exceeded')) {
+        errorMessage.includes('ResizeObserver loop limit exceeded')) {
         // Silently ignore ResizeObserver warnings - these are harmless browser notifications
         return;
       }
-      
+
       // Only log meaningful errors
       if (event.error || event.message || (event.filename && event.filename !== window.location.href)) {
         logError('🔄 TimeSeries: Unhandled Error:', {
@@ -4008,7 +5211,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         });
       }
     };
-    
+
     window.addEventListener('error', handleError);
     window.addEventListener('unhandledrejection', (event) => {
       logError('🔄 TimeSeries: Unhandled Promise Rejection:', {
@@ -4016,19 +5219,19 @@ const TimeSeries = (props: TimeSeriesProps) => {
         promise: event.promise
       });
     });
-    
+
     // Add cross-window communication listener for selection updates
     const handleCrossWindowSelectionUpdate = (event) => {
       debug('🔄 TimeSeries: Received cross-window selection update', event.detail);
-      
+
       const { type, selectedRange: incomingRange, hasSelection: incomingHasSelection } = event.detail;
-      
+
       if (type === 'SELECTION_CHANGE' && incomingRange && incomingRange.length > 0) {
         debug('🔄 TimeSeries: Processing incoming range selection from map', {
           range: incomingRange[0],
           hasSelection: incomingHasSelection
         });
-        
+
         // The selection store should already be updated by the Window component
         // We need to zoom to the range and restore the brush
         setTimeout(() => {
@@ -4038,7 +5241,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               // Calculate combined extent of all ranges
               let minTime = Infinity;
               let maxTime = -Infinity;
-              
+
               incomingRange.forEach(range => {
                 if (range.start_time && range.end_time) {
                   const startTime = new Date(range.start_time).getTime();
@@ -4047,31 +5250,31 @@ const TimeSeries = (props: TimeSeriesProps) => {
                   maxTime = Math.max(maxTime, endTime);
                 }
               });
-              
+
               if (minTime !== Infinity && maxTime !== -Infinity) {
                 const startTime = new Date(minTime);
                 const endTime = new Date(maxTime);
-                
+
                 debug('🔄 TimeSeries: Zooming to cross-window selection ranges', {
                   rangeCount: incomingRange.length,
                   startTime: startTime.toISOString(),
                   endTime: endTime.toISOString()
                 });
-                
+
                 // Set the zoom domain to show all ranges
                 refs.xZoom.domain([startTime, endTime]);
-                
+
                 // Also update the local xZoom for consistency
                 if (typeof xZoom !== 'undefined' && xZoom && typeof xZoom.domain === 'function') {
                   xZoom.domain([startTime, endTime]);
                 }
-                
+
                 // Redraw the chart
                 if (typeof refs.redraw === 'function') {
                   debug('🔄 TimeSeries: Redrawing after cross-window selection update');
                   refs.redraw();
                 }
-                
+
                 // Restore brush to show the selection visually
                 if (typeof restoreBrushSelection === 'function') {
                   debug('🔄 TimeSeries: Restoring brush after cross-window update');
@@ -4091,36 +5294,36 @@ const TimeSeries = (props: TimeSeriesProps) => {
         debug('🔄 TimeSeries: Received non-selection update', { type });
       }
     };
-    
+
     // Listen for cross-window selection updates
     window.addEventListener('selectionStoreUpdate', handleCrossWindowSelectionUpdate);
-    
+
     // Capture the current playback state
     const wasPlaying = isPlaying();
-    
+
     // If playing, temporarily pause to ensure proper initialization
     if (wasPlaying) {
       setInitialPlayState(true);
       setIsPlaying(false);
     }
-    
+
     // Process data and draw plots
     if (props.chart) {
       processDataForCharts().then(() => {
         drawPlots();
-        
+
         // Clear brush selection on initialization (don't restore from selectedRange)
         setTimeout(() => {
           if (window.clearTimeSeriesBrush) {
             window.clearTimeSeriesBrush();
           }
         }, 500);
-        
+
         // Final fallback: ensure selectedTime is set after everything is loaded
         setTimeout(() => {
           if (!selectedTime() || selectedTime() < new Date('1971-01-01T12:00:00Z')) {
             debug('⏰ TimeSeries: Final fallback selectedTime initialization');
-            
+
             // Try to get time from the first available data point
             const chartsData = charts();
             if (chartsData && chartsData.length > 0 && chartsData[0].series && chartsData[0].series.length > 0) {
@@ -4129,7 +5332,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
                 const firstDataPoint = firstSeries.data[0];
                 if (firstDataPoint.x instanceof Date) {
                   debug('⏰ TimeSeries: Setting selectedTime from first data point', firstDataPoint.x.toISOString());
-                  
+
                   if (requestTimeControl('timeseries')) {
                     setSelectedTime(firstDataPoint.x, 'timeseries');
                   }
@@ -4143,7 +5346,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
     // Add comprehensive resize detection for responsive chart sizing
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
-    
+
     const triggerChartResize = () => {
       clearTimeout(resizeTimeout);
       resizeTimeout = setTimeout(() => {
@@ -4168,7 +5371,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
           triggerChartResize();
         });
         resizeObserver.observe(container);
-        
+
         // Also observe split-panel if we're in split view
         const splitPanel = container.closest('.split-panel');
         if (splitPanel) {
@@ -4203,7 +5406,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     setupResizeObservers();
 
     window.addEventListener("resize", handleResize);
-    
+
     // Use a microtask to restore playback after initialization completes
     if (wasPlaying) {
       queueMicrotask(() => {
@@ -4219,9 +5422,9 @@ const TimeSeries = (props: TimeSeriesProps) => {
     onCleanup(() => {
       // Unregister this component
       unregisterActiveComponent('timeseries');
-      
+
       window.removeEventListener("resize", handleResize);
-      
+
       // Clean up observers
       if (resizeObserver) {
         resizeObserver.disconnect();
@@ -4229,20 +5432,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
       if (mutationObserver) {
         mutationObserver.disconnect();
       }
-      
+
       // Clean up periodic check
       if (window.timeSeriesPeriodicCheck) {
         clearInterval(window.timeSeriesPeriodicCheck);
         delete window.timeSeriesPeriodicCheck;
       }
-      
+
       // Clean up error handlers
       window.removeEventListener('error', handleError);
       window.removeEventListener('unhandledrejection', handleError);
-      
+
       // Clean up cross-window communication listener
       window.removeEventListener('selectionStoreUpdate', handleCrossWindowSelectionUpdate);
-      
+
       // Clean up brush key handlers
       if (activateBrush) {
         document.removeEventListener("keydown", activateBrush);
@@ -4250,12 +5453,12 @@ const TimeSeries = (props: TimeSeriesProps) => {
       if (deactivateBrush) {
         document.removeEventListener("keyup", deactivateBrush);
       }
-      
+
       // Clean up wheel event listener
       if (containerRef && wheelHandler) {
         containerRef.removeEventListener('wheel', wheelHandler, { capture: true });
       }
-      
+
       // Cancel any pending time-window animation frame
       if (timeWindowRafId != null) {
         cancelAnimationFrame(timeWindowRafId);
@@ -4266,7 +5469,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
       }
-      
+
       // Clear debounce timeouts
       if (chartEffectTimeout) {
         clearTimeout(chartEffectTimeout);
@@ -4288,7 +5491,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         clearTimeout(resizeTimeout);
         resizeTimeout = null;
       }
-      
+
       if (containerRef) {
         const chartContainers = containerRef.querySelectorAll('.time-series-single-chart');
         if (chartContainers.length > 0) {
@@ -4305,7 +5508,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     });
 
     // REMOVE the first createEffect that's causing labels to disappear
-    
+
     // Keep only the optimized createEffect for updating time line and data points
     createEffect(() => {
       const time = selectedTime();
@@ -4316,30 +5519,30 @@ const TimeSeries = (props: TimeSeriesProps) => {
         isPlaying: isPlaying(),
         isZoomed: isZoomed()
       });
-      
+
       if (!time || !containerRef) {
         debug('⏰ TimeSeries: No time or container, skipping');
         return;
       }
-      
+
       const refs = d3.select(containerRef).property("__timeSeriesRefs");
       if (!refs) {
         debug('⏰ TimeSeries: No refs available, skipping');
         return;
       }
-      
+
       const { selectedTimeLine, xZoom, xOffset, updateSelectedTimeLine, redraw } = refs;
-      
+
       // Check if xZoom is properly initialized
       if (!xZoom || !xZoom.domain || xZoom.domain().length === 0) {
         debug('⏰ TimeSeries: xZoom not initialized, skipping');
         return;
       }
-      
+
       // Check if time is within the current zoom window
       const [zoomMin, zoomMax] = xZoom.domain();
       const isOutsideZoom = time < zoomMin || time > zoomMax;
-      
+
       debug('⏰ TimeSeries: Zoom window check', {
         zoomMin: safeToISOString(zoomMin),
         zoomMax: safeToISOString(zoomMax),
@@ -4349,33 +5552,33 @@ const TimeSeries = (props: TimeSeriesProps) => {
         xZoomDomain: xZoom.domain(),
         xZoomDomainFormatted: xZoom.domain().map(d => safeToISOString(d))
       });
-      
+
       // When zoomed in, never auto-adjust the zoom window on play — preserve the user's zoom.
       // The timeline may be off-screen until playback advances into the visible window.
-      
+
       // Calculate position for the vertical line
       const xPos = xZoom(time) + xOffset;
-      
+
       debug('⏰ TimeSeries: Timeline position calculated', {
         xPos,
         xOffset,
         time: time.toISOString()
       });
-      
+
       // Determine behavior based on playback state and speed
       if (isPlaying()) {
         debug('⏰ TimeSeries: Playing state - updating timeline');
         // Use immediate updates for faster playback speeds
         const speed = playbackSpeed();
         const useTransitions = speed === 1;
-        
+
         debug('⏰ TimeSeries: Playback settings', {
           speed,
           useTransitions,
           lastUpdateTime,
           now: Date.now()
         });
-        
+
         // When playing, skip brush/range updates to avoid infinite loop (FleetMap + FleetTimeSeries).
         // Time window scrolling is handled by the timeWindow effect; only update visuals here.
         if (!isPlaying()) {
@@ -4386,11 +5589,11 @@ const TimeSeries = (props: TimeSeriesProps) => {
             const brushStartTime = new Date(rangeItem.start_time);
             const brushEndTime = new Date(rangeItem.end_time);
             const brushDuration = brushEndTime.getTime() - brushStartTime.getTime();
-            
+
             // Calculate how close we are to the brush end (in milliseconds)
             const timeToBrushEnd = brushEndTime.getTime() - time.getTime();
             const tenSecondsInMs = 10 * 1000; // 10 seconds in milliseconds
-            
+
             debug('⏰ TimeSeries: Brush proximity check', {
               selectedTime: time.toISOString(),
               brushStartTime: brushStartTime.toISOString(),
@@ -4400,20 +5603,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
               tenSecondsInMs: tenSecondsInMs,
               shouldMoveBrush: timeToBrushEnd <= tenSecondsInMs && timeToBrushEnd > 0
             });
-            
+
             // If we're within 10 seconds of the brush end, move the brush forward
             if (timeToBrushEnd <= tenSecondsInMs && timeToBrushEnd > 0) {
               debug('⏰ TimeSeries: Moving brush forward - selectedTime is within 10 seconds of brush end');
-              
+
               // Calculate animation step (same as playback store uses)
               // Use fixed 1Hz (1000ms) for non-live data
               const baseInterval = 1000; // Fixed 1Hz interval
               const animationStep = baseInterval;
-              
+
               // Move both brush start and end by the animation step
               const newBrushStartTime = new Date(brushStartTime.getTime() + animationStep);
               const newBrushEndTime = new Date(brushEndTime.getTime() + animationStep);
-              
+
               debug('⏰ TimeSeries: Brush movement calculation', {
                 animationStep: animationStep,
                 oldBrushStart: brushStartTime.toISOString(),
@@ -4421,30 +5624,30 @@ const TimeSeries = (props: TimeSeriesProps) => {
                 newBrushStart: newBrushStartTime.toISOString(),
                 newBrushEnd: newBrushEndTime.toISOString()
               });
-              
+
               // Update the selectedRange with the new brush position
               const newRange = {
                 "start_time": newBrushStartTime.toISOString(),
                 "end_time": newBrushEndTime.toISOString()
               };
-              
+
               debug('⏰ TimeSeries: Setting new selectedRange for moving brush', newRange);
               setSelectedRange([newRange]);
-              
+
               // Update the zoom domain to match the new brush position
               xZoom.domain([newBrushStartTime, newBrushEndTime]);
-              
+
               debug('⏰ TimeSeries: Updated zoom domain for moving brush', {
                 newDomain: [newBrushStartTime.toISOString(), newBrushEndTime.toISOString()]
               });
-              
+
               // Redraw the chart with the new brush position
               debug('⏰ TimeSeries: Redrawing chart with moved brush');
               redraw();
             }
           }
         }
-        
+
         // Move the timeline - immediate update for faster playback
         if (useTransitions) {
           debug('⏰ TimeSeries: Using transition for timeline update');
@@ -4464,26 +5667,26 @@ const TimeSeries = (props: TimeSeriesProps) => {
             .attr("x2", xPos)
             .attr("visibility", "visible");
         }
-        
+
         // Adjust update interval based on playback speed
         const updateInterval = speed === 1 ? 100 : (100 / speed);
-        
+
         // Always update on first play or after a navigation
         const isFirstPlayback = lastUpdateTime === 0;
         const now = Date.now();
-        
+
         debug('⏰ TimeSeries: Update interval check', {
           updateInterval,
           isFirstPlayback,
           timeSinceLastUpdate: now - lastUpdateTime,
           shouldUpdate: isFirstPlayback || (now - lastUpdateTime >= updateInterval)
         });
-        
+
         // Force update on component mount or new navigation
         if (isFirstPlayback || (now - lastUpdateTime >= updateInterval)) {
           lastUpdateTime = now;
           debug('⏰ TimeSeries: Updating data points and labels');
-          
+
           // Update data points and labels
           if (updateSelectedTimeLine && typeof updateSelectedTimeLine === 'function') {
             updateSelectedTimeLine();
@@ -4493,14 +5696,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
         debug('⏰ TimeSeries: Not playing - immediate update');
         // Reset lastUpdateTime when not playing
         lastUpdateTime = 0;
-        
+
         // Immediate update when not playing
         selectedTimeLine
           .interrupt()
           .attr("x1", xPos)
           .attr("x2", xPos)
           .attr("visibility", "visible");
-          
+
         // Update the data points and labels without animation
         if (updateSelectedTimeLine && typeof updateSelectedTimeLine === 'function') {
           debug('⏰ TimeSeries: Updating data points and labels (not playing)');
@@ -4517,7 +5720,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       const hasSelectionValue = hasSelection();
       const currentIsCut = isCut();
       const isManualChange = isManualTimeChange();
-      
+
       debug('🔄 TimeSeries: Selection effect triggered', {
         ranges: ranges?.length || 0,
         cuts: cuts?.length || 0,
@@ -4526,19 +5729,19 @@ const TimeSeries = (props: TimeSeriesProps) => {
         isRedrawing: isRedrawing,
         isManualChange: isManualChange
       });
-      
+
       // Skip if we're currently redrawing to prevent circular dependency
       if (isRedrawing) {
         debug('🔄 TimeSeries: Skipping effect - currently redrawing');
         return;
       }
-      
+
       // When playing, timeWindow effect drives the chart; skip selection effect to avoid endless loop (FleetTimeSeries).
       if (isPlaying()) {
         debug('🔄 TimeSeries: Skipping effect - playing, timeWindow effect owns the view');
         return;
       }
-      
+
       // If this is a manual time change (user click), don't clear brush selection
       // Only clear brush when selection is explicitly cleared (not from user clicks)
       if (isManualChange) {
@@ -4550,13 +5753,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
         }, 100);
         return;
       }
-      
+
       // Add throttling to prevent infinite loops, but allow clearing operations
       const now = Date.now();
       const noRanges = Array.isArray(ranges) ? ranges.length === 0 : true;
       const noCuts = Array.isArray(cuts) ? cuts.length === 0 : true;
       const isClearing = noRanges && noCuts && !hasSelectionValue && !currentIsCut;
-      
+
       // Create a signature for the current zoom state to detect if we're in a loop
       const zoomState = `${noRanges}-${noCuts}-${hasSelectionValue}-${currentIsCut}-${cuts?.length || 0}`;
       if (zoomState === lastZoomState && !isClearing) {
@@ -4564,21 +5767,21 @@ const TimeSeries = (props: TimeSeriesProps) => {
         return;
       }
       lastZoomState = zoomState;
-      
+
       // Only throttle if we're not clearing and it's been less than 100ms
       if (!isClearing && now - lastProcessDataTime < 100) {
         debug('🔄 TimeSeries: Skipping effect - throttled');
         return;
       }
       lastProcessDataTime = now;
-      
+
       if (!containerRef) {
         debug('🔄 TimeSeries: Skipping effect - no containerRef');
         return;
       }
 
       // When both ranges and cuts are empty, clear the brush and local selection state
-      
+
       debug('🔄 TimeSeries: Selection state analysis', {
         noRanges,
         noCuts,
@@ -4586,35 +5789,35 @@ const TimeSeries = (props: TimeSeriesProps) => {
         willResetZoom: noRanges && noCuts && !currentIsCut,
         willResetToCutData: noRanges && !noCuts && currentIsCut
       });
-      
+
       // If selection is cleared but cuts exist, reset zoom to cut data extent
       if (noRanges && !noCuts && currentIsCut) {
         lastClearedZoomState = ''; // Allow clear path when user later clears cuts
         debug('🔄 TimeSeries: Selection cleared but cuts exist - resetting zoom to cut data extent');
-        
+
         // Reset zoom to full extent of cut data (xScale already reflects cut data)
         const refs = d3.select(containerRef).property("__timeSeriesRefs");
         if (refs && refs.xZoom && refs.xScale && typeof refs.xZoom.domain === 'function') {
           const fullDomain = refs.xScale.domain(); // This is the cut data extent
-          
+
           debug('🔄 TimeSeries: Resetting zoom to cut data extent', {
             currentZoomDomain: refs.xZoom.domain(),
             cutDataExtent: fullDomain,
             cutDataExtentFormatted: fullDomain.map(d => safeToISOString(d))
           });
-          
+
           refs.xZoom.domain(fullDomain);
-          
+
           if (typeof refs.redraw === 'function') {
             refs.redraw();
           }
-          
+
           setZoom(false);
           setHasSelection(false);
         }
         return; // Don't proceed to full dataset reset
       }
-      
+
       // If no ranges, no cuts, and not in cut mode - reset to full dataset
       if (noRanges && noCuts && !currentIsCut) {
         // Skip if we already ran the clear path for this state (prevents loop when store updates cause re-render)
@@ -4630,7 +5833,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
           return;
         }
         debug('🔄 TimeSeries: Clearing selections and resetting zoom to full domain');
-        
+
         // IMPORTANT: Reload data when selection is cleared to ensure full dataset is available
         // This fixes the issue where data appears "cut" after returning from map view
         if (props.chart && !isProcessingData && !isFetchingData) {
@@ -4638,34 +5841,34 @@ const TimeSeries = (props: TimeSeriesProps) => {
           processDataForCharts().then(() => {
             // After data is reloaded, reset zoom and redraw
             const refs = d3.select(containerRef).property("__timeSeriesRefs");
-            
+
             if (refs && refs.xZoom && typeof refs.xZoom.domain === 'function' && refs.xScale) {
               // Get the full domain from the current xScale (same as double-click handler)
               const fullDomain = refs.xScale.domain();
-              
+
               debug('🔄 TimeSeries: Resetting zoom domain after data reload', {
                 currentZoomDomain: refs.xZoom.domain(),
                 fullDomain: fullDomain,
                 fullDomainFormatted: fullDomain.map(d => new Date(d).toISOString())
               });
-              
+
               refs.xZoom.domain(fullDomain);
-              
+
               // Also update the local xZoom if it exists (for consistency)
               if (typeof xZoom !== 'undefined' && xZoom && typeof xZoom.domain === 'function') {
                 xZoom.domain(fullDomain);
               }
-              
+
               // Call the redraw function from refs
               if (typeof refs.redraw === 'function') {
                 debug('🔄 TimeSeries: Calling redraw after zoom reset');
                 refs.redraw();
               }
-              
+
               setZoom(false);
               setHasSelection(false);
               setSelection([]);
-              
+
               debug('🔄 TimeSeries: Zoom reset completed after data reload');
             } else {
               // Refs not available yet - this is expected during initialization
@@ -4696,35 +5899,35 @@ const TimeSeries = (props: TimeSeriesProps) => {
         } else {
           // If we can't reload data, at least reset the zoom
           const refs = d3.select(containerRef).property("__timeSeriesRefs");
-          
+
           if (refs && refs.xZoom && typeof refs.xZoom.domain === 'function' && refs.xScale) {
             // Get the full domain from the current xScale (same as double-click handler)
             const fullDomain = refs.xScale.domain();
-            
+
             debug('🔄 TimeSeries: Resetting zoom domain (data reload skipped)', {
               currentZoomDomain: refs.xZoom.domain(),
               fullDomain: fullDomain,
               fullDomainFormatted: fullDomain.map(d => safeToISOString(d)),
               reason: !props.chart ? 'no chart' : isProcessingData ? 'processing' : isFetchingData ? 'fetching' : 'unknown'
             });
-            
+
             refs.xZoom.domain(fullDomain);
-            
+
             // Also update the local xZoom if it exists (for consistency)
             if (typeof xZoom !== 'undefined' && xZoom && typeof xZoom.domain === 'function') {
               xZoom.domain(fullDomain);
             }
-            
+
             // Call the redraw function from refs
             if (typeof refs.redraw === 'function') {
               debug('🔄 TimeSeries: Calling redraw after zoom reset');
               refs.redraw();
             }
-            
+
             setZoom(false);
             setHasSelection(false);
             setSelection([]);
-            
+
             debug('🔄 TimeSeries: Zoom reset completed (without data reload)');
           } else {
             // Refs not available yet - this is expected during initialization
@@ -4742,38 +5945,38 @@ const TimeSeries = (props: TimeSeriesProps) => {
           cuts: cuts?.length || 0,
           isCut: currentIsCut
         });
-        
+
         // Priority: If cut data exists, use cut ranges; otherwise use selectedRange
         // When cut data exists, we want to show the full extent of all cut ranges
         // BUT: Only zoom if we're actually in cut mode (isCut is true)
         // If cuts exist but isCut is false, it means they're being cleared
         const rangesToUse = (currentIsCut && cuts && cuts.length > 0) ? cuts : (ranges.length > 0 ? ranges : []);
-        
+
         // Don't zoom if we have cuts but isCut is false (clearing in progress)
         if (cuts && cuts.length > 0 && !currentIsCut) {
           debug('🧹 TimeSeries: Cut events exist but isCut is false - clearing in progress, skipping zoom');
           return;
         }
-        
+
         if (rangesToUse.length === 0) {
           debug('🧹 TimeSeries: No ranges to zoom to');
           return;
         }
-        
+
         debug('🧹 TimeSeries: Range detected - zooming to show ranges', {
           isCut: currentIsCut,
           rangeCount: rangesToUse.length,
           ranges: rangesToUse,
           usingCutRanges: currentIsCut && cuts && cuts.length > 0
         });
-        
+
         // Zoom to show all ranges (combined extent)
         const refs = d3.select(containerRef).property("__timeSeriesRefs");
         if (refs && refs.xZoom && refs.xScale) {
           // Calculate the combined extent of all ranges
           let minTime = Infinity;
           let maxTime = -Infinity;
-          
+
           rangesToUse.forEach(range => {
             if (range.start_time && range.end_time) {
               const startTime = new Date(range.start_time).getTime();
@@ -4782,32 +5985,32 @@ const TimeSeries = (props: TimeSeriesProps) => {
               maxTime = Math.max(maxTime, endTime);
             }
           });
-          
+
           if (minTime !== Infinity && maxTime !== -Infinity) {
             const startTime = new Date(minTime);
             const endTime = new Date(maxTime);
-            
+
             debug('🧹 TimeSeries: Setting zoom domain to combined ranges', {
               rangeCount: rangesToUse.length,
               startTime: startTime.toISOString(),
               endTime: endTime.toISOString(),
               isCut: currentIsCut
             });
-            
+
             // Set the zoom domain to show all ranges
             refs.xZoom.domain([startTime, endTime]);
-            
+
             // Also update the local xZoom for consistency
             if (typeof xZoom !== 'undefined' && xZoom && typeof xZoom.domain === 'function') {
               xZoom.domain([startTime, endTime]);
             }
-            
+
             // Call redraw to update the visualization
             if (typeof refs.redraw === 'function') {
               debug('🧹 TimeSeries: Redrawing after range zoom');
               refs.redraw();
             }
-            
+
             // Restore brush selection only if not in cut mode (cut mode shows all data, no brush needed)
             if (!currentIsCut && typeof restoreBrushSelection === 'function') {
               debug('🧹 TimeSeries: Restoring brush to match range');
@@ -4815,7 +6018,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
             } else if (currentIsCut) {
               debug('🧹 TimeSeries: Skipping brush restoration - cut mode active');
             }
-            
+
             // Update local state
             setZoom(true);
             setHasSelection(true);
@@ -4838,18 +6041,18 @@ const TimeSeries = (props: TimeSeriesProps) => {
     // When a cut range is created, clear any active brush selection and selectedRange locally
     createEffect(() => {
       const cuts = cutEvents();
-      
+
       debug('✂️ TimeSeries: Cut events effect triggered', {
         cutsLength: Array.isArray(cuts) ? cuts.length : 'not array',
         hasContainerRef: !!containerRef,
         cuts
       });
-      
+
       if (!containerRef) {
         debug('✂️ TimeSeries: No container ref, skipping');
         return;
       }
-      
+
       if (Array.isArray(cuts) && cuts.length > 0) {
         debug('✂️ TimeSeries: Cut events detected - will be handled by main selection effect');
         // The main selection clearing effect will handle zooming to cut events
@@ -4861,24 +6064,24 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
     // Remove reactive effect entirely to prevent infinite loops
     // Brush restoration will only happen during chart initialization
-    
+
     // Reactive effect to update event overlays when selections or cut events change
     createEffect(() => {
       const events = selectedEvents();
       const ranges = selectedRanges();
       const currentIsCut = isCut();
       const currentCutEvents = cutEvents();
-      
+
       // Access these to make the effect reactive
       const _ = events.length;
       const __ = ranges.length;
       const ___ = currentIsCut;
       const ____ = currentCutEvents?.length || 0;
-      
+
       if (!containerRef) {
         return;
       }
-      
+
       const refs = d3.select(containerRef).property("__timeSeriesRefs");
       if (refs && refs.drawEventOverlays && typeof refs.drawEventOverlays === 'function') {
         debug('🎨 TimeSeries: Updating overlays due to selection/cut change', {
@@ -5003,7 +6206,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
   return (
     <>
       <Show when={isLoading() || isDataLoading()}>
-        <LoadingOverlay 
+        <LoadingOverlay
           message={isDataLoading() ? dataLoadingMessage() : "Loading time series data..."}
           type="spinner"
         />
@@ -5020,7 +6223,23 @@ const TimeSeries = (props: TimeSeriesProps) => {
                 }}>
                   <div class="time-series time-series-single-chart" data-chart-index={i()} />
                   <div class="timeseries-legend-tables">
-                    <LegendTable chart={chart} />
+                    <LegendTable
+                      chart={chart}
+                      highlightedTeams={fleetLegendHighlightNames}
+                      onToggleTeam={toggleFleetLegendHighlight}
+                      chartLayoutEpoch={fleetLegendTableEpoch}
+                      getVisibleXDomain={() => {
+                        if (!containerRef) return null;
+                        const refs = d3.select(containerRef).property("__timeSeriesRefs") as
+                          | { xZoom?: d3.ScaleTime<number, number> }
+                          | undefined;
+                        const xz = refs?.xZoom;
+                        if (!xz || typeof xz.domain !== "function") return null;
+                        const d = xz.domain();
+                        if (!Array.isArray(d) || d.length !== 2) return null;
+                        return { lo: d[0], hi: d[1] };
+                      }}
+                    />
                   </div>
                 </div>
               )}

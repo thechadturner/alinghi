@@ -11,6 +11,7 @@ const { selectedClassName, selectedProjectId, selectedDatasetId, selectedPage, s
 import { sourcesStore } from "../../../../store/sourcesStore";
 
 import { getData, getTimezoneForDate, setupMediaContainerScaling } from "../../../../utils/global";
+import { sortRaceValues } from "../../../../utils/raceValueUtils";
 import { apiEndpoints } from "@config/env";
 import { unifiedDataStore } from "../../../../store/unifiedDataStore";
 import { warn, error as logError, debug, data as logData } from "../../../../utils/console";
@@ -19,9 +20,12 @@ import { registerSelectionStoreCleanup, cutEvents, isCut, selectedRange } from "
 import { selectedStatesTimeseries, selectedRacesTimeseries, selectedLegsTimeseries, selectedGradesTimeseries, setSelectedRacesTimeseries, setSelectedLegsTimeseries, setSelectedGradesTimeseries, setHasChartsWithOwnFilters, selectedSources as filterStoreSelectedSources, setSelectedSources as filterStoreSetSelectedSources } from "../../../../store/filterStore";
 import { selectedTime, timeWindow, getDisplayWindowReferenceTime, isPlaying } from "../../../../store/playbackStore";
 import { applyDataFilter } from "../../../../utils/dataFiltering";
+import { bucketAggregateForLineType } from "../../../../utils/timeseriesSeriesTransforms";
+import type { ChannelBucketAggregate } from "../../../../store/unifiedDataAPI";
 import UnifiedFilterService from "../../../../services/unifiedFilterService";
 import { setCurrentDataset, getCurrentDatasetTimezone } from "../../../../store/datasetTimezoneStore";
 import { persistentSettingsService } from "../../../../services/persistentSettingsService";
+import { sidebarMenuRefreshTrigger } from "../../../../store/globalStore";
 import { huniDBStore } from "../../../../store/huniDBStore";
 import { TableNames, escapeTableName } from "../../../../store/huniDBTypes";
 
@@ -38,6 +42,40 @@ interface FleetTimeSeriesPageProps {
 
 /** Event time range - source_id is used in fleet mode to match data points to their source */
 type EventTimeRange = { start: number; end: number; source_id?: number };
+
+/** Min/max x from chart config points; used for x-axis when race/leg filters are on but IndexedDB event ranges are empty. */
+function extentFromFleetChartConfig(config: unknown[] | null | undefined): { start: Date; end: Date } | undefined {
+  if (!Array.isArray(config) || config.length === 0) return undefined;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const chart of config) {
+    const series = (chart as { series?: unknown[] })?.series;
+    if (!Array.isArray(series)) continue;
+    for (const s of series) {
+      const data = (s as { data?: unknown[] })?.data;
+      if (!Array.isArray(data)) continue;
+      for (const pt of data) {
+        const p = pt as { x?: Date | number | string };
+        const x = p?.x;
+        const t =
+          x instanceof Date
+            ? x.getTime()
+            : x != null && x !== ""
+              ? new Date(x as string | number).getTime()
+              : NaN;
+        if (!Number.isFinite(t)) continue;
+        if (t < min) min = t;
+        if (t > max) max = t;
+      }
+    }
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return undefined;
+  if (min === max) {
+    const pad = 60_000;
+    return { start: new Date(min - pad), end: new Date(max + pad) };
+  }
+  return { start: new Date(min), end: new Date(max) };
+}
 
 export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
   debug('🕐 TimeSeriesPage: Component initialized');
@@ -218,6 +256,9 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
     const brushRange = selectedRange();
     const winMin = effectiveTimeWindow();
     const playing = isPlaying();
+    const cfg = chartConfig();
+    const raceOrLegFilter =
+      selectedRacesTimeseries().length > 0 || selectedLegsTimeseries().length > 0;
 
     if (brushRange.length === 1 && brushRange[0]?.start_time && brushRange[0]?.end_time) {
       const out = { start: new Date(brushRange[0].start_time), end: new Date(brushRange[0].end_time) };
@@ -226,6 +267,39 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
         debug('⏰ FleetTimeSeries effectiveXRange', { source: 'brush', playing, winMin, range: out });
       }
       return out;
+    }
+
+    // Race/leg filters: drive x-axis from event spans or filtered points. Must run before the
+    // map time-window slice (winMin > 0 && !playing) or the chart stays on the wrong domain.
+    if (raceOrLegFilter) {
+      if (ranges.length > 0) {
+        const minStart = Math.min(...ranges.map((r) => r.start));
+        const maxEnd = Math.max(...ranges.map((r) => r.end));
+        const out = { start: new Date(minStart), end: new Date(maxEnd) };
+        if (Date.now() - lastEffectiveXRangeDebug >= 500) {
+          lastEffectiveXRangeDebug = Date.now();
+          debug('⏰ FleetTimeSeries effectiveXRange', {
+            source: "eventTimeRanges",
+            playing,
+            winMin,
+            range: { start: out.start.toISOString(), end: out.end.toISOString() },
+          });
+        }
+        return out;
+      }
+      const dataExt = extentFromFleetChartConfig(cfg);
+      if (dataExt) {
+        if (Date.now() - lastEffectiveXRangeDebug >= 500) {
+          lastEffectiveXRangeDebug = Date.now();
+          debug('⏰ FleetTimeSeries effectiveXRange', {
+            source: "filteredDataExtent",
+            playing,
+            winMin,
+            range: { start: dataExt.start.toISOString(), end: dataExt.end.toISOString() },
+          });
+        }
+        return dataExt;
+      }
     }
 
     // During playback, return full range so TimeSeries internal effect can drive the window
@@ -660,7 +734,8 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       () => selectedDatasetId(),
       () => selectedDate(),
       () => selectedPage(),
-      selectedSourcesKey // Watch source selections via stable memo
+      selectedSourcesKey, // Watch source selections via stable memo
+      () => sidebarMenuRefreshTrigger() // Refetch after timeseries builder save (same chart name)
       // Note: objectName() is excluded from tracked dependencies to prevent loops
       // We'll get it inside the effect using untrack
     ],
@@ -718,8 +793,9 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
         return;
       }
       
-      const selectedSourcesKey = Array.from(selectedSources()).sort().join(',');
-      const fetchKey = `${currentUser.user_id}_${className}_${projectId}_${datasetId}_${date}_${page}_${objName}_${selectedSourcesKey}`;
+      const selectedSourcesKeyVal = Array.from(selectedSources()).sort().join(',');
+      const menuRefresh = sidebarMenuRefreshTrigger();
+      const fetchKey = `${currentUser.user_id}_${className}_${projectId}_${datasetId}_${date}_${page}_${objName}_${selectedSourcesKeyVal}_${menuRefresh}`;
       
       // Only refetch if the key actually changed (prevents infinite loops)
       // Check this BEFORE checking isFetching to avoid unnecessary work
@@ -893,16 +969,48 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       });
 
       // Filter out known non-existent channels to prevent 404 errors
-      const validChannels: string[] = requiredChannels.filter((channel: string) => {
-        const invalidChannels: string[] = []; // Only filter out channels that definitely don't exist
-        return !invalidChannels.includes(channel);
-      });
+      const validChannels: string[] = [
+        ...new Set(
+          requiredChannels.filter((channel: string) => {
+            const invalidChannels: string[] = []; // Only filter out channels that definitely don't exist
+            return !invalidChannels.includes(channel);
+          })
+        ),
+      ];
 
       debug('🕐 TimeSeriesPage: Valid channels after filtering:', validChannels);
 
       if (validChannels.length !== requiredChannels.length) {
         warn('🕐 TimeSeriesPage: Filtered out non-existent channels:', requiredChannels.filter(ch => !validChannels.includes(ch)));
       }
+
+      /** Per y-axis channel: DuckDB SUM / SUM(ABS) per resample bucket when lineType is cumulative / abs_cumulative. */
+      const channelBucketAggregateByName: Record<string, ChannelBucketAggregate> = {};
+      const bucketAggConflict = new Set<string>();
+      chartObjects.forEach((chart: any) => {
+        (chart?.series || []).forEach((series: any) => {
+          const yName = series?.yaxis?.name;
+          if (!yName || typeof yName !== 'string') return;
+          if (yName.toLowerCase() === 'datetime') return;
+          const agg = bucketAggregateForLineType(series?.lineType);
+          if (!agg) return;
+          if (bucketAggConflict.has(yName)) return;
+          const prev = channelBucketAggregateByName[yName];
+          if (prev !== undefined && prev !== agg) {
+            bucketAggConflict.add(yName);
+            delete channelBucketAggregateByName[yName];
+            warn('🕐 TimeSeriesPage: conflicting line types for same y channel — omitting DuckDB bucket sum hint', {
+              channel: yName,
+              prev,
+              next: agg,
+            });
+          } else {
+            channelBucketAggregateByName[yName] = agg;
+          }
+        });
+      });
+      const channelBucketAggregateForApi: Record<string, ChannelBucketAggregate> | undefined =
+        Object.keys(channelBucketAggregateByName).length > 0 ? channelBucketAggregateByName : undefined;
 
       // 3. Get selectedDate for proper API calls
       let dateStr = selectedDate();
@@ -1135,11 +1243,11 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
           }
           
           // IMPORTANT: FleetTimeSeries is an explore component using raw file data
-          // Always fetch full dataset, apply filters locally for better control
-          // Use fetchDataWithChannelChecking directly (checks hunidb first, faster than fetchDataWithChannelCheckingFromFile)
-          // This skips the file channels API check and goes straight to hunidb
+          // Always fetch full channel list in one call per source. Splitting standard vs cumulative into
+          // two parallel fetches breaks unifiedDataStore: each response omits some requested metadata
+          // channels, so the store refuses to return rows and every boat gets [].
           const data = await unifiedDataStore.fetchDataWithChannelChecking(
-            'ts',
+            "ts",
             selectedClassName(),
             source.source_id.toString(),
             validChannels,
@@ -1148,12 +1256,14 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
               className: selectedClassName(),
               datasetId: source.dataset_id.toString(),
               sourceName: source.source_name,
+              sourceId: source.source_id,
               date: formattedDate,
-              timezone: datasetTimezone, // Pass timezone for proper UTC to local conversion
-              use_v2: true, // Obsolete - kept for backward compatibility (DuckDB is now the only implementation)
-              applyGlobalFilters: false // Always fetch full dataset, apply filters locally
+              timezone: datasetTimezone,
+              use_v2: true,
+              applyGlobalFilters: false,
+              channelBucketAggregateByName: channelBucketAggregateForApi,
             },
-            'timeseries'
+            "timeseries"
           );
           
           if (data && data.length > 0) {
@@ -1182,7 +1292,7 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       try {
         const opts = await unifiedDataStore.getFilterOptions();
         if (opts) {
-          const allRaces = (opts.races || []).slice().sort((a: number, b: number) => a - b);
+          const allRaces = (opts.races || []).slice().sort(sortRaceValues);
           const allGrades = (opts.grades || []).slice().sort((a: number, b: number) => a - b);
           const allLegs = (opts.legs || opts.legOptions || []).slice().sort((a: number, b: number) => a - b);
           try {

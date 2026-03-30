@@ -246,6 +246,7 @@ if __name__ == "__main__":
                     'batch': True,
                     'verbose': verbose
                 }
+
                 corrections_params_str = json.dumps(corrections_params)
                 corrections_script_path = os.path.join(script_dir, '3_corrections.py')
                 print("Running fusion corrections...", flush=True)
@@ -256,6 +257,29 @@ if __name__ == "__main__":
                     u.log(api_token, "2_process_and_execute.py", "error", "corrections script", error_msg)
                     raise Exception(error_msg)
                 u.log(api_token, "2_process_and_execute.py", "info", "corrections script", "Corrections script completed successfully")
+
+
+                # Run 3_systems.py (compute system data)
+                systems_params = {
+                    'class_name': class_name,
+                    'project_id': project_id,
+                    'date': date_str_clean,
+                    'source_name': source_name,
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'verbose': verbose
+                }
+
+                systems_params_str = json.dumps(systems_params)
+                systems_script_path = os.path.join(script_dir, '3_systems.py')
+                print("Running systems data computation...", flush=True)
+                u.log(api_token, "2_process_and_execute.py", "info", "systems script", f"Starting 3_systems.py for dataset {dataset_id}")
+                return_code_corrections = run_script_realtime(systems_script_path, systems_params_str)
+                if return_code_corrections != 0:
+                    error_msg = f"Systems script failed with code {return_code_corrections}"
+                    u.log(api_token, "2_process_and_execute.py", "error", "systems script", error_msg)
+                    raise Exception(error_msg)
+                u.log(api_token, "2_process_and_execute.py", "info", "systems script", "Systems script completed successfully")
 
                 # Prepare parameters for 3_execute.py
                 # 3_execute runs Map.start(), Maneuvers.start(), Performance.start(), Race.start() with these params.

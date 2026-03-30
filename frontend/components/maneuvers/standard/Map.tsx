@@ -1989,20 +1989,7 @@ export default function ManeuverMap(props: ManeuverMapProps) {
         // Small delay to ensure Leaflet has fully initialized
         setTimeout(() => {
           drawFeatures();
-          const hasData = filtered().length > 0;
-          const hasTrigger = triggerUpdate();
-          if (!hasData && !hasTrigger) return;
-          const inProgress = untrack(() => updateInProgress);
-          if (hasTrigger) setTriggerUpdate(false);
-          if (inProgress) return;
-          if (hasTrigger) {
-            queueMicrotask(() => {
-              if (untrack(() => updateInProgress)) return;
-              untrack(() => updateMap());
-            });
-          } else {
-            untrack(() => updateMap());
-          }
+          // First data fetch is driven by triggerUpdate / filtered createEffects only — avoids duplicate fetchMapData with init + debounced watcher.
         }, 100);
       }
     }
@@ -2080,17 +2067,6 @@ export default function ManeuverMap(props: ManeuverMapProps) {
       if (!map) return;
       setMapInitialized(true);
       drawFeatures();
-      const hasData = filtered().length > 0;
-      const hasTrigger = triggerUpdate();
-      if (hasData || hasTrigger) {
-        if (hasTrigger) setTriggerUpdate(false);
-        if (!untrack(() => updateInProgress)) {
-          queueMicrotask(() => {
-            if (untrack(() => updateInProgress)) return;
-            untrack(() => updateMap());
-          });
-        }
-      }
     });
 
     resizeObserver = new ResizeObserver((_entries) => {

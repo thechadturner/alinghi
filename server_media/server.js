@@ -6,6 +6,7 @@ const cors = require("cors");
 const compression = require("compression");
 const cookieParser = require("cookie-parser");
 const config = require('./middleware/config');
+const { resolveAllowedOrigins } = require('../shared/utils/allowedOrigins');
 const { installConsoleGate, logAlways, log, error, warn, debug } = require('../shared');
 
 // Install console gate early to wrap all console.* calls
@@ -26,11 +27,8 @@ try {
 }
 const app = express();
 
-// CORS configuration consistent with other servers
-const allowedOrigins = (config.CORS_ORIGINS || '')
-  .split(',')
-  .map(o => o.trim())
-  .filter(Boolean);
+// CORS — dev merges localhost origins for Vite
+const allowedOrigins = resolveAllowedOrigins(config.CORS_ORIGINS);
 
 // Parse cookies for authentication
 app.use(cookieParser());

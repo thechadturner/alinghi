@@ -913,6 +913,8 @@ const Sidebar = (props: SidebarProps) => {
     'maneuvers': 'gp50/day/reports/FleetManeuvers',
     'racesummary': 'gp50/day/reports/RaceSummary',
     'trainingsummary': 'gp50/day/reports/TrainingSummary',
+    /** DB page_name for Prestart.tsx (day_pages); keep prestart alias for older rows */
+    'startsummary': 'gp50/day/reports/Prestart',
     'prestart': 'gp50/day/reports/Prestart',
   };
   const getDayReportFilePath = (pageName: string): string | null => {

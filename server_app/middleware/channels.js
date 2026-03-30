@@ -71,12 +71,16 @@ async function getFileChannels(class_name, project_id, date, source_name) {
     }
 
     const allParquet = fs.readdirSync(sourcePath).filter((file) => file.endsWith('.parquet'));
-    // Exclude influx_data.parquet so FILE = channels from normalization + fusion parquet only
-    // (matches file server getChannelList when data_source=file)
-    const INFLUX_PARQUET = 'influx_data.parquet';
-    const files = allParquet.filter((file) => file !== INFLUX_PARQUET);
-    if (allParquet.includes(INFLUX_PARQUET)) {
-      debug(`[getFileChannels] Excluding ${INFLUX_PARQUET} from FILE channel discovery`);
+    const influxTierLower = new Set([
+      'influx_data.parquet',
+      'influx_data_raw.parquet',
+      'influx_data_10hz.parquet',
+      'influx_data_1hz.parquet',
+    ]);
+    const files = allParquet.filter((file) => !influxTierLower.has(String(file).toLowerCase()));
+    const excluded = allParquet.filter((file) => influxTierLower.has(String(file).toLowerCase()));
+    if (excluded.length > 0) {
+      debug(`[getFileChannels] Excluding Influx tier parquets from FILE channel discovery: ${excluded.join(', ')}`);
     }
 
     if (files.length === 0) {

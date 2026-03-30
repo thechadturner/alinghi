@@ -9,6 +9,7 @@ const db = require('../shared/database/connection');
 const { installConsoleGate, logAlways, log, error, warn, debug } = require('../shared');
 
 const config = require('./middleware/config');
+const { resolveAllowedOrigins } = require('../shared/utils/allowedOrigins');
 const loggingRoutes = require('./routes/logging');
 const { validatePAT } = require('./middleware/pat');
 const projectRoutes = require('./routes/projects');
@@ -250,12 +251,8 @@ function progressPollHandler(req, res) {
 app.get('/api/upload/progress', progressPollHandler);
 app.get('/api/admin/api/upload/progress', progressPollHandler);
 
-// Middleware
-// Read allowed origins strictly from env var; no hardcoded defaults
-const allowedOrigins = (config.CORS_ORIGINS || '')
-  .split(',')
-  .map(o => o.trim())
-  .filter(Boolean);
+// Middleware — CSRF uses this list; dev merges localhost (Vite) even when CORS uses origin: true
+const allowedOrigins = resolveAllowedOrigins(config.CORS_ORIGINS);
 
 // Helmet with CSP (stricter in production)
 if (process.env.NODE_ENV === 'production') {

@@ -149,6 +149,10 @@ export default function FleetManeuversPage() {
   let tableDataController: AbortController | null = null;
   let timesController: AbortController | null = null;
 
+  /** After onMount applies project/persistent filters — prevents createEffects from racing ahead and double-fetching. */
+  const [fleetMountComplete, setFleetMountComplete] = createSignal(false);
+  let fleetTableFetchDebounce: ReturnType<typeof setTimeout> | null = null;
+
   // Fetch timeseries description options from API
   const fetchTimeseriesOptions = async () => {
     try {
@@ -216,7 +220,12 @@ export default function FleetManeuversPage() {
       // Get date and sources
       const date = selectedDate();
       if (!date || date.trim() === '') {
-        // This is expected during initialization - the createEffect will handle fetching when date is available
+        // Persistent settings merges can briefly clear selectedDate in localStorage; do not wipe in-memory maneuvers
+        // (that unmounts the map and causes duplicate fetchMapData).
+        if (untrack(() => maneuvers().length > 0)) {
+          logDebug('FleetManeuvers: fetchTableData skipped — empty date while maneuvers loaded (store settling)');
+          return;
+        }
         setManeuvers([]);
         setTableData([]);
         setFiltered([]);
@@ -227,8 +236,10 @@ export default function FleetManeuversPage() {
       const sourcesReady = sourcesStore.isReady();
       const sources = sourcesStore.sources();
       if (!sourcesReady || !sources || sources.length === 0) {
-        // Don't log error if sources just aren't ready yet - this is expected during initialization
-        // The createEffect will retry when sources become available
+        if (untrack(() => maneuvers().length > 0)) {
+          logDebug('FleetManeuvers: fetchTableData skipped — sources not ready while maneuvers loaded');
+          return;
+        }
         setManeuvers([]);
         setTableData([]);
         setFiltered([]);
@@ -387,11 +398,7 @@ export default function FleetManeuversPage() {
 
         setManeuvers(allData)
 
-        const eventIds = allData.map((item: any) => item.event_id);
-        setFiltered(eventIds)
-        setSelection(eventIds as any)
-
-        // Pass data directly to filterData to avoid race condition with store updates
+        // Let filterData set filtered/selection once after TWS/grade/state filters (avoids map double-fetch on full list then filtered list).
         filterData(allData)
       } else {
         // Handle empty data - reset to empty state only if this response is still current
@@ -420,7 +427,15 @@ export default function FleetManeuversPage() {
     } finally {
       tableDataController = null;
     }
-  }
+  };
+
+  const scheduleFleetTableFetch = () => {
+    if (fleetTableFetchDebounce) clearTimeout(fleetTableFetchDebounce);
+    fleetTableFetchDebounce = setTimeout(() => {
+      fleetTableFetchDebounce = null;
+      void fetchTableData();
+    }, 100);
+  };
 
   const handleEventType = (val: string): void => {
     const prev = (eventType() || '').trim().toUpperCase();
@@ -488,12 +503,25 @@ export default function FleetManeuversPage() {
     setTriggerUpdate(true)
   };
 
+  const sortedEventIdsEqual = (a: unknown[], b: number[]): boolean => {
+    if (!Array.isArray(a) || a.length !== b.length) return false;
+    const toId = (x: unknown) => (typeof x === 'number' ? x : (x as { event_id?: number })?.event_id);
+    const numsA = a.map(toId).filter((id): id is number => typeof id === 'number' && id > 0).sort((x, y) => x - y);
+    const numsB = [...b].filter((id): id is number => typeof id === 'number' && id > 0).sort((x, y) => x - y);
+    if (numsA.length !== numsB.length) return false;
+    return numsA.every((v, i) => v === numsB[i]);
+  };
+
   const filterData = (dataOverride?: any[]): void => {
     // Use provided data or read from store - this avoids race conditions
     const maneuversData = dataOverride ?? maneuvers();
     if (!maneuversData || !Array.isArray(maneuversData) || maneuversData.length === 0) {
+      const hadFiltered = filtered().length > 0;
       setFiltered([]);
       setTableData([]);
+      if (hadFiltered) {
+        setTriggerUpdate(true);
+      }
       return;
     }
 
@@ -636,6 +664,8 @@ export default function FleetManeuversPage() {
     });
 
     const eventIds = filteredData.map((item: any) => item.event_id);
+    const prevFiltered = filtered();
+    const sameEventSet = sortedEventIdsEqual(prevFiltered, eventIds);
 
     setFiltered(eventIds)
     setTableData(filteredData)
@@ -645,7 +675,9 @@ export default function FleetManeuversPage() {
       setSelection(eventIds as any)
     }
 
-    setTriggerUpdate(true)
+    if (!sameEventSet) {
+      setTriggerUpdate(true);
+    }
   }
 
   createEffect(() => {
@@ -831,20 +863,6 @@ export default function FleetManeuversPage() {
     setTriggerUpdate(true);
   };
 
-  // React to eventType changes - use normalized value so we still fetch when eventType is empty (treat as TACK)
-  createEffect(async () => {
-    const et = (eventType() || 'TACK').trim() || 'TACK';
-    if (et) {
-      const sourcesReady = sourcesStore.isReady();
-      const sources = sourcesStore.sources();
-      const date = selectedDate();
-      
-      if (sourcesReady && sources && sources.length > 0 && date && date.trim() !== '') {
-        await untrack(() => fetchTableData());
-      }
-    }
-  });
-
   // Set dataset timezone when date changes so maneuver table datetime is in local time (dataset timezone)
   createEffect(async () => {
     const className = selectedClassName();
@@ -878,18 +896,6 @@ export default function FleetManeuversPage() {
     } catch (error: unknown) {
       logDebug("FleetManeuvers: Error setting timezone for date", error as any);
       await setCurrentDataset(className, projectId, null);
-    }
-  });
-
-  // React to sources becoming available or date changing - untrack(fetchTableData) to prevent loop
-  createEffect(async () => {
-    const et = (eventType() || 'TACK').trim() || 'TACK';
-    const sourcesReady = sourcesStore.isReady();
-    const sources = sourcesStore.sources();
-    const date = selectedDate();
-    
-    if (sourcesReady && sources && sources.length > 0 && date && date.trim() !== '' && et) {
-      await untrack(() => fetchTableData());
     }
   });
 
@@ -954,18 +960,48 @@ export default function FleetManeuversPage() {
     }
   });
 
-  // React to selectedSources changes - refetch when sources change; untrack(fetchTableData) to prevent loop
-  createEffect(async () => {
-    const sourcesReady = sourcesStore.isReady();
-    const sources = sourcesStore.sources();
-    const date = selectedDate();
-    const selected = selectedSources();
-    
-    const et = (eventType() || 'TACK').trim() || 'TACK';
-    if (sourcesReady && sources && sources.length > 0 && date && date.trim() !== '' && et && selected.size > 0) {
-      await untrack(() => fetchTableData());
-    }
-  });
+  // One debounced table refetch for: date, maneuver type, selected sources, training/racing. Waits until onMount
+  // applied project filters so we do not race effects against loadFiltersFromPersistentSettings / getProjectManeuverFilters.
+  createEffect(
+    on(
+      () => {
+        const sources = sourcesStore.sources() ?? [];
+        const allIds = sources
+          .map((s: { source_id?: number }) => s.source_id)
+          .filter((id: unknown): id is number => typeof id === 'number' && id > 0)
+          .sort((a, b) => a - b);
+        const sel = selectedSources();
+        const isAll =
+          sel.size === 0 ||
+          (allIds.length > 0 &&
+            sel.size === allIds.length &&
+            allIds.every((id) => sel.has(id)));
+        const selKey = isAll ? '__ALL__' : [...sel].sort((a, b) => a - b).join(',');
+
+        return {
+          mount: fleetMountComplete(),
+          et: (eventType() || 'TACK').trim() || 'TACK',
+          date: (selectedDate() || '').trim(),
+          ready: sourcesStore.isReady(),
+          nsrc: sources.length,
+          selKey,
+          tr: raceOptions().length === 0 ? null : maneuverTrainingRacing(),
+        };
+      },
+      (cur, prev) => {
+        if (!cur.mount) return;
+        if (!cur.ready || cur.nsrc === 0 || !cur.date || !cur.et) return;
+
+        const payload = { et: cur.et, date: cur.date, selKey: cur.selKey, tr: cur.tr };
+        const prevPayload =
+          prev && prev.mount ? { et: prev.et, date: prev.date, selKey: prev.selKey, tr: prev.tr } : null;
+        if (prevPayload && JSON.stringify(payload) === JSON.stringify(prevPayload)) return;
+
+        scheduleFleetTableFetch();
+      },
+      { defer: true }
+    )
+  );
 
   // React to cut events - refilter when cut state changes
   createEffect(on([isCut], () => {
@@ -981,62 +1017,38 @@ export default function FleetManeuversPage() {
     }
   }));
 
-  // React to training/racing filter - refetch so API applies TRAINING_RACING in SQL, or shows all when null (All)
-  createEffect(
-    on(
-      () => (raceOptions().length === 0 ? null : maneuverTrainingRacing()),
-      (tr) => {
-        const ready = untrack(() => sourcesStore.isReady() && sourcesStore.sources()?.length && selectedDate() && ((eventType() || 'TACK').trim() || 'TACK'));
-        if (ready) {
-          untrack(() => fetchTableData());
-          untrack(() => filterData());
-        }
-      },
-      { defer: true }
-    )
-  );
+  // Training/racing is included in the unified fleet table fetch effect (tr in payload).
 
-  // React to view changes - update container heights when view changes
+  // React to view and data: map/table layout is inside Show when filtered maneuvers exist, so we must
+  // re-measure after async fetch (dataset Maneuvers runs fetch before first updateContainerHeights in onMount).
   createEffect(() => {
-    // Access view() to trigger effect
     view();
-    // Use requestAnimationFrame to batch layout reads/writes and avoid forced reflow
-    requestAnimationFrame(() => {
+    filtered().length;
+    maneuvers().length;
+    setTimeout(() => {
       const headerHeight = 58;
-      
-      // Batch all layout reads before any writes
-      const windowHeight = window.innerHeight;
+      const additionalSpacingForMap = 100;
+      const mapHeight = window.innerHeight - headerHeight - additionalSpacingForMap;
+      const additionalSpacingForTable = 80;
+      const tableHeight = window.innerHeight - headerHeight - additionalSpacingForTable;
       const mapLayout = document.querySelector('.maneuver-map-layout') as HTMLElement | null;
       const tableWrapper = document.getElementById('datatable-big-wrapper') as HTMLElement | null;
-      
-      // For MAP view: need extra spacing for padding, button area, and margins
-      const additionalSpacingForMap = 100;
-      const mapHeight = windowHeight - headerHeight - additionalSpacingForMap;
-      
-      // For TABLE view: account for header, padding, and button area
-      const additionalSpacingForTable = 80; // Account for padding-top and button area
-      const tableHeight = windowHeight - headerHeight - additionalSpacingForTable;
-      
-      // Batch all style writes together
       if (mapLayout) {
         mapLayout.style.height = `${mapHeight}px`;
         mapLayout.style.minHeight = `${mapHeight}px`;
       }
-      
       if (tableWrapper) {
         tableWrapper.style.height = `${tableHeight}px`;
       }
-      
-      // Sync table height with map SVG height for MAP view
-      // Use another requestAnimationFrame for the nested operation to ensure map is rendered
       if (view() === 'MAP') {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            syncTableHeightWithMap();
-          });
-        });
+        setTimeout(() => {
+          syncTableHeightWithMap();
+        }, 200);
       }
-    });
+      if (view() === 'VIDEO') {
+        setTimeout(() => syncTableHeightWithVideo(), 200);
+      }
+    }, 0);
   });
 
   // When VIDEO view and we have data + date, ensure media availability is preloaded then re-filter
@@ -1157,6 +1169,19 @@ export default function FleetManeuversPage() {
     }
   };
 
+  const syncTableHeightWithVideo = (): void => {
+    if (view() !== 'VIDEO') return;
+    const layout = document.querySelector('.maneuver-map-layout') as HTMLElement | null;
+    const tableArea = document.getElementById('table-area') as HTMLElement | null;
+    if (layout && tableArea) {
+      const layoutHeight = layout.offsetHeight || layout.clientHeight;
+      if (layoutHeight > 0) {
+        tableArea.style.height = `${layoutHeight}px`;
+        tableArea.style.minHeight = `${layoutHeight}px`;
+      }
+    }
+  };
+
   // Function to update container heights based on actual viewport (full screen)
   const updateContainerHeights = (): void => {
     // Get the actual available height from the viewport (full screen)
@@ -1184,10 +1209,10 @@ export default function FleetManeuversPage() {
       tableWrapper.style.height = `${tableHeight}px`;
     }
     
-    // Sync table height with map SVG height for MAP view
     setTimeout(() => {
-      syncTableHeightWithMap();
-    }, 100); // Small delay to ensure map is rendered
+      if (view() === 'MAP') syncTableHeightWithMap();
+      if (view() === 'VIDEO') syncTableHeightWithVideo();
+    }, 100);
   };
   
   // Function to observe sidebar for collapse/expand changes
@@ -1348,12 +1373,9 @@ export default function FleetManeuversPage() {
     }
     // Fetch timeseries description options
     await fetchTimeseriesOptions();
-    
-    // Only fetch if date is available - otherwise let createEffect handle it when date becomes available
-    const date = selectedDate();
-    if (date && date.trim() !== '') {
-      await fetchTableData();
-    }
+
+    // Allow the single unified createEffect to run (debounced); avoids overlapping fetches with effects during this async onMount.
+    setFleetMountComplete(true);
     
     // Set up dynamic scaling for media-container using the global utility
     const cleanupScaling = setupMediaContainerScaling({
@@ -1450,6 +1472,10 @@ export default function FleetManeuversPage() {
 
   // Cleanup abort controllers and other resources on component unmount
   onCleanup(() => {
+    if (fleetTableFetchDebounce) {
+      clearTimeout(fleetTableFetchDebounce);
+      fleetTableFetchDebounce = null;
+    }
     // Abort any pending table data requests
     if (tableDataController) {
       tableDataController.abort();

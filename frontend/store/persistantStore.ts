@@ -832,13 +832,42 @@ export const persistantStore = createRoot<PersistentStore>(() => {
             debug('[PersistentStore] Preserving current page from localStorage on load:', currentPage);
           }
         }
+        const projectList = projects();
+        const sessionProjectId = Number(selectedProjectId());
+        const pidInProjectList = (list: any[], pid: number): boolean => {
+          if (!Array.isArray(list) || !Number.isFinite(pid) || pid <= 0) return false;
+          return list.some((p) => Number(p?.project_id) === pid);
+        };
+
         if (settings.selectedProjectId !== undefined) {
-          setSelectedProjectIdBase(settings.selectedProjectId);
+          const apiProjectId = Number(settings.selectedProjectId);
+          if (apiProjectId > 0 && pidInProjectList(projectList, apiProjectId)) {
+            setSelectedProjectIdBase(apiProjectId);
+            debug('[PersistentStore] Restored selectedProjectId from API:', apiProjectId);
+          } else if (apiProjectId > 0 && projectList.length > 0) {
+            const firstId = projectList[0]?.project_id;
+            if (firstId && firstId > 0) {
+              warn('[PersistentStore] API selectedProjectId not in current project list; using first project:', firstId);
+              setSelectedProjectIdBase(firstId);
+            }
+          } else {
+            // API stored 0 or invalid — do not clear a valid selection Sidebar/init just set (same idea as preserving datasetId)
+            if (sessionProjectId > 0 && (projectList.length === 0 || pidInProjectList(projectList, sessionProjectId))) {
+              debug('[PersistentStore] Preserving selectedProjectId from session; API had none/0:', sessionProjectId);
+            } else if (projectList.length > 0) {
+              const firstProjectId = projectList[0]?.project_id;
+              if (firstProjectId && firstProjectId > 0) {
+                debug('[PersistentStore] No valid selectedProjectId from API; selecting first project:', firstProjectId);
+                setSelectedProjectIdBase(firstProjectId);
+              }
+            } else {
+              setSelectedProjectIdBase(0);
+            }
+          }
         } else {
           // No projectId in settings - select first project if available
-          const currentProjects = projects();
-          if (currentProjects && currentProjects.length > 0) {
-            const firstProjectId = currentProjects[0]?.project_id;
+          if (projectList && projectList.length > 0) {
+            const firstProjectId = projectList[0]?.project_id;
             if (firstProjectId && firstProjectId > 0) {
               debug('[PersistentStore] No projectId in settings, selecting first project:', firstProjectId);
               setSelectedProjectIdBase(firstProjectId);

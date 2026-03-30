@@ -329,11 +329,8 @@ export default function ManeuversPage() {
 
         setManeuvers(data)
 
-        const eventIds = data.map(item => item.event_id);
-        setFiltered(eventIds)
-        setSelection(eventIds)
-
-        // Pass data directly to filterData to avoid race condition with store updates
+        // Pass data directly to filterData to avoid race condition with store updates.
+        // Do not setFiltered here — filterData applies TWS/grade/state filters and sets filtered once (avoids map fetching full list then filtered list).
         filterData(data)
       } else {
         // Handle API error response - reset to empty state only if this response is still current
@@ -415,12 +412,25 @@ export default function ManeuversPage() {
     setTriggerUpdate(true)
   };
 
+  const sortedEventIdsEqual = (a: unknown[], b: number[]): boolean => {
+    if (!Array.isArray(a) || a.length !== b.length) return false;
+    const toId = (x: unknown) => (typeof x === 'number' ? x : (x as { event_id?: number })?.event_id);
+    const numsA = a.map(toId).filter((id): id is number => typeof id === 'number' && id > 0).sort((x, y) => x - y);
+    const numsB = [...b].filter((id): id is number => typeof id === 'number' && id > 0).sort((x, y) => x - y);
+    if (numsA.length !== numsB.length) return false;
+    return numsA.every((v, i) => v === numsB[i]);
+  };
+
   const filterData = (dataOverride?: any[]) => {
     // Use provided data or read from store - this avoids race conditions
     const maneuversData = dataOverride ?? maneuvers();
     if (!maneuversData || !Array.isArray(maneuversData) || maneuversData.length === 0) {
+      const hadFiltered = filtered().length > 0;
       setFiltered([]);
       setTableData([]);
+      if (hadFiltered) {
+        setTriggerUpdate(true);
+      }
       return;
     }
 
@@ -578,6 +588,8 @@ export default function ManeuversPage() {
     });
 
     const eventIds = filteredData.map(item => item.event_id);
+    const prevFiltered = filtered();
+    const sameEventSet = sortedEventIdsEqual(prevFiltered, eventIds);
 
     setFiltered(eventIds);
     setTableData(filteredData);
@@ -587,7 +599,9 @@ export default function ManeuversPage() {
       setSelection(eventIds as any);
     }
 
-    setTriggerUpdate(true)
+    if (!sameEventSet) {
+      setTriggerUpdate(true);
+    }
   }
 
   createEffect(() => {
@@ -933,14 +947,18 @@ export default function ManeuversPage() {
     }
   };
 
-  // React to eventType changes - untrack(fetchTableData) so we don't track maneuverTrainingRacing etc. (prevents loop)
-  // Use normalized value so we still fetch when eventType is empty (treat as TACK)
-  createEffect(async () => {
-    const et = (eventType() || 'TACK').trim() || 'TACK';
-    if (et) {
-      await untrack(() => fetchTableData());
-    }
-  });
+  // Refetch when maneuver type changes after initial load. Initial fetch runs from onMount after project/persistent filters are applied;
+  // an immediate createEffect here races onMount and causes duplicate table/map work and visible flashing.
+  createEffect(
+    on(
+      () => (eventType() || 'TACK').trim() || 'TACK',
+      (_et, prevEt) => {
+        if (prevEt === undefined) return;
+        void untrack(() => fetchTableData());
+      },
+      { defer: true }
+    )
+  );
 
   // React to cut events - refilter when cut state changes
   createEffect(on([isCut], () => {
@@ -1044,10 +1062,11 @@ export default function ManeuversPage() {
     }
   });
 
-  // React to view changes - update container heights when view changes
+  // React to view and data so layout stays correct when filtered list updates (aligned with FleetManeuvers).
   createEffect(() => {
-    // Access view() to trigger effect
     view();
+    filtered().length;
+    maneuvers().length;
     // Use setTimeout to ensure DOM has updated
     setTimeout(() => {
       const headerHeight = 58;

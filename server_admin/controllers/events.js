@@ -6,31 +6,31 @@ const { logMessage } = require('../middleware/logging');
 const { log } = require('../../shared');
 
 exports.updateEventTags = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'updateEventTags'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'updateEventTags' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null), true;
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null), true;
     }
-  
+
     try {
-        const { class_name, project_id, events, event_types, key, value} = req.body;
-    
+        const { class_name, project_id, events, event_types, key, value } = req.body;
+
         // Validate inputs
         if (!events || !Array.isArray(events) || events.length === 0) {
             return sendResponse(res, info, 400, false, 'events must be a non-empty array', null, true);
         }
-        
+
         if (!event_types || !Array.isArray(event_types) || event_types.length === 0) {
             return sendResponse(res, info, 400, false, 'event_types must be a non-empty array', null, true);
         }
-        
+
         if (!key) {
             return sendResponse(res, info, 400, false, 'key is required', null, true);
         }
-    
+
         let result = await check_permissions(req, 'write', project_id)
-    
+
         if (!result) {
             return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
         }
@@ -69,7 +69,7 @@ exports.updateEventTags = async (req, res) => {
                                           AND dataset_id = $3
                                           ORDER BY start_time DESC
                                           LIMIT 1`;
-            
+
             const matchingEvent = await db.GetRow(findMatchingEventSql, [event_types, midTime.toISOString(), event.dataset_id]);
 
             if (matchingEvent) {
@@ -532,8 +532,8 @@ exports.syncDatasetEvents = async (req, res) => {
                 // Name only from CONFIGURATION event or project config — never from existing row (avoids propagating old name onto TACK/PHASE/BIN 10)
                 const canonicalName = (datasetConfigName !== 'NA') ? datasetConfigName
                     : (datasetConfigObject?.Name != null && String(datasetConfigObject.Name).trim() !== '') ? String(datasetConfigObject.Name).trim()
-                    : (datasetConfigObject?.name != null && String(datasetConfigObject.name).trim() !== '') ? String(datasetConfigObject.name).trim()
-                    : 'NA';
+                        : (datasetConfigObject?.name != null && String(datasetConfigObject.name).trim() !== '') ? String(datasetConfigObject.name).trim()
+                            : 'NA';
                 const nameForConfig = canonicalName;
                 const staticName = canonicalName !== 'NA' ? canonicalName : '';
                 const staticWing = (datasetConfigObject?.Wing_code != null && String(datasetConfigObject.Wing_code) !== '') ? String(datasetConfigObject.Wing_code) : (existingConf.Wing_code != null ? String(existingConf.Wing_code) : '');
@@ -600,12 +600,12 @@ exports.syncDatasetEvents = async (req, res) => {
 // Does NOT modify the timezone - preserves whatever timezone is in the input
 function preserveTimezone(timestampInput) {
     if (!timestampInput) return timestampInput;
-    
+
     // If it's already a Date object, convert to ISO string (which includes UTC 'Z')
     if (timestampInput instanceof Date) {
         return timestampInput.toISOString();
     }
-    
+
     // For strings, preserve them as-is - don't modify timezone information
     // The timezone should be explicitly specified in the input (Z, +00:00, +01:00, etc.)
     return String(timestampInput).trim();
@@ -622,18 +622,18 @@ function ensureExplicitTimezone(timestampStr) {
 }
 
 exports.addEvent = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEvent'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEvent' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null), true;
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null), true;
     }
-  
+
     try {
         const { class_name, project_id, dataset_id, event_type, start_time, end_time, tags } = req.body;
-    
+
         let result = await check_permissions(req, 'write', project_id)
-    
+
         if (result) {
             // Preserve timezone information from input - don't modify it
             // If input has timezone (Z, +00:00, +01:00, etc.), it will be preserved
@@ -704,86 +704,86 @@ exports.addEvent = async (req, res) => {
         return sendResponse(res, info, 500, false, error.message, null, true);
     }
 };
-  
+
 exports.addEvents = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEvents'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEvents' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
-  
+
     try {
-      const { class_name, project_id, dataset_id, events } = req.body;
-  
-      let result = await check_permissions(req, 'write', project_id)
-  
-      if (result) {
-        const singletonEventTypes = ['DATASET'];
-        let status = true;
-        for (let i = 0; i < events.length; i++) {
-            const event = events[i];
+        const { class_name, project_id, dataset_id, events } = req.body;
 
-            // Preserve timezone information from input - don't modify it
-            const startTimeStr = preserveTimezone(event.start_time);
-            const endTimeStr = preserveTimezone(event.end_time);
-            const startWithTz = ensureExplicitTimezone(startTimeStr);
-            const endWithTz = ensureExplicitTimezone(endTimeStr);
+        let result = await check_permissions(req, 'write', project_id)
 
-            const startTime = new Date(startWithTz);
-            const endTime = new Date(endWithTz);
-            const duration = (endTime - startTime) / 1000;
+        if (result) {
+            const singletonEventTypes = ['DATASET'];
+            let status = true;
+            for (let i = 0; i < events.length; i++) {
+                const event = events[i];
 
-            let startTimeForDB = startWithTz.replace('Z', '+00:00');
-            let endTimeForDB = endWithTz.replace('Z', '+00:00');
+                // Preserve timezone information from input - don't modify it
+                const startTimeStr = preserveTimezone(event.start_time);
+                const endTimeStr = preserveTimezone(event.end_time);
+                const startWithTz = ensureExplicitTimezone(startTimeStr);
+                const endWithTz = ensureExplicitTimezone(endTimeStr);
 
-            const eventTypeNorm = (event.event_type && String(event.event_type).toUpperCase()) || '';
-            let didUpsert = false;
+                const startTime = new Date(startWithTz);
+                const endTime = new Date(endWithTz);
+                const duration = (endTime - startTime) / 1000;
 
-            if (singletonEventTypes.includes(eventTypeNorm)) {
-                const existingRow = await db.GetValue(
-                    `SELECT event_id "value" FROM ${class_name}.dataset_events WHERE dataset_id = $1 AND LOWER(event_type) = LOWER($2) ORDER BY event_id DESC LIMIT 1`,
-                    [dataset_id, event.event_type]
-                );
-                if (existingRow != null) {
-                    const eventIdForUpdate = typeof existingRow === 'number' ? existingRow : parseInt(existingRow, 10);
-                    const updateSql = `UPDATE ${class_name}.dataset_events SET start_time = $1::timestamptz, end_time = $2::timestamptz, duration = $3, tags = $4::jsonb WHERE event_id = $5`;
-                    const updateResult = await db.ExecuteCommand(updateSql, [startTimeForDB, endTimeForDB, duration, event.tags || '{}', eventIdForUpdate]);
-                    didUpsert = !!updateResult;
+                let startTimeForDB = startWithTz.replace('Z', '+00:00');
+                let endTimeForDB = endWithTz.replace('Z', '+00:00');
+
+                const eventTypeNorm = (event.event_type && String(event.event_type).toUpperCase()) || '';
+                let didUpsert = false;
+
+                if (singletonEventTypes.includes(eventTypeNorm)) {
+                    const existingRow = await db.GetValue(
+                        `SELECT event_id "value" FROM ${class_name}.dataset_events WHERE dataset_id = $1 AND LOWER(event_type) = LOWER($2) ORDER BY event_id DESC LIMIT 1`,
+                        [dataset_id, event.event_type]
+                    );
+                    if (existingRow != null) {
+                        const eventIdForUpdate = typeof existingRow === 'number' ? existingRow : parseInt(existingRow, 10);
+                        const updateSql = `UPDATE ${class_name}.dataset_events SET start_time = $1::timestamptz, end_time = $2::timestamptz, duration = $3, tags = $4::jsonb WHERE event_id = $5`;
+                        const updateResult = await db.ExecuteCommand(updateSql, [startTimeForDB, endTimeForDB, duration, event.tags || '{}', eventIdForUpdate]);
+                        didUpsert = !!updateResult;
+                    }
+                }
+
+                if (!didUpsert) {
+                    const sql = `INSERT INTO ${class_name}.dataset_events (dataset_id, event_type, start_time, end_time, duration, tags) VALUES ($1, $2, $3::timestamptz, $4::timestamptz, $5, $6::jsonb)`;
+                    const params = [dataset_id, event.event_type, startTimeForDB, endTimeForDB, duration, event.tags];
+                    const result = await db.ExecuteCommand(sql, params);
+                    if (!result) {
+                        status = false;
+                        break;
+                    }
                 }
             }
 
-            if (!didUpsert) {
-                const sql = `INSERT INTO ${class_name}.dataset_events (dataset_id, event_type, start_time, end_time, duration, tags) VALUES ($1, $2, $3::timestamptz, $4::timestamptz, $5, $6::jsonb)`;
-                const params = [dataset_id, event.event_type, startTimeForDB, endTimeForDB, duration, event.tags];
-                const result = await db.ExecuteCommand(sql, params);
-                if (!result) {
-                    status = false;
-                    break;
-                }
+            if (status) {
+                return sendResponse(res, info, 200, true, "Events inserted successfully!", true, false);
+            } else {
+                log(query);
+                return sendResponse(res, info, 500, false, "Unable to insert events...", null, true);
             }
-        }
-  
-        if (status) {
-            return sendResponse(res, info, 200, true, "Events inserted successfully!", true, false);
         } else {
-            log(query);
-            return sendResponse(res, info, 500, false, "Unable to insert events...", null, true);
+            return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
         }
-      } else {
-        return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
-      }
     } catch (error) {
         return sendResponse(res, info, 500, false, error.message, null, true);
     }
 };
 
 exports.addEventAggregates = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEventAggregates'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEventAggregates' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
 
     let query = '';
@@ -821,15 +821,15 @@ exports.addEventAggregates = async (req, res) => {
                     var sqlValue = isNull ? 'NULL' : "'" + String(value).replace(/'/g, "''") + "'"
 
                     if (keys === undefined) {
-                        keys = '@#'+key+'@#'
+                        keys = '@#' + key + '@#'
                         values = sqlValue
                     } else {
-                        keys += ', @#'+key+'@#'
+                        keys += ', @#' + key + '@#'
                         values += ', ' + sqlValue
                     }
                 }
             }
-            
+
             if (table == 'events_aggregate') {
                 query += db.formatSql(`INSERT INTO ${class_name}.${table} (event_id, agr_type, ${keys}) VALUES (${row.event_id},'${row.agr_type}',${values}); `)
             } else {
@@ -854,14 +854,14 @@ exports.addEventAggregates = async (req, res) => {
         } else {
             return sendResponse(res, info, 500, false, `${action} failed: No valid data to insert`, null, true);
         }
-	} catch (error) {
+    } catch (error) {
         return sendResponse(res, info, 500, false, error.message, null, true);
-	}
+    }
 };
 
 //ADD EVENT JSON
 exports.addEventObject = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEventObject'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEventObject' }
 
     // Set a longer timeout for this endpoint (5 minutes for large JSON inserts)
     req.setTimeout(300000); // 5 minutes in milliseconds
@@ -872,7 +872,7 @@ exports.addEventObject = async (req, res) => {
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
 
     try {
@@ -930,11 +930,11 @@ exports.addEventObject = async (req, res) => {
 
 //ADD EVENT ROW - SINGLE RECORD
 exports.addEventRow = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEventRow'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEventRow' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null);
     }
 
     try {
@@ -973,16 +973,16 @@ exports.addEventRow = async (req, res) => {
         if (existingData === null) {
             var keys = undefined
             var values = undefined
-            for(var key in json_obj) {
+            for (var key in json_obj) {
                 if (!excludedColumns.includes(key)) {
                     var value = json_obj[key]
 
                     if (keys === undefined) {
-                        keys = '@#'+key+'@#'
-                        values = "'"+value+"'"
+                        keys = '@#' + key + '@#'
+                        values = "'" + value + "'"
                     } else {
-                        keys += ', @#'+key+'@#'
-                        values += ", '"+value+"'"
+                        keys += ', @#' + key + '@#'
+                        values += ", '" + value + "'"
                     }
                 }
             }
@@ -998,17 +998,17 @@ exports.addEventRow = async (req, res) => {
             var string = undefined
             var keys = undefined
             var values = undefined
-            for(var key in json_obj) {
+            for (var key in json_obj) {
                 if (!excludedColumns.includes(key)) {
                     var value = json_obj[key]
 
-                    key_str = '@#'+key+'@#'
-                    value_str = "'"+value+"'"
-    
+                    key_str = '@#' + key + '@#'
+                    value_str = "'" + value + "'"
+
                     if (string === undefined) {
-                        string = key_str + " = " + value_str 
+                        string = key_str + " = " + value_str
                     } else {
-                        string += ", " + key_str + " = " + value_str 
+                        string += ", " + key_str + " = " + value_str
                     }
                 }
             }
@@ -1033,18 +1033,18 @@ exports.addEventRow = async (req, res) => {
         } else {
             return sendResponse(res, info, 500, false, `${action} failed`, null, true);
         }
-	} catch (error) {
+    } catch (error) {
         return sendResponse(res, info, 500, false, error.message, null, true);
-	}
+    }
 };
 
 //ADD EVENT ROWS - BATCH
 exports.addEventRows = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEventRows'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'addEventRows' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
 
     let query = '';
@@ -1091,20 +1091,20 @@ exports.addEventRows = async (req, res) => {
 
                 var keys = undefined
                 var values = undefined
-                for(var key in row) {
+                for (var key in row) {
                     if (!excludedColumns.includes(key)) {
                         var value = row[key]
 
                         if (keys === undefined) {
-                            keys = '@#'+key+'@#'
-                            values = "'"+value+"'"
+                            keys = '@#' + key + '@#'
+                            values = "'" + value + "'"
                         } else {
-                            keys += ', @#'+key+'@#'
-                            values += ", '"+value+"'"
+                            keys += ', @#' + key + '@#'
+                            values += ", '" + value + "'"
                         }
                     }
                 }
-                
+
                 if (table == 'events_aggregate') {
                     query += db.formatSql(`INSERT INTO ${class_name}.${table} (event_id, agr_type, ${keys}) VALUES (${event_id},${agr_type},${values}); `)
                 } else {
@@ -1117,21 +1117,21 @@ exports.addEventRows = async (req, res) => {
 
                 var keys = undefined
                 var values = undefined
-                for(var key in row) {
+                for (var key in row) {
                     if (!excludedColumns.includes(key)) {
                         var value = row[key]
 
-                        key_str = '@#'+key+'@#'
-                        value_str = "'"+value+"'"
-        
+                        key_str = '@#' + key + '@#'
+                        value_str = "'" + value + "'"
+
                         if (string === undefined) {
-                            string = key_str + " = " + value_str 
+                            string = key_str + " = " + value_str
                         } else {
-                            string += ", " + key_str + " = " + value_str 
+                            string += ", " + key_str + " = " + value_str
                         }
                     }
                 }
-                
+
                 if (table == 'events_aggregate') {
                     query += db.formatSql(`UPDATE ${class_name}.${table} SET ${string} WHERE event_id = ${event_id} and agr_type = '${agr_type}'; `);
                 } else if (table == 'maneuver_stats') {
@@ -1146,7 +1146,7 @@ exports.addEventRows = async (req, res) => {
         if (query.length > 0) {
             const success = await db.ExecuteCommand(query, []);
             const action = existingData === null ? 'insert' : 'update';
-    
+
             if (success) {
                 return sendResponse(res, info, 200, true, `${action} successful`, false);
             } else {
@@ -1156,18 +1156,18 @@ exports.addEventRows = async (req, res) => {
         } else {
             return sendResponse(res, info, 500, false, `${action} failed: Cannot batch update cloud..`, null, true);
         }
-	} catch (error) {
+    } catch (error) {
         return sendResponse(res, info, 500, false, error.message, null, true);
-	}
+    }
 };
 
 //UPDATE EVENT ROW
 exports.updateEventRow = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'updateEventRow'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'updateEventRow' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
 
     try {
@@ -1191,16 +1191,16 @@ exports.updateEventRow = async (req, res) => {
             return sendResponse(res, info, 400, false, 'Column not allowed for updates', null, true);
         }
 
-		let query;
-		let params;
+        let query;
+        let params;
 
-		if (table == 'events_aggregate') {
-			query = db.formatSql(`UPDATE ${class_name}.${table} SET @#${column}@# = ${value} WHERE event_id = $1 AND agr_type = $2`);
-			params = [event_id, agr_type];
-		} else {
-			query = db.formatSql(`UPDATE ${class_name}.${table} SET @#${column}@# = ${value} WHERE event_id = $1`);
-			params = [event_id];
-		}
+        if (table == 'events_aggregate') {
+            query = db.formatSql(`UPDATE ${class_name}.${table} SET @#${column}@# = ${value} WHERE event_id = $1 AND agr_type = $2`);
+            params = [event_id, agr_type];
+        } else {
+            query = db.formatSql(`UPDATE ${class_name}.${table} SET @#${column}@# = ${value} WHERE event_id = $1`);
+            params = [event_id];
+        }
 
         // Execute query
         const success = await db.ExecuteCommand(query, params);
@@ -1210,18 +1210,18 @@ exports.updateEventRow = async (req, res) => {
         } else {
             return sendResponse(res, info, 500, false, `Update failed`, null, true);
         }
-	} catch (error) {
+    } catch (error) {
         return sendResponse(res, info, 500, false, error.message, null, true);
-	}
+    }
 };
 
 //UPDATE EVENT ROW - BATCH
 exports.updateEventRows = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'updateEventRows'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'updateEventRows' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
 
     try {
@@ -1253,28 +1253,28 @@ exports.updateEventRows = async (req, res) => {
         for (i in jsonrows) {
             var row = jsonrows[i];
 
-            for(var key in row) {
+            for (var key in row) {
                 if (!excludedColumns.includes(key)) {
                     var value = row[key]
 
-                    key_str = '@#'+key+'@#'
-                    value_str = "'"+value+"'"
-    
+                    key_str = '@#' + key + '@#'
+                    value_str = "'" + value + "'"
+
                     if (string === undefined) {
-                        string = key_str + " = " + value_str 
+                        string = key_str + " = " + value_str
                     } else {
-                        string += ", " + key_str + " = " + value_str 
+                        string += ", " + key_str + " = " + value_str
                     }
                 }
             }
-            
+
             if (table == 'events_aggregate') {
                 query += db.formatSql(`UPDATE ${class_name}.${table} SET ${string} WHERE event_id = ${event_id} and agr_type = '${agr_type}'; `);
             } else {
                 query += db.formatSql(`UPDATE ${class_name}.${table} SET ${string} WHERE event_id = ${event_id}; `);
             }
         }
-        
+
         // Execute query
         const success = await db.ExecuteCommand(query, []);
 
@@ -1290,53 +1290,53 @@ exports.updateEventRows = async (req, res) => {
 };
 
 exports.removeEvents = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'removeEvents'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'removeEvents' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
-  
+
     try {
-      const { class_name, project_id, events } = req.body;
-  
-      let result = await check_permissions(req, 'write', project_id)
-  
-      if (result) {  
-        const sql = `DELETE FROM ${class_name}.dataset_events WHERE event_id = ANY($1::int[])`;
-        const params = [events]; 
-        
-        let result = await db.ExecuteCommand(sql, params);
+        const { class_name, project_id, events } = req.body;
+
+        let result = await check_permissions(req, 'write', project_id)
 
         if (result) {
-            return sendResponse(res, info, 200, true, "Events removed successfully!", true, false);
+            const sql = `DELETE FROM ${class_name}.dataset_events WHERE event_id = ANY($1::int[])`;
+            const params = [events];
+
+            let result = await db.ExecuteCommand(sql, params);
+
+            if (result) {
+                return sendResponse(res, info, 200, true, "Events removed successfully!", true, false);
+            } else {
+                return sendResponse(res, info, 204, false, "Events not removed", null, true);
+            }
         } else {
-            return sendResponse(res, info, 204, false, "Events not removed", null, true);
+            return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
         }
-      } else {
-        return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
-      }
     } catch (error) {
         return sendResponse(res, info, 500, false, error.message, null, true);
     }
 };
 
 exports.removeEventRows = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'removeEventRows'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'removeEventRows' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null);
     }
 
     try {
-		const { class_name, project_id, event_id, table } = req.body;
+        const { class_name, project_id, event_id, table } = req.body;
 
         // Check permissions
-		const hasPermission = await check_permissions(req, 'write', project_id);
-		if (!hasPermission) {
+        const hasPermission = await check_permissions(req, 'write', project_id);
+        if (!hasPermission) {
             return sendResponse(res, info, 400, false, 'Unauthorized', null, true);
-		}
+        }
 
         // Restrict table updates to specified tables
         const allowedTables = ['events_aggregate', 'events_cloud', 'maneuver_stats'];
@@ -1359,32 +1359,32 @@ exports.removeEventRows = async (req, res) => {
 };
 
 exports.removeEventsByType = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'removeEventsByType'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'removeEventsByType' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
-    
+
     try {
-      const { class_name, project_id, dataset_id, event_types } = req.body;
-  
-      let result = await check_permissions(req, 'write', project_id)
-  
-      if (result) {  
-        const sql = `DELETE FROM ${class_name}.dataset_events WHERE dataset_id = $1 and event_type = ANY($2::text[])`;
-        const params = [dataset_id, event_types]; 
-  
-        let result = await db.ExecuteCommand(sql, params);
-  
+        const { class_name, project_id, dataset_id, event_types } = req.body;
+
+        let result = await check_permissions(req, 'write', project_id)
+
         if (result) {
-            return sendResponse(res, info, 200, true, "Events removed successfully!", true, false);
+            const sql = `DELETE FROM ${class_name}.dataset_events WHERE dataset_id = $1 and event_type = ANY($2::text[])`;
+            const params = [dataset_id, event_types];
+
+            let result = await db.ExecuteCommand(sql, params);
+
+            if (result) {
+                return sendResponse(res, info, 200, true, "Events removed successfully!", true, false);
+            } else {
+                return sendResponse(res, info, 204, false, "Events not removed", null, true);
+            }
         } else {
-            return sendResponse(res, info, 204, false, "Events not removed", null, true);
+            return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
         }
-      } else {
-        return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
-      }
     } catch (error) {
         return sendResponse(res, info, 500, false, error.message, null, true);
     }
@@ -1392,11 +1392,11 @@ exports.removeEventsByType = async (req, res) => {
 
 //UPDATE MANEUVER LOSS VALUES
 exports.updateManeuverLossValues = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'updateManeuverLossValues'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'updateManeuverLossValues' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
 
     try {
@@ -1416,7 +1416,7 @@ exports.updateManeuverLossValues = async (req, res) => {
                          "Loss_turn_vmg" = $4, 
                          "Loss_build_vmg" = $5
                      WHERE event_id = $6`;
-        
+
         const params = [vmg_applied, loss_total_vmg, loss_inv_vmg, loss_turn_vmg, loss_build_vmg, event_id];
 
         const success = await db.ExecuteCommand(sql, params);

@@ -142,17 +142,39 @@ export async function getRaceAndLegOptions(params: GetRaceLegOptionsParams): Pro
       const whereParams: unknown[] = [String(projectId), startMs, endMs];
       const whereClause = whereConditions.join(' AND ');
 
-      result.races = await queryRacesFromHuniDB(db, eventsTable, whereClause, whereParams);
+      const racesFromDb = await queryRacesFromHuniDB(db, eventsTable, whereClause, whereParams);
       result.legs = await queryLegsFromHuniDB(db, eventsTable, whereClause, whereParams);
 
+      // Union with date/races API so the UI lists all races for the day. HuniDB may only
+      // contain events for a subset of races (sync lag / partial ingest); API is authoritative for the calendar day.
+      const raceKey = (r: RaceOption): string => (r === 'TRAINING' ? 'TRAINING' : `n:${Number(r)}`);
+      const merged = new Map<string, RaceOption>();
+      for (const r of racesFromDb) merged.set(raceKey(r), r);
+      try {
+        const apiRaces = await fetchRacesFromDateApi(className, projectId, dateStr);
+        for (const r of apiRaces) {
+          const k = raceKey(r);
+          if (!merged.has(k)) merged.set(k, r);
+        }
+        if (apiRaces.length > 0 && merged.size > racesFromDb.length) {
+          info('raceLegOptionsService: Day context – merged date/races API into HuniDB list', {
+            fromDb: racesFromDb.length,
+            fromApi: apiRaces.length,
+            merged: merged.size,
+          });
+        }
+      } catch (apiErr) {
+        debug('raceLegOptionsService: date/races API merge failed (day context)', apiErr);
+      }
+      result.races = [...merged.values()].sort(sortRaces);
       if (result.races.length === 0) {
         try {
           result.races = await fetchRacesFromDateApi(className, projectId, dateStr);
           if (result.races.length > 0) {
-            info('raceLegOptionsService: Day context – no races in HuniDB, used date/races API', { count: result.races.length });
+            info('raceLegOptionsService: Day context – no races after merge, used API only', { count: result.races.length });
           }
-        } catch (apiErr) {
-          debug('raceLegOptionsService: date/races API fallback failed', apiErr);
+        } catch (apiErr2) {
+          debug('raceLegOptionsService: date/races API fallback failed', apiErr2);
         }
       }
     } catch (err) {

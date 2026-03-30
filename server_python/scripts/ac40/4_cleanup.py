@@ -716,12 +716,13 @@ def sync_day_pages_from_events(api_token, class_name, project_id, date_norm):
             has_prestarts = True
             break
     if has_prestarts:
-        prestart_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": "PRESTART"}
+        # Must match gp50.pages.page_name (day/reports), e.g. "START SUMMARY" -> Prestart.tsx — not event_type "PRESTART"
+        prestart_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": "START SUMMARY"}
         prestart_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", prestart_payload)
         if prestart_res.get("success"):
-            u.log(api_token, "4_cleanup.py", "info", "Day page upserted", "page_name: PRESTART")
+            u.log(api_token, "4_cleanup.py", "info", "Day page upserted", "page_name: START SUMMARY (Prestart)")
         else:
-            u.log(api_token, "4_cleanup.py", "warning", "Day page PRESTART upsert failed", prestart_res.get("message", "unknown"))
+            u.log(api_token, "4_cleanup.py", "warning", "Day page START SUMMARY upsert failed", prestart_res.get("message", "unknown"))
 
     day_report_pages_to_sync = {"PERFORMANCE", "MANEUVERS"}
     found_day_reports = set()

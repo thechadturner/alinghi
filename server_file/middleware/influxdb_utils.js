@@ -885,7 +885,7 @@ async function getChannelValuesFromInfluxDB(
     .filter(name => name && name !== 'ts' && name !== 'Datetime');
 
   if (measurements.length === 0) {
-    warn('[influxdb_utils] No data measurements to query (only ts/Datetime in channel_list) - returning empty; influx_data.parquet will NOT be written', {
+    warn('[influxdb_utils] No data measurements to query (only ts/Datetime in channel_list) - returning empty; Influx tier parquet will NOT be written', {
       channel_list_names: channelList.map(ch => typeof ch === 'string' ? ch : (ch && (ch.name || ch.channel))),
       channel_count: channelList.length
     });
@@ -1795,20 +1795,42 @@ function inferSchemaFromMergedData(data) {
 }
 
 /**
- * Save InfluxDB data to parquet file.
- * influx_data.parquet must contain only Influx time-series: ts, Datetime, and measurement columns.
- * Metadata (Grade, State, Twa_deg, Race_number, Leg_number, Foiling_state) lives in other parquets
- * and is merged at read time via DuckDB.
- * Merges with existing influx_data.parquet file if it exists.
+ * Influx backfill parquet basename aligned with channel-values API resolution (one file per tier).
+ * @param {string|null|undefined} resolution - API body: null = RAW, '100ms' = 10 Hz, else 1 Hz (incl. undefined)
+ * @returns {string} e.g. influx_data_raw.parquet, influx_data_10hz.parquet, influx_data_1hz.parquet
+ */
+function influxParquetBasenameFromApiResolution(resolution) {
+  if (resolution === null) return 'influx_data_raw.parquet';
+  if (typeof resolution === 'string' && resolution.trim().toLowerCase() === '100ms') {
+    return 'influx_data_10hz.parquet';
+  }
+  return 'influx_data_1hz.parquet';
+}
+
+const INFLUX_TIER_PARQUET_BASENAMES_LOWER = new Set([
+  'influx_data.parquet',
+  'influx_data_raw.parquet',
+  'influx_data_10hz.parquet',
+  'influx_data_1hz.parquet',
+]);
+
+function isInfluxTierParquetBasename(name) {
+  return INFLUX_TIER_PARQUET_BASENAMES_LOWER.has(String(name || '').toLowerCase());
+}
+
+/**
+ * Save InfluxDB data to parquet file (tier-specific filename).
+ * Each tier merges only with the same file (no cross-resolution overwrite).
  *
  * @param {Array} data - Array of data objects from InfluxDB query
  * @param {string} projectId - Project ID
  * @param {string} className - Class name (will be lowercased)
  * @param {string} date - Date in YYYYMMDD format
  * @param {string} sourceName - Source name
+ * @param {string|null|undefined} apiResolution - channel-values resolution: null RAW, '100ms', else 1 Hz
  * @returns {Promise<string>} Path to saved parquet file
  */
-async function saveInfluxDataToParquet(data, projectId, className, date, sourceName) {
+async function saveInfluxDataToParquet(data, projectId, className, date, sourceName, apiResolution) {
   if (!data || data.length === 0) {
     warn('[saveInfluxDataToParquet] No data to save, skipping (caller will not get parquet file written)');
     return null;
@@ -1822,7 +1844,7 @@ async function saveInfluxDataToParquet(data, projectId, className, date, sourceN
     // Normalize class name to lowercase
     const classLower = String(className || '').toLowerCase();
     
-    // Build file path: DATA_DIRECTORY/System/{project_id}/{class_name}/{date}/{source_name}/influx_data.parquet
+    const basename = influxParquetBasenameFromApiResolution(apiResolution);
     const filePath = path.join(
       env.DATA_DIRECTORY,
       'System',
@@ -1830,7 +1852,7 @@ async function saveInfluxDataToParquet(data, projectId, className, date, sourceN
       classLower,
       date,
       sourceName,
-      'influx_data.parquet'
+      basename
     );
 
     // Ensure directory exists
@@ -1865,9 +1887,9 @@ async function saveInfluxDataToParquet(data, projectId, className, date, sourceN
       return null;
     }
 
-    // influx_data.parquet must contain only Influx time-series (ts, Datetime, measurement columns).
+    // Influx tier parquet: only time-series columns (ts, Datetime, measurements).
     // Strip metadata columns so they are never written; metadata lives in other parquets and is merged at read time via DuckDB.
-    // Config is not a timeseries channel and must not appear in influx_data.parquet.
+    // Config is not a timeseries channel and must not appear in Influx tier parquets.
     const METADATA_COLUMNS_EXCLUDE = ['Grade', 'State', 'Twa_deg', 'Race_number', 'Leg_number', 'Foiling_state', 'Config'];
     const excludeSet = new Set(METADATA_COLUMNS_EXCLUDE.map(n => n.toLowerCase()));
     const rowsToWrite = mergedData.map(row => {
@@ -1956,5 +1978,7 @@ module.exports = {
   getChannelsFromInfluxDBBothLevels,
   getChannelValuesFromInfluxDB,
   getChannelValuesFromInfluxDBWithFallback,
-  saveInfluxDataToParquet
+  saveInfluxDataToParquet,
+  influxParquetBasenameFromApiResolution,
+  isInfluxTierParquetBasename,
 };

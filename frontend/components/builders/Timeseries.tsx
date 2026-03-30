@@ -15,6 +15,16 @@ import BackButton from "../buttons/BackButton";
 import { getData, getTimezoneForDate, postData, deleteData, generateUniqueId } from "..\/..\/utils\/global";
 import { error as logError, log, warn } from "../../utils/console";
 import { isOwnerOfLoadedObject } from "../../utils/builderConstants";
+import {
+    normalizeLineType,
+    TIMESERIES_LINE_TYPES,
+    LINE_TYPE_DISPLAY_LABELS,
+    DEFAULT_TIMESERIES_LINE_TYPE,
+    TIMESERIES_DATA_RESAMPLE_OPTIONS,
+    DEFAULT_TIMESERIES_DATA_RESAMPLE,
+    type TimeseriesLineType,
+    type TimeseriesDataResample,
+} from "../../utils/timeseriesSeriesTransforms";
 
 /** Placeholder name for new charts; user must change it before saving. */
 const NEW_CHART_PLACEHOLDER_NAME = 'new chart';
@@ -129,10 +139,11 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
 
     // Add a new chart
     const addChart = () => {
-        const newChart = { 
+        const newChart = {
             unique_id: generateUniqueId(),
-            series: [] 
-        } 
+            series: [],
+            stackedArea: false,
+        };
         setChartObjects([...chartObjects, newChart]);
         setHasChanges(true);
     };
@@ -259,7 +270,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
             // Skip when user not authenticated
             if (!user() || !user().user_id) {
                 if (chartObjectName().trim().toLowerCase() === NEW_CHART_PLACEHOLDER_NAME) {
-                    setChartObjects([{ unique_id: generateUniqueId(), series: [] }]);
+                    setChartObjects([{ unique_id: generateUniqueId(), series: [], stackedArea: false }]);
                 } else {
                     setChartObjects([]);
                 }
@@ -270,7 +281,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
             const projectId = selectedProjectId();
             if (!className || projectId == null || projectId === 0) {
                 if (chartObjectName().trim().toLowerCase() === NEW_CHART_PLACEHOLDER_NAME) {
-                    setChartObjects([{ unique_id: generateUniqueId(), series: [] }]);
+                    setChartObjects([{ unique_id: generateUniqueId(), series: [], stackedArea: false }]);
                 }
                 setLoadedChartObjectName(null);
                 setIsOwnerOfLoadedChart(true);
@@ -288,12 +299,13 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                     // Ensure all charts have unique_id
                     const chartsWithIds = loadedCharts.map((chart: any) => ({
                         ...chart,
-                        unique_id: chart.unique_id || generateUniqueId()
+                        unique_id: chart.unique_id || generateUniqueId(),
+                        stackedArea: chart.stackedArea === true,
                     }));
                     setChartObjects(chartsWithIds.length > 0 ? chartsWithIds : []);
                     // When opening "new chart" with no saved data, start with one empty chart
                     if (chartsWithIds.length === 0 && chartObjectName().trim().toLowerCase() === NEW_CHART_PLACEHOLDER_NAME) {
-                        setChartObjects([{ unique_id: generateUniqueId(), series: [] }]);
+                        setChartObjects([{ unique_id: generateUniqueId(), series: [], stackedArea: false }]);
                         setLoadedChartObjectName(null);
                         setIsOwnerOfLoadedChart(true);
                     } else if (chartsWithIds.length > 0) {
@@ -326,7 +338,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                     }
                 } catch (parseError) {
                     if (chartObjectName().trim().toLowerCase() === NEW_CHART_PLACEHOLDER_NAME) {
-                        setChartObjects([{ unique_id: generateUniqueId(), series: [] }]);
+                        setChartObjects([{ unique_id: generateUniqueId(), series: [], stackedArea: false }]);
                     } else {
                         setChartObjects([]);
                     }
@@ -335,7 +347,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                 }
             } else {
                 if (chartObjectName().trim().toLowerCase() === NEW_CHART_PLACEHOLDER_NAME) {
-                    setChartObjects([{ unique_id: generateUniqueId(), series: [] }]);
+                    setChartObjects([{ unique_id: generateUniqueId(), series: [], stackedArea: false }]);
                 } else {
                     logError("Error loading charts...");
                     setChartObjects([]);
@@ -350,7 +362,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
             }
             logError("Error loading charts:", error.message);
             if (chartObjectName().trim().toLowerCase() === NEW_CHART_PLACEHOLDER_NAME) {
-                setChartObjects([{ unique_id: generateUniqueId(), series: [] }]);
+                setChartObjects([{ unique_id: generateUniqueId(), series: [], stackedArea: false }]);
             } else {
                 setChartObjects([]);
             }
@@ -654,22 +666,18 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                 const currentSeriesCount = chartObjects[editing.chartIndex]?.series?.length || 0;
                 const newSeries = remainingChannels.map((channel, index) => {
                     const defaultSeriesColor = d3.schemeCategory10[(currentSeriesCount + index) % 10];
-                    const series = {
+                    const base = {
                         xaxis: { name: "Datetime", type: "datetime" },
                         yaxis: { name: channel, type: "float" },
                         label: channel,
                         color: getColorForChannel(channel, defaultSeriesColor),
                         strokeWidth: 1,
                         strokeStyle: "solid",
+                        lineType: DEFAULT_TIMESERIES_LINE_TYPE,
                         data: [],
                     };
-                    
-                    // Add colorBySource default for fleet mode
-                    if (isFleet()) {
-                        series.colorBySource = "ALL";
-                    }
-                    
-                    return series;
+                    if (isFleet()) return { ...base, colorBySource: "ALL" };
+                    return { ...base, dataResample: DEFAULT_TIMESERIES_DATA_RESAMPLE };
                 });
                 
                 setChartObjects(editing.chartIndex, "series", (prevSeries) => [
@@ -687,22 +695,18 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
         if (channels.length > 0) {
             const newSeries = channels.map((channel, index) => {
                 const defaultSeriesColor = d3.schemeCategory10[(selectedSeries() + index) % 10];
-                const series = {
+                const base = {
                     xaxis: { name: "Datetime", type: "datetime" },
                     yaxis: { name: channel, type: "float" },
                     label: channel,
                     color: getColorForChannel(channel, defaultSeriesColor),
                     strokeWidth: 1,
                     strokeStyle: "solid",
+                    lineType: DEFAULT_TIMESERIES_LINE_TYPE,
                     data: [],
                 };
-                
-                // Add colorBySource default for fleet mode
-                if (isFleet()) {
-                    series.colorBySource = "ALL";
-                }
-                
-                return series;
+                if (isFleet()) return { ...base, colorBySource: "ALL" };
+                return { ...base, dataResample: DEFAULT_TIMESERIES_DATA_RESAMPLE };
             });
             setChartObjects(chartIndex, "series", (prevSeries) => [
                 ...prevSeries,
@@ -732,7 +736,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
         } catch (err) {
             logError('Timeseries builder: load failed', err);
             if (chartObjectName().trim().toLowerCase() === NEW_CHART_PLACEHOLDER_NAME) {
-                setChartObjects([{ unique_id: generateUniqueId(), series: [] }]);
+                setChartObjects([{ unique_id: generateUniqueId(), series: [], stackedArea: false }]);
             }
             setLoadedChartObjectName(null);
             setIsOwnerOfLoadedChart(true);
@@ -742,7 +746,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
     });
 
     return (
-        <div class="builder-page overflow-auto select-none">
+        <div class="builder-page builder-page-timeseries overflow-auto select-none">
             {loading() && <Loading />}
             <div class="mx-auto px-4 sm:px-6 lg:px-8 py-8 pb-16" style={{
                 "opacity": loading() ? 0 : 1, 
@@ -958,30 +962,66 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                                                 </div>
                                                 
                                                 <div class="overflow-x-auto">
-                                                    <table class="builder-table builder-table-timeseries min-w-full" style="table-layout: fixed; width: 100%;">
-                                                        <colgroup>
-                                                            <col style="width: 1.5rem;" />
-                                                            <col style="width: 24%;" />
-                                                            <col style="width: 24%;" />
-                                                            <col style="width: 10%;" />
-                                                            <Show when={isFleet()}>
-                                                                <col style="width: 12%;" />
-                                                            </Show>
-                                                            <col style="width: 12%;" />
-                                                            <col style="width: 16%;" />
-                                                            <col style="width: 8%;" />
-                                                        </colgroup>
+                                                    <table
+                                                        class={`builder-table builder-table-timeseries min-w-full ${isFleet() ? "builder-table-timeseries-fleet" : ""}`}
+                                                        style="table-layout: fixed; width: 100%;"
+                                                    >
+                                                        <Show
+                                                            when={isFleet()}
+                                                            fallback={
+                                                                <colgroup>
+                                                                    <col style="width: 1.5rem;" />
+                                                                    <col style="width: 19%;" />
+                                                                    <col style="width: 17%;" />
+                                                                    <col class="builder-timeseries-resample-col" />
+                                                                    <col style="width: 9%;" />
+                                                                    <col style="width: 10%;" />
+                                                                    <col style="width: 15%;" />
+                                                                    <col style="width: 12%;" />
+                                                                    <col style="width: 8%;" />
+                                                                </colgroup>
+                                                            }
+                                                        >
+                                                            <colgroup>
+                                                                <col style="width: 1.5rem;" />
+                                                                <col style="width: 18%;" />
+                                                                <col style="width: 18%;" />
+                                                                <col style="width: 9%;" />
+                                                                <col style="width: 9%;" />
+                                                                <col style="width: 10%;" />
+                                                                <col style="width: 15%;" />
+                                                                <col style="width: 13%;" />
+                                                                <col style="width: 8%;" />
+                                                            </colgroup>
+                                                        </Show>
                                                         <thead>
                                                             <tr>
                                                                 <th class="w-6"></th>
-                                                                <th style="width: 24%;">Y-Axis</th>
-                                                                <th style="width: 24%;">Label</th>
-                                                                <th style="width: 10%;">Color</th>
-                                                                <Show when={isFleet()}>
-                                                                    <th style="width: 12%;">Color By</th>
+                                                                <th style={{ width: isFleet() ? "18%" : "19%" }}>Y-Axis</th>
+                                                                <th style={{ width: isFleet() ? "18%" : "17%" }}>Label</th>
+                                                                <Show when={!isFleet()}>
+                                                                    <th class="builder-timeseries-resample-col px-2 py-2 text-left" title="DuckDB resampling for this series (RAW = native parquet rows)">
+                                                                        Resample
+                                                                    </th>
                                                                 </Show>
-                                                                <th style="width: 12%;">Line Thickness</th>
-                                                                <th style="width: 16%;">Line Style</th>
+                                                                <th style={{ width: isFleet() ? "9%" : "9%" }}>Color</th>
+                                                                <Show when={isFleet()}>
+                                                                    <th style="width: 9%;">Color By</th>
+                                                                </Show>
+                                                                <th style={{ width: isFleet() ? "10%" : "11%" }}>Line Thickness</th>
+                                                                <th
+                                                                    style={{ width: isFleet() ? "15%" : "16%" }}
+                                                                    title={
+                                                                        isFleet()
+                                                                            ? undefined
+                                                                            : "Includes stacked area (dataset explore only; stacks all series on this chart)."
+                                                                    }
+                                                                >
+                                                                    Line Style
+                                                                </th>
+                                                                <th style={{ width: "13%" }} title="Raw Value = raw channel; other choices transform the series before plotting.">
+                                                                    Line type
+                                                                </th>
                                                                 <th style="width: 8%;">Actions</th>
                                                             </tr>
                                                         </thead>
@@ -999,7 +1039,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                                                                         <td class="builder-drag-handle-cell px-2 py-1">
                                                                             <DragHandleIcon />
                                                                         </td>
-                                                                        <td class="px-3 py-1" style="width: 24%;">
+                                                                        <td class="px-3 py-1" style={{ width: isFleet() ? "18%" : "19%" }}>
                                                                             <input
                                                                                 type="text"
                                                                                 value={seriesItem?.yaxis?.name || ""}
@@ -1058,7 +1098,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                                                                                 title="Click to select channel"
                                                                             />
                                                                         </td>
-                                                                        <td class="px-3 py-1" style="width: 24%;">
+                                                                        <td class="px-3 py-1" style={{ width: isFleet() ? "18%" : "17%" }}>
                                                                             <input
                                                                                 type="text"
                                                                                 value={seriesItem?.label ?? seriesItem?.yaxis?.name ?? ""}
@@ -1075,7 +1115,29 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                                                                                 placeholder="Label"
                                                                             />
                                                                         </td>
-                                                                        <td class="px-2 py-1 text-center" style="width: 10%;">
+                                                                        <Show when={!isFleet()}>
+                                                                            <td class="builder-timeseries-resample-col px-2 py-1">
+                                                                                <select
+                                                                                    value={seriesItem?.dataResample ?? DEFAULT_TIMESERIES_DATA_RESAMPLE}
+                                                                                    onChange={(e) => {
+                                                                                        updateChartObjects(
+                                                                                            chartIndex(),
+                                                                                            "series",
+                                                                                            seriesIndex(),
+                                                                                            "dataResample",
+                                                                                            e.currentTarget.value as TimeseriesDataResample
+                                                                                        );
+                                                                                    }}
+                                                                                    class="builder-form-input w-full px-2 py-1 text-sm"
+                                                                                    title="Server resampling (DuckDB)"
+                                                                                >
+                                                                                    <For each={[...TIMESERIES_DATA_RESAMPLE_OPTIONS]}>
+                                                                                        {(opt) => <option value={opt}>{opt}</option>}
+                                                                                    </For>
+                                                                                </select>
+                                                                            </td>
+                                                                        </Show>
+                                                                        <td class="px-2 py-1 text-center" style={{ width: isFleet() ? "9%" : "9%" }}>
                                                                             <div class="flex justify-center">
                                                                                 <button
                                                                                     type="button"
@@ -1093,7 +1155,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                                                                             </div>
                                                                         </td>
                                                                         <Show when={isFleet()}>
-                                                                            <td class="px-2 py-1 text-center" style="width: 12%; min-width: 5rem;">
+                                                                            <td class="px-2 py-1 text-center" style="width: 9%; min-width: 4.5rem;">
                                                                                 <select
                                                                                     value={seriesItem?.colorBySource || "ALL"}
                                                                                     onChange={(e) => {
@@ -1117,7 +1179,7 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                                                                                 </select>
                                                                             </td>
                                                                         </Show>
-                                                                        <td class="px-2 py-1 text-center" style="width: 12%; min-width: 4rem;">
+                                                                        <td class="px-2 py-1 text-center" style={{ width: isFleet() ? "10%" : "11%", "min-width": "4rem" }}>
                                                                             <input
                                                                                 type="number"
                                                                                 min="0"
@@ -1139,20 +1201,36 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                                                                                 title="Line thickness (0-5)"
                                                                             />
                                                                         </td>
-                                                                        <td class="px-2 py-1 text-center" style="width: 16%; min-width: 6rem;">
+                                                                        <td class="px-2 py-1 text-center" style={{ width: isFleet() ? "15%" : "16%", "min-width": "7.5rem" }}>
                                                                             <select
-                                                                                value={seriesItem?.strokeStyle || "solid"}
+                                                                                value={
+                                                                                    !isFleet() && chart.stackedArea === true
+                                                                                        ? "stacked-area"
+                                                                                        : (seriesItem?.strokeStyle || "solid")
+                                                                                }
                                                                                 onChange={(e) => {
+                                                                                    const v = e.target.value;
+                                                                                    if (!isFleet() && v === "stacked-area") {
+                                                                                        updateChartObjects(chartIndex(), "stackedArea", true);
+                                                                                        return;
+                                                                                    }
+                                                                                    if (!isFleet() && chart.stackedArea === true) {
+                                                                                        updateChartObjects(chartIndex(), "stackedArea", false);
+                                                                                    }
                                                                                     updateChartObjects(
                                                                                         chartIndex(),
                                                                                         "series",
                                                                                         seriesIndex(),
                                                                                         "strokeStyle",
-                                                                                        e.target.value
+                                                                                        v
                                                                                     );
                                                                                 }}
                                                                                 class="builder-form-input w-full px-2 py-1 text-sm"
-                                                                                title="Line style"
+                                                                                title={
+                                                                                    isFleet()
+                                                                                        ? "Line style"
+                                                                                        : "Line style. Stacked area applies to the whole chart (explore time series only)."
+                                                                                }
                                                                             >
                                                                                 <option value="solid">Solid</option>
                                                                                 <option value="dashed">Dashed</option>
@@ -1160,6 +1238,32 @@ export default function TimeSeriesBuilder(props: TimeSeriesBuilderProps) {
                                                                                 <option value="bigdash-dash">Bigdash Dash</option>
                                                                                 <option value="dotted">Dotted</option>
                                                                                 <option value="dash-dot">Dash Dot</option>
+                                                                                <option value="filled-area">Filled area</option>
+                                                                                {!isFleet() ? (
+                                                                                    <option value="stacked-area">Stacked area</option>
+                                                                                ) : null}
+                                                                            </select>
+                                                                        </td>
+                                                                        <td class="px-2 py-1 text-center" style="width: 13%; min-width: 11rem;">
+                                                                            <select
+                                                                                value={normalizeLineType(seriesItem?.lineType)}
+                                                                                onChange={(e) => {
+                                                                                    updateChartObjects(
+                                                                                        chartIndex(),
+                                                                                        "series",
+                                                                                        seriesIndex(),
+                                                                                        "lineType",
+                                                                                        e.target.value as TimeseriesLineType
+                                                                                    );
+                                                                                }}
+                                                                                class="builder-form-input w-full px-2 py-1 text-sm"
+                                                                                title={`${LINE_TYPE_DISPLAY_LABELS.standard}: raw channel values. Other options transform the series before plotting.`}
+                                                                            >
+                                                                                <For each={[...TIMESERIES_LINE_TYPES]}>
+                                                                                    {(lt) => (
+                                                                                        <option value={lt}>{LINE_TYPE_DISPLAY_LABELS[lt]}</option>
+                                                                                    )}
+                                                                                </For>
                                                                             </select>
                                                                         </td>
                                                                         <td class="px-2 py-1 text-center" style="width: 8%; min-width: 3rem;">

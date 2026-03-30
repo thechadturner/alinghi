@@ -5990,7 +5990,6 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
   /* Stack content vertically */
 }
 
-
 /* TimeSeries chart container styling - specific for maneuvers page */
 #media-container.maneuvers-page .time-series {
   width: 100% !important;
@@ -6114,6 +6113,15 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
   padding-left: 1rem;
 }
 
+/* Fleet TimeSeries: small white line-type caption under channel name (SVG text) */
+.timeseries-with-legend .chart-line-type-label {
+  font-size: 10px;
+  fill: #ffffff;
+  opacity: 0.9;
+  pointer-events: none;
+  user-select: none;
+}
+
 .timeseries-legend-tables {
   flex: 0 0 auto;
   display: flex;
@@ -6144,13 +6152,71 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
   text-transform: uppercase;
 }
 
+.timeseries-legend-th-btn {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-weight: inherit;
+  text-transform: inherit;
+  color: inherit;
+  width: 100%;
+  min-height: 100%;
+  padding: 0;
+}
+
+.timeseries-legend-th-btn:hover,
+.timeseries-legend-th-btn:focus-visible {
+  color: var(--color-text-highlight, #fff);
+  outline: 2px solid rgba(255, 255, 255, 0.35);
+  outline-offset: 1px;
+}
+
+.timeseries-legend-sort-ind {
+  display: inline-block;
+  min-width: 10px;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.45;
+  text-align: center;
+}
+
+.timeseries-legend-th-btn-active .timeseries-legend-sort-ind {
+  opacity: 1;
+}
+
 .timeseries-legend-swatch {
   display: inline-block;
   width: 10px;
   height: 10px;
   margin-right: 6px;
+  padding: 0;
   vertical-align: middle;
-  border-radius: 1px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  font-size: 0;
+  line-height: 0;
+  background-clip: padding-box;
+}
+
+.timeseries-legend-swatch:hover {
+  border-color: rgba(255, 255, 255, 0.75);
+}
+
+.timeseries-legend-swatch:focus-visible {
+  outline: 2px solid var(--color-text-highlight, #fff);
+  outline-offset: 2px;
+}
+
+.timeseries-legend-swatch-selected {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.95);
 }
 
 /* Ensure time series container can scroll - but allow growth for both timeseries pages */
@@ -13637,6 +13703,12 @@ div.polar-rose-tooltip.tooltip {
   max-width: 1250px;
 }
 
+/* Timeseries builder: wider form so data-series table (line style / line type) has more room */
+.builder-page-timeseries .builder-form {
+  min-width: 1080px;
+  max-width: 1320px;
+}
+
 /* Builder Page Header - Align with form left edge (same width and centering as .builder-form) */
 .builder-page-header {
   margin-bottom: 2rem;
@@ -13649,6 +13721,11 @@ div.polar-rose-tooltip.tooltip {
 .builder-page-performance .builder-page-header {
   min-width: 1050px;
   max-width: 1250px;
+}
+
+.builder-page-timeseries .builder-page-header {
+  min-width: 1080px;
+  max-width: 1320px;
 }
 
 .builder-page-title {
@@ -13792,6 +13869,33 @@ div.polar-rose-tooltip.tooltip {
 .builder-table-timeseries td:nth-child(3) {
   min-width: 12rem;
   /* Label */
+}
+
+.builder-table-timeseries .builder-timeseries-resample-col {
+  width: 7.25rem;
+  min-width: 5.75rem;
+  max-width: 8.25rem;
+}
+
+/* Extra room for line style / line type selects (non-fleet: cols 7–8 after Resample; fleet: cols 7–8) */
+.builder-table-timeseries:not(.builder-table-timeseries-fleet) thead th:nth-child(7),
+.builder-table-timeseries:not(.builder-table-timeseries-fleet) td:nth-child(7) {
+  min-width: 7.5rem;
+}
+
+.builder-table-timeseries:not(.builder-table-timeseries-fleet) thead th:nth-child(8),
+.builder-table-timeseries:not(.builder-table-timeseries-fleet) td:nth-child(8) {
+  min-width: 11rem;
+}
+
+.builder-table-timeseries-fleet thead th:nth-child(7),
+.builder-table-timeseries-fleet td:nth-child(7) {
+  min-width: 7.5rem;
+}
+
+.builder-table-timeseries-fleet thead th:nth-child(8),
+.builder-table-timeseries-fleet td:nth-child(8) {
+  min-width: 11rem;
 }
 
 .builder-table thead th:nth-child(2),

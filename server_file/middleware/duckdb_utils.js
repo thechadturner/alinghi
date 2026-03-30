@@ -263,20 +263,48 @@ function normalizeChannelType(channelType) {
 }
 
 /**
+ * Per-bucket SUM for time-series line types cumulative / abs_cumulative (client sends bucket_aggregate).
+ * Not applied to angles, strings, or datetime. See channel-values API channel_list[].bucket_aggregate.
+ */
+function shouldUseBucketSum(normalizedType, bucketAggregate) {
+  const a = bucketAggregate != null ? String(bucketAggregate).toLowerCase().trim() : '';
+  if (a !== 'sum' && a !== 'sum_abs') return false;
+  if (normalizedType === 'angle360' || normalizedType === 'angle180' || normalizedType === 'string' || normalizedType === 'datetime') {
+    return false;
+  }
+  return true;
+}
+
+function bucketSumExpr(columnRef, sumAbs) {
+  return sumAbs ? `SUM(ABS(${columnRef}))` : `SUM(${columnRef})`;
+}
+
+/**
  * Build aggregation SQL for a channel
  * @param {string} channelName - Channel name
  * @param {string} channelType - Channel type
  * @param {string} timeBucketExpr - Time bucket expression
+ * @param {string|undefined} bucketAggregate - optional 'sum' | 'sum_abs' for resampled numeric channels
  * @returns {string} SQL aggregation expression
  */
-function buildChannelAggregationSQL(channelName, channelType, timeBucketExpr) {
+function buildChannelAggregationSQL(channelName, channelType, timeBucketExpr, bucketAggregate) {
   const normalizedType = resolveAggregationChannelType(channelName, channelType);
   
   // Use quoted column name to handle special characters
   const columnRef = `"${channelName}"`;
+  const sumAbs = String(bucketAggregate || '').toLowerCase().trim() === 'sum_abs';
+  const useSum = shouldUseBucketSum(normalizedType, bucketAggregate);
   
   switch (normalizedType) {
     case 'float':
+      if (useSum) {
+        const inner = bucketSumExpr(columnRef, sumAbs);
+        return `CASE 
+        WHEN COUNT(${columnRef}) > 0 THEN 
+          COALESCE(${inner}, FIRST(${columnRef}))
+        ELSE NULL
+      END as ${channelName}`;
+      }
       // AVG ignores NULLs and computes average of non-NULL values
       // If COUNT > 0, there are non-NULL values, so AVG should return a value
       // Use COALESCE with FIRST as fallback only if AVG somehow returns NULL despite having data
@@ -287,6 +315,14 @@ function buildChannelAggregationSQL(channelName, channelType, timeBucketExpr) {
       END as ${channelName}`;
     
     case 'int':
+      if (useSum) {
+        const inner = bucketSumExpr(columnRef, sumAbs);
+        return `CASE 
+        WHEN COUNT(${columnRef}) > 0 THEN 
+          COALESCE(${inner}, FIRST(${columnRef}))
+        ELSE NULL
+      END as ${channelName}`;
+      }
       return `CASE 
         WHEN COUNT(${columnRef}) > 0 THEN 
           COALESCE(MAX(${columnRef}), FIRST(${columnRef}))
@@ -339,6 +375,14 @@ function buildChannelAggregationSQL(channelName, channelType, timeBucketExpr) {
       END as ${channelName}`;
     
     default:
+      if (useSum) {
+        const inner = bucketSumExpr(columnRef, sumAbs);
+        return `CASE 
+        WHEN COUNT(${columnRef}) > 0 THEN 
+          COALESCE(${inner}, FIRST(${columnRef}), MAX(${columnRef}), MIN(${columnRef}))
+        ELSE NULL
+      END as ${channelName}`;
+      }
       // Default to AVG for unknown types, with fallback to ensure we return a value when data exists
       return `CASE 
         WHEN COUNT(${columnRef}) > 0 THEN 
@@ -368,14 +412,15 @@ function buildAggregationSQL(channelList, timeBucketExpr) {
   
   // Add aggregations for each channel
   for (const channel of channelList) {
-    const { name, type } = channel;
+    const name = channel.name || channel.channel;
+    const { type, bucket_aggregate: bucketAggregate } = channel;
     
     // Skip ts and Datetime (already handled)
     if (name === 'ts' || name === 'Datetime') {
       continue;
     }
     
-    const aggSQL = buildChannelAggregationSQL(name, type, timeBucketExpr);
+    const aggSQL = buildChannelAggregationSQL(name, type, timeBucketExpr, bucketAggregate);
     aggregations.push(aggSQL);
   }
   

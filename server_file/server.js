@@ -9,6 +9,7 @@ const db = require('../shared/database/connection');
 const { installConsoleGate, logAlways, log, error, warn, debug } = require('../shared');
 
 const config = require('./middleware/config');
+const { resolveAllowedOrigins } = require('../shared/utils/allowedOrigins');
 const fileRoutes = require('./routes/files');
 const { checkInfluxDBHealth } = require('./middleware/influxdb_utils');
 
@@ -19,10 +20,7 @@ const app = express();
 
 // Middleware
 // Read allowed origins strictly from env var; no hardcoded defaults
-const allowedOrigins = (config.CORS_ORIGINS || '')
-  .split(',')
-  .map(o => o.trim())
-  .filter(Boolean);
+const allowedOrigins = resolveAllowedOrigins(config.CORS_ORIGINS);
 
 // Helmet with CSP (stricter in production)
 if (process.env.NODE_ENV === 'production') {

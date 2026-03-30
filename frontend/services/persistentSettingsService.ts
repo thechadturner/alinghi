@@ -86,6 +86,8 @@ const DEFAULT_SETTINGS: PersistentSettings = {
 
 class PersistentSettingsService {
   private saveTimeout: NodeJS.Timeout | null = null;
+  /** Coalesce parallel loadSettings(userId, className, projectId) calls into one HTTP request. */
+  private loadSettingsInflight = new Map<string, Promise<PersistentSettings | null>>();
 
   /**
    * Cache settings locally in both localStorage and HuniDB (per-class database)
@@ -149,6 +151,20 @@ class PersistentSettingsService {
    * Includes retry logic for network failures
    */
   async loadSettings(userId: string, className: string, projectId: number, retries: number = 3): Promise<PersistentSettings | null> {
+    const key = `${userId}\0${className}\0${String(projectId)}`;
+    const inflight = this.loadSettingsInflight.get(key);
+    if (inflight) {
+      debug('[PersistentSettings] Coalescing in-flight loadSettings', { userId, className, projectId });
+      return inflight;
+    }
+    const promise = this.loadSettingsOnce(userId, className, projectId, retries).finally(() => {
+      this.loadSettingsInflight.delete(key);
+    });
+    this.loadSettingsInflight.set(key, promise);
+    return promise;
+  }
+
+  private async loadSettingsOnce(userId: string, className: string, projectId: number, retries: number = 3): Promise<PersistentSettings | null> {
     const url = `/api/users/settings?user_id=${encodeURIComponent(userId)}`;
     
 

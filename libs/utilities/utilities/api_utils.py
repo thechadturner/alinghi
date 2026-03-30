@@ -379,6 +379,61 @@ def parse_resample_frequency_to_ms(rs: str) -> float:
     except ValueError:
         return float('inf')
 
+
+def fill_outer_merge_numeric_gaps(df: pd.DataFrame, ts_col: str = "ts") -> pd.DataFrame:
+    """
+    After an outer merge on time: fill NaNs in numeric columns.
+
+    Float columns use linear interpolation along ``ts_col`` between known samples
+    (``limit_area='inside'``), then forward/backward fill for leading/trailing gaps.
+    Integer and other numeric columns use forward/backward fill only (discrete / no ramp).
+
+    ``ts_col`` is left unchanged. Rows are sorted by ``ts_col``.
+    """
+    if df is None or len(df) == 0 or ts_col not in df.columns:
+        return df
+
+    out = df.sort_values(by=[ts_col], ascending=True, kind="mergesort")
+    if out[ts_col].duplicated().any():
+        out = out.drop_duplicates(subset=[ts_col], keep="first")
+
+    numeric_cols = [c for c in out.select_dtypes(include=[np.number]).columns if c != ts_col]
+    if not numeric_cols:
+        return out
+
+    float_cols: List[str] = []
+    for c in numeric_cols:
+        if pd.api.types.is_float_dtype(out[c]):
+            float_cols.append(c)
+        elif str(out[c].dtype) == "Float64":
+            float_cols.append(c)
+
+    step_cols = [c for c in numeric_cols if c not in float_cols]
+
+    idx = pd.to_numeric(out[ts_col], errors="coerce")
+    ts_all_valid = bool(idx.notna().all())
+
+    if ts_all_valid and float_cols:
+        for col in float_cols:
+            vals = pd.to_numeric(out[col], errors="coerce")
+            s = pd.Series(vals.to_numpy(dtype=np.float64), index=idx)
+            try:
+                filled = s.interpolate(
+                    method="index",
+                    limit_direction="both",
+                    limit_area="inside",
+                )
+            except TypeError:
+                filled = s.interpolate(method="index", limit_direction="both")
+            out[col] = filled.to_numpy()
+
+    fill_edge = float_cols + step_cols
+    if fill_edge:
+        out.loc[:, fill_edge] = out.loc[:, fill_edge].ffill().bfill()
+
+    return out
+
+
 def resample_dataframe(dfi: pd.DataFrame, channels: List[Dict[str, str]], rs: str) -> pd.DataFrame:
     # Validate inputs
     if dfi is None or len(dfi) == 0:
@@ -794,24 +849,102 @@ def _execute_influx_query_chunk(query_api, influx_bucket: str, influx_database: 
     return df if df is not None else pd.DataFrame()
 
 
-def get_channel_values_influx(date: str, source_name: str, channel_list: List[Dict[str, str]], rs: str = '1s', start_ts: Optional[float] = None, end_ts: Optional[float] = None, timezone: Optional[str] = None, level: str = 'strm', skipMissing: bool = True) -> pd.DataFrame:
+def get_dataset_timezone_for_date(
+    api_token: str, class_name: str, project_id: str, date: str
+) -> Optional[str]:
+    """
+    Resolve IANA timezone for a dataset calendar date via app API
+    GET /api/datasets/date/timezone (same source as RaceSight frontend).
+
+    Args:
+        api_token: Bearer token for app API
+        class_name: Schema/class (e.g. gp50)
+        project_id: Project id
+        date: YYYYMMDD or YYYY-MM-DD
+
+    Returns:
+        Timezone string (e.g. Europe/Madrid) or None if not found / error
+    """
+    if not api_token or not class_name or not project_id or not date:
+        return None
+    date_clean = str(date).replace("-", "").replace("/", "")
+    if len(date_clean) != 8 or not date_clean.isdigit():
+        return None
+    try:
+        from urllib.parse import urlencode
+
+        query = urlencode(
+            {
+                "class_name": str(class_name).strip(),
+                "project_id": str(project_id).strip(),
+                "date": date_clean,
+            }
+        )
+        result = get_api_data(api_token, f":8069/api/datasets/date/timezone?{query}")
+        if not result or not result.get("success"):
+            return None
+        data = result.get("data")
+        if not data or not isinstance(data, dict):
+            return None
+        tz = data.get("timezone")
+        if tz is not None and str(tz).strip():
+            return str(tz).strip()
+    except Exception as e:
+        log_warning(f"get_dataset_timezone_for_date failed: {e}")
+    return None
+
+
+def _timezone_for_influx_day_range(
+    timezone: Optional[str],
+    start_ts: Optional[float],
+    end_ts: Optional[float],
+    api_token: str,
+    class_name: str,
+    project_id: str,
+    date_yyyymmdd: str,
+) -> Optional[str]:
+    """
+    IANA timezone to interpret ``date_yyyymmdd`` as a local calendar day for Influx ``range()``.
+    If ``start_ts``/``end_ts`` are set, returns ``timezone`` unchanged (window is explicit).
+    If ``timezone`` is set and not UTC, returns it. Otherwise tries ``get_dataset_timezone_for_date``.
+    """
+    if start_ts is not None or end_ts is not None:
+        return timezone
+    if timezone and str(timezone).strip() and str(timezone).upper() != "UTC":
+        return str(timezone).strip()
+    resolved = get_dataset_timezone_for_date(api_token, class_name, project_id, date_yyyymmdd)
+    if resolved:
+        log_info(f"[get_channel_values] Dataset timezone for Influx day range: {resolved}")
+        return resolved
+    return timezone
+
+
+def get_channel_values_influx(
+    date: str,
+    source_name: str,
+    channel_list: List[Dict[str, str]],
+    rs: str = '1s',
+    start_ts: Optional[float] = None,
+    end_ts: Optional[float] = None,
+    timezone: Optional[str] = None,
+    level: str = 'strm',
+    skipMissing: bool = True,
+) -> pd.DataFrame:
     """
     Retrieves channel data from InfluxDB.
-    
+
     Args:
-        api_token: API authentication token (not used for InfluxDB, kept for compatibility)
-        class_name: Class name (not used for InfluxDB, kept for compatibility)
-        project_id: Project ID (not used for InfluxDB, kept for compatibility)
-        date: Date in YYYYMMDD format
+        date: Date in YYYYMMDD format (local calendar day when using implicit day range)
         source_name: Source name (maps to 'boat' in InfluxDB)
         channel_list: List of channel dictionaries with 'name' and 'type' keys
         rs: Resampling frequency (e.g., '1s', '100ms'). Defaults to '1s' if not provided.
         start_ts: Optional start timestamp in seconds
         end_ts: Optional end timestamp in seconds
-        timezone: Optional timezone string (e.g., 'UTC', 'Europe/Madrid'). If not provided, uses UTC.
+        timezone: For implicit full-day query: non-UTC defines local midnight–end-of-day converted to UTC
+            for Flux; None or UTC uses UTC calendar day (with warning). Also used for ``Datetime`` tz_convert.
         level: Data level filter ('strm' or 'log'). Defaults to 'strm'.
         skipMissing: If True (default), skip channels with no data. If False, include missing channels filled with np.nan.
-    
+
     Returns:
         DataFrame with channel data
     """
@@ -886,37 +1019,61 @@ def get_channel_values_influx(date: str, source_name: str, channel_list: List[Di
         client = InfluxDBClient(url=influx_url, token=influx_token, org=influx_database, timeout=120000)
         query_api = client.query_api()
         
-        # Extract measurement names from channel_list (exclude 'ts')
-        measurements = [ch['name'] for ch in channel_list if ch['name'] != 'ts']
-        
+        # Extract measurement names from channel_list (exclude time/meta columns)
+        measurements = [
+            ch["name"]
+            for ch in channel_list
+            if ch.get("name") and ch["name"] not in ("ts", "Datetime")
+        ]
+
         if len(measurements) == 0:
-            log_warning("No measurements to query (only 'ts' in channel_list)")
+            log_warning("No measurements to query (only 'ts' / 'Datetime' in channel_list)")
             client.close()
             return dff
-        
-        # When no start_ts/end_ts but timezone provided, interpret date as local date and compute UTC range
-        if start_ts is None and end_ts is None and timezone and str(timezone).upper() != 'UTC':
-            try:
-                tz_info = gettz(timezone)
-                if tz_info is not None:
-                    date_ymd = formatted_date  # already YYYY-MM-DD
-                    local_start = datetime.strptime(f"{date_ymd} 00:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz_info)
-                    local_end = datetime.strptime(f"{date_ymd} 23:59:59", "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz_info)
-                    start_ts = local_start.astimezone(tz.tzutc()).timestamp()
-                    end_ts = local_end.astimezone(tz.tzutc()).timestamp()
-            except Exception as tz_err:
-                log_warning(f"Could not parse timezone '{timezone}' for local date range, using UTC date: {tz_err}")
-                start_ts = None
-                end_ts = None
-        
+
+        # Influx day range: interpret YYYYMMDD as local calendar day when timezone is non-UTC, else UTC day
+        if start_ts is None and end_ts is None:
+            influx_day_tz: Optional[str] = None
+            if timezone and str(timezone).strip() and str(timezone).upper() != "UTC":
+                influx_day_tz = str(timezone).strip()
+            if influx_day_tz:
+                try:
+                    tz_info = gettz(influx_day_tz)
+                    if tz_info is not None:
+                        date_ymd = formatted_date
+                        local_start = datetime.strptime(
+                            f"{date_ymd} 00:00:00", "%Y-%m-%d %H:%M:%S"
+                        ).replace(tzinfo=tz_info)
+                        local_end = datetime.strptime(
+                            f"{date_ymd} 23:59:59", "%Y-%m-%d %H:%M:%S"
+                        ).replace(tzinfo=tz_info)
+                        start_ts = local_start.astimezone(tz.tzutc()).timestamp()
+                        end_ts = local_end.astimezone(tz.tzutc()).timestamp()
+                    else:
+                        log_warning(
+                            f"Unknown timezone '{influx_day_tz}' for Influx day range; using UTC calendar day"
+                        )
+                except Exception as tz_err:
+                    log_warning(
+                        f"Could not build local day range for '{influx_day_tz}': {tz_err}; using UTC calendar day"
+                    )
+                    start_ts = None
+                    end_ts = None
+            if start_ts is None and end_ts is None:
+                log_warning(
+                    "[InfluxDB] Using UTC calendar day for Flux range (pass a non-UTC IANA timezone for local day)"
+                )
+
         # Check if we need to chunk the query (time range > 15 minutes)
         CHUNK_THRESHOLD_SECONDS = 900  # 15 minutes
         CHUNK_SIZE_SECONDS = 3600  # 1 hour
-        
+
         use_chunking = False
         chunk_start_ts = None
         chunk_end_ts = None
-        
+        start_time = "(n/a)"
+        stop_time = "(n/a)"
+
         if start_ts is not None and end_ts is not None:
             time_range = end_ts - start_ts
             if time_range > CHUNK_THRESHOLD_SECONDS:
@@ -986,7 +1143,11 @@ def get_channel_values_influx(date: str, source_name: str, channel_list: List[Di
                 query_api, influx_bucket, influx_database, boat, formatted_date,
                 measurements, level, start_time, stop_time
             )
-        
+
+        if use_chunking and chunk_start_ts is not None and chunk_end_ts is not None:
+            start_time = f"chunked({chunk_start_ts}..{chunk_end_ts})"
+            stop_time = "(chunked)"
+
         # Close client
         client.close()
         
@@ -1069,22 +1230,13 @@ def get_channel_values_influx(date: str, source_name: str, channel_list: List[Di
                 for channel_df in processed_channels[1:]:
                     dff = pd.merge(dff, channel_df, on=base_column, how='outer', sort=True)
                 
-                # Sort by ts
-                dff.sort_values(by=[base_column], inplace=True, ascending=True)
-                
-                # Create Datetime column from ts for compatibility (if timezone was specified)
+                # Outer-merge gaps: linear-in-time fill for floats; ffill/bfill for ints and edges.
+                dff = fill_outer_merge_numeric_gaps(dff, base_column)
+
                 if 'Datetime' not in dff.columns:
                     dff['Datetime'] = pd.to_datetime(dff[base_column], unit='s', utc=True)
                     if timezone:
                         dff['Datetime'] = dff['Datetime'].dt.tz_convert(timezone)
-                
-                # Fill remaining NaNs in numeric columns (from outer merge)
-                numeric_cols = dff.select_dtypes(include=[np.number]).columns
-                if len(numeric_cols) > 0:
-                    # Exclude ts from fillna
-                    numeric_cols_no_ts = [col for col in numeric_cols if col != base_column]
-                    if len(numeric_cols_no_ts) > 0:
-                        dff.loc[:, numeric_cols_no_ts] = dff.loc[:, numeric_cols_no_ts].fillna(0)
                 
                 # Replace 'NA' strings with 0 for non-string columns
                 non_categorical_cols = [col for col in dff.columns 
@@ -1155,7 +1307,7 @@ def get_channel_values_influx(date: str, source_name: str, channel_list: List[Di
         log_error(f"Error in get_channel_values_influx: {str(e)}", e)
         return dff
 
-def get_channel_values(api_token: str, class_name: str, project_id: str, date: str, source_name: str, channel_list: List[Dict[str, str]], rs: str = '1s', start_ts: Optional[float] = None, end_ts: Optional[float] = None, timezone: Optional[str] = None, skipMissing: bool = True) -> pd.DataFrame:
+def get_channel_values(api_token: str, class_name: str, project_id: str, date: str, source_name: str, channel_list: List[Dict[str, str]], rs: str = '1s', start_ts: Optional[float] = None, end_ts: Optional[float] = None, timezone: Optional[str] = None) -> pd.DataFrame:
     """
     Retrieves channel data from the file server API.
     
@@ -1172,9 +1324,11 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
         rs: Resampling frequency (e.g., '1s', '100ms'). Defaults to '1s' if not provided. Use empty string for full frequency.
         start_ts: Optional start timestamp in seconds
         end_ts: Optional end timestamp in seconds
-        timezone: Optional timezone string (e.g., 'UTC', 'Europe/Madrid'). If not provided, uses dataset timezone.
-        skipMissing: If True (default), skip channels with no data. If False, include missing channels filled with np.nan.
-    
+        timezone: Optional timezone for file-server requests and parquet ``Datetime`` handling.
+            For Influx fallbacks with a full-day query (no ``start_ts``/``end_ts``), if this is
+            missing or ``UTC``, the dataset timezone is resolved from the app API and passed to Influx
+            so the Flux window matches the local calendar date.
+
     Returns:
         DataFrame with channel data (already resampled if rs provided)
     """
@@ -1190,7 +1344,11 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
         # Normalize date format to YYYYMMDD (remove dashes/slashes) for file server API
         date = str(date).replace('-', '').replace('/', '')
         source_name = str(source_name)
-        
+
+        influx_timezone = _timezone_for_influx_day_range(
+            timezone, start_ts, end_ts, api_token, class_name, project_id, date
+        )
+
         # Get channel groups from the API
         channel_groups = get_channel_groups(api_token, class_name, project_id, date, source_name, channel_list)
         
@@ -1364,10 +1522,10 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
                             dfc[channel_name] = dfc[channel_name].astype(str)
                         dfc[channel_name] = dfc[channel_name].replace(['nan', 'None', 'NaN', '<NA>'], '')
 
-            # Sort by ts and handle NaN values
+            # Outer-merge / NULL buckets: time-linear interpolation for floats; ffill/bfill for ints and edges.
             if 'ts' in dfc.columns and len(dfc) > 0:
-                dfc.sort_values(by=['ts'], inplace=True, ascending=True)
-            
+                dfc = fill_outer_merge_numeric_gaps(dfc, "ts")
+
             # Forward fill and backward fill NaN values for string columns to preserve metadata continuity
             string_cols = [ch['name'] for ch in channel_list if normalize_channel_type(ch.get('type', '')) == 'string' and ch['name'] in dfc.columns]
             if len(string_cols) > 0:
@@ -1375,11 +1533,6 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
                     # Forward fill (use previous valid value) then backward fill (use next valid value)
                     # This ensures string metadata is preserved across all rows
                     dfc[col] = dfc[col].ffill().bfill()
-            
-            # Only fill NaN in numeric columns to avoid categorical column errors
-            numeric_cols = dfc.select_dtypes(include=[np.number]).columns
-            if len(numeric_cols) > 0:
-                dfc.loc[:, numeric_cols] = dfc.loc[:, numeric_cols].fillna(0)
             
             # Replace 'NA' strings with 0, avoiding categorical and string columns
             non_categorical_cols = [col for col in dfc.columns 
@@ -1415,9 +1568,8 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
                         rs=rs,
                         start_ts=start_ts,
                         end_ts=end_ts,
-                        timezone=timezone,
+                        timezone=influx_timezone,
                         level='strm',  # Use 'strm' level by default
-                        skipMissing=True  # Only get channels that exist in InfluxDB
                     )
                     
                     if influx_df is not None and not influx_df.empty and 'ts' in influx_df.columns:
@@ -1439,14 +1591,8 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
                         # Reset index to make ts a column again
                         dfc = dfc.reset_index()
                         
-                        # Sort by ts
                         if 'ts' in dfc.columns and len(dfc) > 0:
-                            dfc.sort_values(by=['ts'], inplace=True, ascending=True)
-                        
-                        # Fill NaN from merge for numeric columns
-                        numeric_cols = dfc.select_dtypes(include=[np.number]).columns
-                        if len(numeric_cols) > 0:
-                            dfc.loc[:, numeric_cols] = dfc.loc[:, numeric_cols].fillna(0)
+                            dfc = fill_outer_merge_numeric_gaps(dfc, "ts")
                         
                         # Update missing channels list to only include channels still missing after InfluxDB
                         missing_channel_names = [ch for ch in missing_channel_names if ch not in dfc.columns]
@@ -1455,25 +1601,6 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
                         
                 except Exception as e:
                     log_error(f"Error retrieving missing channels from InfluxDB: {str(e)}", e)
-
-            # If skipMissing=False, add any remaining missing channels filled with np.nan
-            if not skipMissing and len(dfc) > 0 and 'ts' in dfc.columns and len(missing_channel_names) > 0:
-                log_info(f"Adding remaining missing channels with NaN values: {missing_channel_names}")
-                for ch in channel_list:
-                    channel_name = ch['name']
-                    if channel_name in missing_channel_names:
-                        channel_type = normalize_channel_type(ch.get('type', ''))
-                        
-                        # Create column filled with appropriate NaN values
-                        if channel_type == 'string':
-                            # For strings, use empty string or None (pandas will handle as object dtype)
-                            dfc[channel_name] = pd.Series([np.nan] * len(dfc), dtype=object)
-                        elif channel_type == 'int':
-                            # For integers, use nullable int64
-                            dfc[channel_name] = pd.Series([np.nan] * len(dfc), dtype='Int64')
-                        else:
-                            # For floats and other types, use float64 with NaN
-                            dfc[channel_name] = pd.Series([np.nan] * len(dfc), dtype='float64')
 
             dff = dfc
 
@@ -1490,9 +1617,8 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
                 rs=rs,
                 start_ts=start_ts,
                 end_ts=end_ts,
-                timezone=timezone,
+                timezone=influx_timezone,
                 level='strm',  # Use 'strm' level by default
-                skipMissing=skipMissing
             )
             
             if influx_df is not None and not influx_df.empty:

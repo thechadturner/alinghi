@@ -204,7 +204,7 @@ def get_processed_data_ts_range(class_name, project_id, date, source_name):
 def get_canonical_ts_for_fusion(class_name, project_id, date, source_name):
     """
     Timestamp grid for fusion output: prefer processed_data_racesight.parquet (100ms norm stream);
-    if missing, try influx_data.parquet so reindex still matches file-server Influx cache.
+    if missing, try Influx tier parquets (legacy influx_data.parquet or influx_data_*hz) for reindex.
     """
     proc_min, proc_max, proc_ts = get_processed_data_ts_range(class_name, project_id, date, source_name)
     if proc_ts is not None and len(proc_ts) > 0:
@@ -212,8 +212,18 @@ def get_canonical_ts_for_fusion(class_name, project_id, date, source_name):
     data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
     date_str = str(date).replace('-', '').replace('/', '')
     dir_path = os.path.join(data_dir, 'System', str(project_id), class_name, date_str, source_name)
-    influx_path = os.path.join(dir_path, 'influx_data.parquet')
-    if not os.path.exists(influx_path):
+    influx_path = None
+    for fname in (
+        'influx_data.parquet',
+        'influx_data_raw.parquet',
+        'influx_data_10hz.parquet',
+        'influx_data_1hz.parquet',
+    ):
+        p = os.path.join(dir_path, fname)
+        if os.path.exists(p):
+            influx_path = p
+            break
+    if not influx_path:
         return None, None, None
     try:
         df = pd.read_parquet(influx_path, columns=['ts'])

@@ -41,6 +41,10 @@ interface RaceSummaryRow {
   bsp_avg_kph: number | null;
   start_speed: number | null;
   max_speed: number | null;
+  rh300_perc: number | null;
+  rh750_perc: number | null;
+  rhgood_perc: number | null;
+  rh1400_perc: number | null;
   foiling_perc: number | null;
   phase_dur_avg_sec: number | null;
   maneuver_count: number | null;
@@ -104,6 +108,10 @@ const RACE_SUMMARY_TABLE_COLUMNS: { key: keyof RaceSummaryRow; header: string }[
   { key: "bsp_avg_kph", header: "BSP [KPH]" },
   { key: "start_speed", header: "START SPEED [KPH]" },
   { key: "max_speed", header: "MAX SPEED [KPH]" },
+  { key: "rh300_perc", header: "RH < 300 [%]" },
+  { key: "rh750_perc", header: "RH > 300 < 750 [%]" },
+  { key: "rhgood_perc", header: "RH > 750 < 1400 [%]" },
+  { key: "rh1400_perc", header: "RH > 1400 [%]" },
   { key: "foiling_perc", header: "FOILING [%]" },
   { key: "phase_dur_avg_sec", header: "AVG PHASE DUR [SEC]" },
   { key: "maneuver_count", header: "MANEUVER COUNT" },

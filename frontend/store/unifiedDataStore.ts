@@ -1,6 +1,6 @@
 // Unified data store with HuniDB storage
 import { createSignal } from "solid-js";
-import { unifiedDataAPI, type DataPoint } from './unifiedDataAPI';
+import { unifiedDataAPI, type ChannelBucketAggregate, type DataPoint } from './unifiedDataAPI';
 import { huniDBStore } from './huniDBStore';
 import { debug, info, warn, error as logError } from '../utils/console';
 import { LRUCache } from '../utils/lruCache';
@@ -48,8 +48,17 @@ export interface FetchChartDataParams {
   date?: string;
   timezone?: string | null;
   data_source?: 'auto' | 'file' | 'influx';
-  resolution?: string;
+  resolution?: string | null;
   objectName?: string;
+  /** Keys = y-axis channel names; used for channel-values bucket_aggregate when resampling. */
+  channelBucketAggregateByName?: Record<string, ChannelBucketAggregate>;
+  /**
+   * Explore timeseries: per-channel DuckDB resampling (RAW / 1HZ / 10HZ).
+   * When modes differ, the store runs multiple channel-values requests and merges on time.
+   */
+  channelResampleModeByChannel?: Record<string, TimeseriesDataResample>;
+  /** When set (dataset explore), drives multifetch + column renames for duplicate Y at different resample modes. */
+  exploreResampleFetchPlan?: ExploreResampleFetchPlan | null;
   [key: string]: unknown;
 }
 
@@ -106,6 +115,17 @@ import { defaultChannelsStore } from './defaultChannelsStore';
 import { fetchDatasetTimezone } from './datasetTimezoneStore';
 import { isMobileDevice } from '../utils/deviceDetection';
 import { discoverChannels } from './channelDiscoveryStore';
+import {
+  mergeTimeseriesDataPointsByTimestamp,
+  groupChannelsByApiResolution,
+  fingerprintChannelResampleModes,
+  applyExploreResponseRenames,
+  fingerprintExploreResamplePlan,
+  fingerprintApiResolutionForCache,
+  type TimeseriesDataResample,
+  type ExploreResampleFetchPlan,
+  type ExploreResampleFetchGroup,
+} from '../utils/timeseriesSeriesTransforms';
 
 /**
  * Determine the current filter context based on selected state
@@ -435,8 +455,25 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
   };
 
   /** Short stable hash of channel list for cache key - different scatter charts (different channels) must not share cache. */
-  const hashChannelsForCache = (channels: string[]): string => {
-    const s = [...channels].sort().join(',');
+  const hashChannelsForCache = (
+    channels: string[],
+    bucketMap?: Record<string, ChannelBucketAggregate>,
+    resampleFingerprint?: string
+  ): string => {
+    const sorted = [...channels].sort().join(',');
+    let aggPart = '';
+    if (bucketMap && Object.keys(bucketMap).length > 0) {
+      const lowerSet = new Set(channels.map((c) => c.toLowerCase()));
+      const parts = Object.keys(bucketMap)
+        .filter((k) => lowerSet.has(k.toLowerCase()))
+        .sort()
+        .map((k) => `${k}:${bucketMap[k]}`);
+      if (parts.length > 0) aggPart = `|${parts.join(';')}`;
+    }
+    if (resampleFingerprint && resampleFingerprint.length > 0) {
+      aggPart += `|rs:${resampleFingerprint}`;
+    }
+    const s = sorted + aggPart;
     let h = 5381;
     for (let i = 0; i < s.length; i++) h = ((h << 5) + h) + s.charCodeAt(i);
     return Math.abs(h).toString(36).substring(0, 8);
@@ -2348,6 +2385,9 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
     let date = params?.date;
     
     const resolvedDataSource = dataSource || getDataSourceForChart(chartType);
+    /** Per-source file data may omit some requested channels; still return rows if time + any data column exists (same idea as overlay). */
+    const allowPartialInMemoryCache =
+      chartType === 'overlay' || (chartType === 'ts' && resolvedDataSource === 'timeseries');
     
     // Debug: Log resolved data source to help diagnose endpoint selection
     debug(`[fetchDataWithChannelChecking] Resolved data source:`, {
@@ -2423,7 +2463,12 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
     
     // Step 1: Check unifiedDataStore first (in-memory, instant)
     // Include objectName/page so different scatter pages ('takeoffs' vs 'tws bsp') never share cache
-    const channelsHash = hashChannelsForCache(requiredChannels);
+    const bucketMap = params?.channelBucketAggregateByName as Record<string, ChannelBucketAggregate> | undefined;
+    const resampleFp =
+      fingerprintExploreResamplePlan(params?.exploreResampleFetchPlan as ExploreResampleFetchPlan | null | undefined) ||
+      fingerprintChannelResampleModes(params?.channelResampleModeByChannel as Record<string, TimeseriesDataResample> | undefined) ||
+      fingerprintApiResolutionForCache(params?.resolution);
+    const channelsHash = hashChannelsForCache(requiredChannels, bucketMap, resampleFp || undefined);
     const objectNamePart = normalizeObjectNameForCache(params?.objectName ?? params?.object_name ?? params?.page);
     const cacheKey = `${chartType}_${className}_${sourceId}_${datasetId}_${projectId}${objectNamePart ? `_${objectNamePart}` : ''}_${channelsHash}`;
     const cachedEntry = dataCache.get(cacheKey);
@@ -2448,9 +2493,17 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
         });
         debug(`[fetchDataWithChannelChecking] Using in-memory cache (has all ${requiredChannels.length} requested channels)`);
         return cachedEntry.data;
-      } else {
-        debug(`[fetchDataWithChannelChecking] In-memory cache exists but missing some requested channels - will fetch missing ones`);
       }
+      if (allowPartialInMemoryCache) {
+        const hasTimeKey = dataKeys.some((k: string) => ['datetime', 'timestamp', 'ts'].includes(k));
+        const requestedDataChannels = requiredChannels.filter(ch => !isMetadataChannelForCache(ch));
+        const hasAtLeastOneDataChannel = requestedDataChannels.some(ch => dataKeys.includes(ch.toLowerCase()));
+        if (hasTimeKey && (hasAtLeastOneDataChannel || requestedDataChannels.length === 0)) {
+          debug(`[fetchDataWithChannelChecking] Using in-memory cache (${chartType} partial: ${cachedEntry.data.length} rows, some requested channels absent in file)`);
+          return cachedEntry.data;
+        }
+      }
+      debug(`[fetchDataWithChannelChecking] In-memory cache exists but missing some requested channels - will fetch missing ones`);
     }
     
     // Ensure sources are initialized before fetching data (critical for correct source information)
@@ -3217,7 +3270,9 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
               dataTypes: resolvedDataSource === 'timeseries' ? ['timeseries_data'] : 
                         resolvedDataSource === 'mapdata' ? ['map_data'] :
                         resolvedDataSource === 'aggregates' ? ['aggregate_data'] : undefined,
-              data_source: params?.data_source ?? 'auto'
+              data_source: params?.data_source ?? 'auto',
+              channelBucketAggregateByName: params?.channelBucketAggregateByName as Record<string, ChannelBucketAggregate> | undefined,
+              resolution: params?.resolution !== undefined ? params.resolution : undefined,
             });
             
             info(`[fetchDataWithChannelChecking] API response:`, {
@@ -3854,12 +3909,11 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
         if (hasAllChannels) {
           return updatedCacheEntry.data;
         }
-        // Overlay (e.g. FleetDataTable): return partial data so table can show what we have
         const hasTimeKey = dataKeys.some((k: string) => ['datetime', 'timestamp', 'ts'].includes(k));
         const requestedDataChannels = requiredChannels.filter(ch => !isMetadataChannelForCache(ch));
         const hasAtLeastOneDataChannel = requestedDataChannels.some(ch => dataKeys.includes(ch.toLowerCase()));
-        if (chartType === 'overlay' && hasTimeKey && (hasAtLeastOneDataChannel || requestedDataChannels.length === 0)) {
-          debug(`[fetchDataWithChannelChecking] Returning in-memory cache (overlay partial data, ${updatedCacheEntry.data.length} rows)`);
+        if (allowPartialInMemoryCache && hasTimeKey && (hasAtLeastOneDataChannel || requestedDataChannels.length === 0)) {
+          debug(`[fetchDataWithChannelChecking] Returning in-memory cache (${chartType} partial data, ${updatedCacheEntry.data.length} rows)`);
           return updatedCacheEntry.data;
         }
         const missingFromCache = requiredChannels.filter(ch => {
@@ -3882,11 +3936,11 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
             debug(`[fetchDataWithChannelChecking] Query returned 0 rows; returning ${cacheFromApi.data.length} rows from in-memory cache (API data)`);
             return cacheFromApi.data;
           }
-          // Overlay (e.g. FleetDataTable) or timeseries: return partial data so table/charts can show what we have (missing channels show as — or empty series)
           const hasTimeKey = cacheDataKeys.some((k: string) => ['datetime', 'timestamp', 'ts'].includes(k));
           const requestedDataChannels = requiredChannels.filter(ch => !isMetadataChannelForCache(ch));
           const hasAtLeastOneDataChannel = requestedDataChannels.some(ch => cacheDataKeys.includes(ch.toLowerCase()));
-          const allowPartialData = (chartType === 'overlay' || chartType === 'ts') && hasTimeKey && (hasAtLeastOneDataChannel || requestedDataChannels.length === 0);
+          const allowPartialData =
+            allowPartialInMemoryCache && hasTimeKey && (hasAtLeastOneDataChannel || requestedDataChannels.length === 0);
           if (allowPartialData) {
             debug(`[fetchDataWithChannelChecking] Query returned 0 rows; returning ${cacheFromApi.data.length} rows from in-memory cache (${chartType} partial data)`);
             return cacheFromApi.data;
@@ -4157,7 +4211,12 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
     
     // Step 1: Check in-memory cache first, but verify channels actually exist in data
     // Include objectName/page so different scatter pages ('takeoffs' vs 'tws bsp') never share cache
-    const channelsHash = hashChannelsForCache(requiredChannels);
+    const bucketMapFromFile = params?.channelBucketAggregateByName as Record<string, ChannelBucketAggregate> | undefined;
+    const resampleFpFromFile =
+      fingerprintExploreResamplePlan(params?.exploreResampleFetchPlan as ExploreResampleFetchPlan | null | undefined) ||
+      fingerprintChannelResampleModes(params?.channelResampleModeByChannel as Record<string, TimeseriesDataResample> | undefined) ||
+      fingerprintApiResolutionForCache(params?.resolution);
+    const channelsHash = hashChannelsForCache(requiredChannels, bucketMapFromFile, resampleFpFromFile || undefined);
     const objectNamePart = normalizeObjectNameForCache(params?.objectName ?? params?.object_name ?? params?.page);
     const cacheKey = `${chartType}_${className}_${sourceId}_${datasetId}_${projectId}${objectNamePart ? `_${objectNamePart}` : ''}_${channelsHash}`;
     const cachedEntry = dataCache.get(cacheKey);
@@ -6117,8 +6176,118 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
           dataSource,
           note: 'This should trigger API fetch and storage in HuniDB'
         });
-        
-        const apiData = await fetchDataWithChannelChecking(chartType, className, String(normalizedSourceId), allValidChannels, finalParams, dataSource);
+
+        // Per-channel resampling (explore timeseries): `exploreResampleFetchPlan` supports the same Y channel at
+        // multiple resolutions via disambiguated merged column names + renames after each fetch.
+        // Legacy path uses `channelResampleModeByChannel` + finest-wins map (no duplicate-Y multi-mode).
+        const explorePlan = params?.exploreResampleFetchPlan as ExploreResampleFetchPlan | null | undefined;
+        const resampleModeMap = params?.channelResampleModeByChannel as Record<string, TimeseriesDataResample> | undefined;
+
+        const resolveGroupChannelsForApi = (group: ExploreResampleFetchGroup): string[] => {
+          const lowerToActual = new Map<string, string>();
+          for (const c of allValidChannels) {
+            lowerToActual.set(c.toLowerCase(), c);
+          }
+          const out: string[] = [];
+          const seen = new Set<string>();
+          for (const c of group.requestChannels) {
+            const actual = lowerToActual.get(c.toLowerCase()) ?? c;
+            const key = actual.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(actual);
+          }
+          return out.length > 0 ? out : [...allValidChannels];
+        };
+
+        let apiData: any[] = [];
+        if (isTimeseries && explorePlan && explorePlan.groups.length > 0) {
+          const runExploreGroupFetch = async (group: ExploreResampleFetchGroup) => {
+            const chans = resolveGroupChannelsForApi(group);
+            const branchParams = {
+              ...finalParams,
+              resolution: group.resolution as string | null,
+              channelResampleModeByChannel: undefined,
+              exploreResampleFetchPlan: undefined,
+            };
+            const part = await fetchDataWithChannelChecking(
+              chartType,
+              className,
+              String(normalizedSourceId),
+              chans,
+              branchParams,
+              dataSource
+            );
+            const rows = part || [];
+            applyExploreResponseRenames(rows, group.responseRename);
+            const resLabel = group.resolution === null ? "RAW" : String(group.resolution);
+            info(
+              `[fetchDataWithChannelCheckingFromFile] explore branch resolution=${resLabel} rows=${rows.length} (verify 10Hz >> 1Hz row counts when both requested)`
+            );
+            return rows;
+          };
+          if (explorePlan.groups.length === 1) {
+            apiData = await runExploreGroupFetch(explorePlan.groups[0]);
+          } else {
+            info(`[fetchDataWithChannelCheckingFromFile] exploreResampleFetchPlan: ${explorePlan.groups.length} parallel channel-values calls (Y disambiguation; unified Influx backfill still uses 1s per server)`);
+            const parts = await Promise.all(explorePlan.groups.map((g) => runExploreGroupFetch(g)));
+            apiData = mergeTimeseriesDataPointsByTimestamp(parts);
+            info(
+              `[fetchDataWithChannelCheckingFromFile] merged multifetch rows=${apiData.length} (parts: ${parts.map((p) => p?.length ?? 0).join(", ")})`
+            );
+          }
+        } else if (isTimeseries && resampleModeMap && Object.keys(resampleModeMap).length > 0) {
+          const groups = groupChannelsByApiResolution(allValidChannels, resampleModeMap);
+          const resKeys = [...groups.keys()].filter((k) => (groups.get(k)?.length ?? 0) > 0);
+          if (resKeys.length <= 1) {
+            const onlyRes = resKeys[0];
+            const singleParams = {
+              ...finalParams,
+              resolution: onlyRes === undefined ? undefined : onlyRes,
+              channelResampleModeByChannel: undefined,
+            };
+            apiData = await fetchDataWithChannelChecking(
+              chartType,
+              className,
+              String(normalizedSourceId),
+              allValidChannels,
+              singleParams,
+              dataSource
+            );
+          } else {
+            info(`[fetchDataWithChannelCheckingFromFile] Per-channel resampling: ${resKeys.length} parallel channel-values calls (unified Influx backfill still uses 1s per server)`, {
+              resolutions: resKeys.map((r) => (r === null ? 'RAW' : r)),
+            });
+            const parts = await Promise.all(
+              resKeys.map((r) => {
+                const chans = groups.get(r)!;
+                const branchParams = {
+                  ...finalParams,
+                  resolution: r as string | null,
+                  channelResampleModeByChannel: undefined,
+                };
+                return fetchDataWithChannelChecking(
+                  chartType,
+                  className,
+                  String(normalizedSourceId),
+                  chans,
+                  branchParams,
+                  dataSource
+                );
+              })
+            );
+            apiData = mergeTimeseriesDataPointsByTimestamp(parts);
+          }
+        } else {
+          apiData = await fetchDataWithChannelChecking(
+            chartType,
+            className,
+            String(normalizedSourceId),
+            allValidChannels,
+            finalParams,
+            dataSource
+          );
+        }
         
         info(`[fetchDataWithChannelCheckingFromFile] ✅ fetchDataWithChannelChecking returned ${apiData?.length || 0} records`, {
           recordCount: apiData?.length || 0,
@@ -6128,7 +6297,10 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
         });
         
         // With data_source: 'auto' the server returns combined data from DuckDB (parquet + Influx backfill); no client-side Influx fallback needed.
-        const normalizedApiData = await normalizeDataFields(apiData || [], allValidChannels);
+        const channelsForNormalize = [
+          ...new Set([...allValidChannels, ...(explorePlan?.mergedYKeys ?? [])]),
+        ];
+        const normalizedApiData = await normalizeDataFields(apiData || [], channelsForNormalize);
         
         // Merge with HuniDB data if we have both
         let data = normalizedApiData;
