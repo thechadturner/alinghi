@@ -248,7 +248,7 @@ export default function Login() {
         <div class="login-footer">
           <p class="footer-text">
             Don't have an account? 
-            <A href="/register" class="register-link">Sign up here</A>
+            <A href="/register?pid=1" class="register-link">Sign up here</A>
           </p>
         </div>
       </div>
