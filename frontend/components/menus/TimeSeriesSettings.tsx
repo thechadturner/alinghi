@@ -149,7 +149,7 @@ export default function TimeSeriesSettings(props: TimeSeriesSettingsProps) {
     if (!className || !projectId) return;
     const hasDate = date && String(date).trim() !== "";
     const hasDataset = datasetId && Number(datasetId) > 0;
-    if (!hasDate && !hasDataset && className.toLowerCase() !== "gp50") return;
+    if (!hasDate && !hasDataset && className.toLowerCase() !== "ac40") return;
     try {
       const context = hasDate ? ("day" as const) : ("dataset" as const);
       const result = await getRaceAndLegOptions({

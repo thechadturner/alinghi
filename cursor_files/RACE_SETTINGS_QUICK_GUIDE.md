@@ -36,7 +36,7 @@ frontend/
 │   └── menus/
 │       └── RaceSettings.tsx          # New modal component
 └── reports/
-    └── gp50/
+    └── ac40/
         └── day/
             └── reports/
                 ├── RaceSummary.tsx   # Updated: Added settings icon

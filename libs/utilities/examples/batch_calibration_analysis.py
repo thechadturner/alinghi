@@ -38,7 +38,7 @@ if not _API_TOKEN:
 
 BASE_CONFIG = CalibrationConfig(
     api_token=_API_TOKEN,
-    class_name="gp50",
+    class_name="ac40",
     project_id="1",
     date="20260118",  
     source_name="GER",

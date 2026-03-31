@@ -2,7 +2,7 @@
  * Unified Filter Service
  * 
  * Handles class-specific filter configurations and data loading
- * Supports different data classes (GP50, etc.) with different filter sets
+ * Supports different data classes (AC40, etc.) with different filter sets
  */
 
 import { getData } from '../utils/global';
@@ -57,7 +57,7 @@ class UnifiedFilterService {
 
   /**
    * Get filter configuration for a specific class and context
-   * @param className - The class name (e.g., "GP50")
+   * @param className - The class name (e.g., "AC40")
    * @param context - The filter context: 'dataset', 'day', 'fleet', or 'source'
    * @param projectId - Optional project ID (uses persistantStore if not provided)
    */
@@ -168,9 +168,9 @@ class UnifiedFilterService {
       return config;
     } catch (error) {
       logError('Error fetching filter config:', error);
-      // Return default GP50 config as fallback
+      // Return default AC40 config as fallback
       log(`UnifiedFilterService: Using fallback filter config for ${className} (${context || 'default'}) due to API error`);
-      const fallbackConfig = this.getDefaultGP50Config();
+      const fallbackConfig = this.getDefaultAC40Config();
       this.filterConfigs.set(cacheKey, fallbackConfig);
       return fallbackConfig;
     }
@@ -178,7 +178,7 @@ class UnifiedFilterService {
 
   /**
    * Get required filter channels for a class and context
-   * @param className - The class name (e.g., "GP50")
+   * @param className - The class name (e.g., "AC40")
    * @param context - Optional filter context: 'dataset', 'day', 'fleet', or 'source'
    * @param projectId - Optional project ID (uses persistantStore if not provided)
    */
@@ -298,7 +298,7 @@ class UnifiedFilterService {
   /**
    * Get available color by options for a class and context
    * Returns an array of field names that can be used for coloring data points
-   * @param className - The class name (e.g., "GP50")
+   * @param className - The class name (e.g., "AC40")
    * @param context - Optional filter context: 'dataset', 'day', 'fleet', or 'source'
    * @param projectId - Optional project ID (uses persistantStore if not provided)
    * @returns Array of color option names in uppercase (e.g., ['TACK', 'GRADE', 'EVENT'])
@@ -441,11 +441,11 @@ class UnifiedFilterService {
   }
 
   /**
-   * Get default GP50 configuration as fallback
+   * Get default AC40 configuration as fallback
    */
-  private static getDefaultGP50Config(): ClassFilterConfig {
+  private static getDefaultAC40Config(): ClassFilterConfig {
     return {
-      class_name: "GP50",
+      class_name: "AC40",
       version: "1.0",
       filter_channels: [
         {

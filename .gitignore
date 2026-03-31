@@ -20,6 +20,8 @@ build/
 !.env.production.template
 # Deployment configuration (may contain sensitive paths)
 docker/deploy.config.local
+# SSH ControlMaster sockets (multiplex)
+docker/.ssh_mux/
 
 # Logs
 logs/

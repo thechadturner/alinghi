@@ -15,7 +15,7 @@ from pathlib import Path
 # Determine environment mode
 is_production = os.getenv("NODE_ENV") == "production"
 
-# Get project root (three levels up from server_python/scripts/gp50/)
+# Get project root (three levels up from server_python/scripts/ac40/)
 project_root = Path(__file__).parent.parent.parent.parent
 
 # Load environment files based on mode
@@ -114,7 +114,7 @@ if __name__ == "__main__":
         day_type = parameters_json.get('day_type', ['TRAINING', 'RACING'])
         race_type = parameters_json.get('race_type', ['INSHORE'])
 
-        # class_name = 'GP50'
+        # class_name = 'AC40'
         # project_id = 1
         # dataset_id = 7
         # date = '2026-01-17'

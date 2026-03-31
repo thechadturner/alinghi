@@ -165,7 +165,7 @@ function compareTables(devTable, prodTable, tableName) {
     console.log(`-- Add missing columns to ${tableName}`);
     missingInProd.forEach(col => {
       const colName = col.name.includes(' ') ? `"${col.name}"` : col.name;
-      console.log(`ALTER TABLE gp50.${tableName} ADD COLUMN ${colName} ${col.type};`);
+      console.log(`ALTER TABLE ac40.${tableName} ADD COLUMN ${colName} ${col.type};`);
     });
   }
 }
@@ -174,8 +174,8 @@ function compareTables(devTable, prodTable, tableName) {
 const tables = ['events_aggregate', 'events_cloud', 'pages'];
 
 for (const tableName of tables) {
-  const devTable = extractTableDefinition(devContent, 'gp50', tableName);
-  const prodTable = extractTableDefinition(prodContent, 'gp50', tableName);
+  const devTable = extractTableDefinition(devContent, 'ac40', tableName);
+  const prodTable = extractTableDefinition(prodContent, 'ac40', tableName);
   compareTables(devTable, prodTable, tableName);
 }
 

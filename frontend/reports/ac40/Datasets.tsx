@@ -844,7 +844,7 @@ const Datasets = (props: DatasetsProps) => {
   });
 
   const handleAddDataset = () => {
-    const className = selectedClassName() || 'gp50';
+    const className = selectedClassName() || 'ac40';
     navigate(`/upload-datasets/${className}`);
   };
 
@@ -924,14 +924,14 @@ const Datasets = (props: DatasetsProps) => {
 
   const handleEditDataset = (dataset_id: number) => {
     setSelectedDatasetId(dataset_id);
-    const className = selectedClassName() || 'gp50';
+    const className = selectedClassName() || 'ac40';
     const pid = selectedProjectId();
     navigate(`/events/${className}?pid=${pid}&dataset_id=${dataset_id}`);
   };
 
   const handleEditDatasetInfo = (dataset_id: number) => {
     setSelectedDatasetId(dataset_id);
-    const className = selectedClassName() || 'gp50';
+    const className = selectedClassName() || 'ac40';
     // Pass dataset_id in navigation state as backup in case state update hasn't propagated
     navigate(`/dataset-info/${className}`, { state: { dataset_id } });
   };
@@ -943,7 +943,7 @@ const Datasets = (props: DatasetsProps) => {
       return;
     }
     setSelectedDate(date);
-    const className = selectedClassName() || 'gp50';
+    const className = selectedClassName() || 'ac40';
     navigate(`/day-info/${className}`, { state: { date } });
   };
 

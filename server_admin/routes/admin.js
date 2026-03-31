@@ -36,7 +36,7 @@ router.post(
   '/admin/events/grade-by-vmg',
   authenticate,
   [
-    body('class_name').exists().withMessage('class_name is required').trim().isIn(['gp50']).withMessage('class_name must be gp50'),
+    body('class_name').exists().withMessage('class_name is required').trim().isIn(['ac40']).withMessage('class_name must be ac40'),
     body('project_id').exists().withMessage('project_id is required').isInt().toInt(),
     body('date').exists().withMessage('date is required').trim().isLength({ min: 8 }).withMessage('date must be YYYYMMDD')
   ],

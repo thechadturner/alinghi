@@ -944,10 +944,10 @@ exports.populateChannelsForDates = async (req, res) => {
     let result = await check_permissions(req, 'write', project_id)
 
     if (result) {
-      // Only populate for gp50 class
-      if (class_name !== 'gp50') {
-        log(`[populateChannelsForDates] Skipping - class_name is ${class_name}, not gp50`);
-        return sendResponse(res, info, 200, true, "Channel population only supported for gp50 class", null);
+      // Only populate for ac40 class
+      if (class_name !== 'ac40') {
+        log(`[populateChannelsForDates] Skipping - class_name is ${class_name}, not ac40`);
+        return sendResponse(res, info, 200, true, "Channel population only supported for ac40 class", null);
       }
 
       if (!Array.isArray(dates) || dates.length === 0) {

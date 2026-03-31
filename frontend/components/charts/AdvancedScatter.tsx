@@ -889,9 +889,9 @@ export default function AdvancedScatter(props: AdvancedScatterProps) {
           const lower = channelName.toLowerCase();
           if (lower.includes('kph')) return ' [KPH]';
           if (lower.includes('kts')) return ' [KTS]';
-          // Default based on class (GP50 uses kph, others use kts)
+          // Default based on class (AC40 uses kph, others use kts)
           const className = persistantStore.selectedClassName()?.toLowerCase() || '';
-          return className === 'gp50' ? ' [KPH]' : ' [KTS]';
+          return className === 'ac40' ? ' [KPH]' : ' [KTS]';
         };
 
         // Strip _kph/_KPH from channel name for x-axis label so we don't duplicate it (unit is shown via suffix)

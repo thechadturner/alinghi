@@ -162,7 +162,7 @@ app.get("/api/video", authenticate, (req, res) => {
   log('Video endpoint accessed - authentication passed');
   try {
     // Get video path from query parameter or use default
-    let videoPath = req.query.path || 'C:/MyApps/Hunico/Uploads/Media/System/1/gp50/20240829/video1.mp4';
+    let videoPath = req.query.path || 'C:/MyApps/Hunico/Uploads/Media/System/1/ac40/20240829/video1.mp4';
     
     debug(`Original video path from query: ${videoPath}`);
     
@@ -301,7 +301,7 @@ app.get("/api/video", authenticate, (req, res) => {
 // Video info endpoint for debugging
 app.get("/api/video/info", authenticate, (req, res) => {
   try {
-    let videoPath = req.query.path || 'C:/MyApps/Hunico/Uploads/Media/System/1/gp50/20240829/video1.mp4';
+    let videoPath = req.query.path || 'C:/MyApps/Hunico/Uploads/Media/System/1/ac40/20240829/video1.mp4';
     
     // Convert Windows path to container path if running in Docker
     videoPath = convertPathForContainer(videoPath);

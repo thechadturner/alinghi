@@ -12,7 +12,7 @@
 --   (serial/bigserial), sets the sequence value to COALESCE(MAX(column), 1) so
 --   the next nextval() will not collide with existing rows.
 --
--- Schemas: Edit the list in the DO block (default: gp50, ac75, admin) or run
+-- Schemas: Edit the list in the DO block (default: ac40, ac75, admin) or run
 -- once per schema.
 --
 -- Usage: psql -d your_db -f sync_sequences_after_restore.sql
@@ -23,7 +23,7 @@ DECLARE
   r RECORD;
   seq_full TEXT;
   max_val BIGINT;
-  schemas_to_sync TEXT[] := ARRAY['gp50', 'ac75', 'admin'];
+  schemas_to_sync TEXT[] := ARRAY['ac40', 'ac75', 'admin'];
   schema_name TEXT;
 BEGIN
   FOREACH schema_name IN ARRAY schemas_to_sync

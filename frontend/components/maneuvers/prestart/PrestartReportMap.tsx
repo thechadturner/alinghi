@@ -13,11 +13,11 @@ import "leaflet/dist/leaflet.css";
 const CONTAINER_ID = "prestart-report-map";
 const DEFAULT_COLOR = "#888";
 
-/** Real boat length in meters (e.g. GP50 ~15m). Used to scale boat icons to real size on the map. */
+/** Real boat length in meters (e.g. AC40 ~15m). Used to scale boat icons to real size on the map. */
 const BOAT_LENGTH_METERS = 15;
 
 /**
- * Fixed position on earth for prestart map. Must match server_python/scripts/gp50/maneuvers/prestart.py
+ * Fixed position on earth for prestart map. Must match server_python/scripts/ac40/maneuvers/prestart.py
  * (originlat, originlon). Tracks are output in this frame; SL1, SL2, MK1, M1 are transformed to the same
  * coordinate system in rotateMarksByCourseAxis so marks and boats align.
  */
@@ -43,7 +43,7 @@ function metersToLatLng(lat0: number, lng0: number, northSouthMeters: number, ea
 
 /**
  * Transform all marks (SL1, SL2, MK1, M1) into the same coordinate system as the backend:
- * fixed origin from server_python/scripts/gp50/maneuvers/prestart.py (originlat, originlon).
+ * fixed origin from server_python/scripts/ac40/maneuvers/prestart.py (originlat, originlon).
  * Same steps as backend addMapData: position relative to SL1 in meters, rotate by course axis (TWD),
  * then convert to lat/lng using MANEUVER_MAP_ORIGIN. SL1 → origin; SL2, MK1, M1 → rotated offset from origin.
  */

@@ -2,7 +2,7 @@ import { Show, onMount, onCleanup } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { isLoggedIn, user } from "../store/userStore";
 import Footer from "../components/app/Footer";
-import AlinghiHeroBackdrop from "../components/branding/AlinghiHeroBackdrop";
+import alinghiLogoUrl from "../../assets/alinghi.png";
 import { debug } from "../utils/console";
 import { setNoRobotsMetaTags } from "../utils/metaTags";
 
@@ -114,7 +114,6 @@ export default function Index() {
         <main>
         {/* Hero Section - Different content based on login status - Full viewport height */}
         <section class="relative overflow-hidden w-full h-screen min-h-[100vh] min-h-[calc(var(--vh,1vh)*100)] bg-gradient-to-br from-[#1a1a1a] via-[#1f1f1f] to-[#2a2a2a]">
-          <AlinghiHeroBackdrop />
           {/* Dark gradient overlay with subtle patterns */}
           <div class="absolute inset-0 bg-gradient-to-r from-[#1f1f1f]/20 via-[#2a2a2a]/30 to-[#404040]/20"></div>
           <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-[#2a2a2a]/10 via-transparent to-transparent"></div>
@@ -123,19 +122,27 @@ export default function Index() {
           <div class="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center">
             <div class="text-center w-full">
               <Show when={!isLoggedIn()}>
+                <div class="index-guest-hero text-center">
+                  <img
+                    src={alinghiLogoUrl}
+                    alt=""
+                    class="index-hero-alinghi-logo"
+                    width="300"
+                    height="300"
+                    decoding="async"
+                  />
+                  <h1 class="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
+                    Welcome to <span class="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">RACESIGHT</span>
+                  </h1>
+                  <p class="text-xl md:text-2xl text-gray-200 mb-8 max-w-3xl mx-auto leading-relaxed">
+                    Racing Insights You Can Act On
+                  </p>
+                  <p class="text-base md:text-lg text-gray-300 mb-12 whitespace-normal md:whitespace-nowrap mx-auto leading-relaxed">
+                    Expert analysis and interactive reports that help teams make clear, confident decisions.
+                  </p>
 
-                <h1 class="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
-                  Welcome to <span class="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">RACESIGHT</span>
-                </h1>
-                <p class="text-xl md:text-2xl text-gray-200 mb-8 max-w-3xl mx-auto leading-relaxed">
-                  Racing Insights You Can Act On
-                </p>
-                <p class="text-base md:text-lg text-gray-300 mb-12 whitespace-normal md:whitespace-nowrap mx-auto leading-relaxed">
-                  Expert analysis and interactive reports that help teams make clear, confident decisions.
-                </p>
-                
-                <div class="flex flex-col sm:flex-row gap-4 justify-center">
-                  {/* <a href="/register" onClick={(e) => handleAuthNavigation("/register", e)} class="group bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold py-4 px-8 rounded-xl text-lg transition-all duration-300 shadow-2xl hover:shadow-blue-500/25 hover:scale-105 transform">
+                  <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                    {/* <a href="/register" onClick={(e) => handleAuthNavigation("/register", e)} class="group bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold py-4 px-8 rounded-xl text-lg transition-all duration-300 shadow-2xl hover:shadow-blue-500/25 hover:scale-105 transform">
                     <span class="flex items-center justify-center gap-2">
                       Sign Up Free
                       <svg class="w-5 h-5 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -143,9 +150,10 @@ export default function Index() {
                       </svg>
                     </span>
                   </a> */}
-                  <a href="/login" onClick={(e) => handleAuthNavigation("/login", e)} class="bg-white/10 hover:bg-white/20 backdrop-blur-sm text-white font-semibold py-4 px-8 rounded-xl text-lg border border-white/30 transition-all duration-300 hover:scale-105 transform">
-                    Sign In
-                  </a>
+                    <a href="/login" onClick={(e) => handleAuthNavigation("/login", e)} class="bg-white/10 hover:bg-white/20 backdrop-blur-sm text-white font-semibold py-4 px-8 rounded-xl text-lg border border-white/30 transition-all duration-300 hover:scale-105 transform">
+                      Sign In
+                    </a>
+                  </div>
                 </div>
               </Show>
               
@@ -153,6 +161,14 @@ export default function Index() {
                 {/* Welcome back message for logged-in users - Full height section */}
                 <div class="welcome-back-section">
                   <div class="text-center">
+                      <img
+                        src={alinghiLogoUrl}
+                        alt=""
+                        class="welcome-back-logo"
+                        width="300"
+                        height="300"
+                        decoding="async"
+                      />
                       <h1 class="text-5xl md:text-7xl font-bold text-white mb-6 leading-tight">
                         Welcome back, {(() => {
                           const userData = user();

@@ -1,5 +1,5 @@
 """
-Day-level cleanup script for GP50.
+Day-level cleanup script for AC40.
 
 Runs at the end of a dataset upload process when multiple sources were added (admin scripts page).
 Operates on a **day** (class_name, project_id, date), not on a single dataset.
@@ -40,7 +40,7 @@ from pathlib import Path
 # Determine environment mode
 is_production = os.getenv("NODE_ENV") == "production"
 
-# Get project root (three levels up from server_python/scripts/gp50/)
+# Get project root (three levels up from server_python/scripts/ac40/)
 project_root = Path(__file__).parent.parent.parent.parent
 
 # Load environment files based on mode
@@ -470,7 +470,7 @@ def run_race_position_day(api_token, class_name, project_id, date_norm, datasets
         race_events.loc[mask, "Positions_lost"] = total_lost
 
     # Maneuver loss averages: fetched from server_app GET /api/events/maneuver-loss-averages (port 8069).
-    # That API reads gp50.maneuver_stats (Loss_total_tgt) joined to dataset_events, grouped by
+    # That API reads ac40.maneuver_stats (Loss_total_tgt) joined to dataset_events, grouped by
     # dataset_id/race_number[/leg_number], only events with GRADE>1 and Race_number in tags.
     # Averages can be null if: maneuver_stats has no row for those events, Loss_total_tgt is null,
     # or no TACK/GYBE/ROUNDUP/BEARAWAY events exist with GRADE>1 for that race/leg. maneuver_stats
@@ -716,7 +716,7 @@ def sync_day_pages_from_events(api_token, class_name, project_id, date_norm):
             has_prestarts = True
             break
     if has_prestarts:
-        # Must match gp50.pages.page_name (day/reports), e.g. "START SUMMARY" -> Prestart.tsx — not event_type "PRESTART"
+        # Must match ac40.pages.page_name (day/reports), e.g. "START SUMMARY" -> Prestart.tsx — not event_type "PRESTART"
         prestart_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": "START SUMMARY"}
         prestart_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", prestart_payload)
         if prestart_res.get("success"):
@@ -772,7 +772,7 @@ if __name__ == "__main__":
         verbose = parameters_json.get("verbose", False)
         pages_only = bool(parameters_json.get("pages_only", False))
 
-        # class_name = "gp50"
+        # class_name = "ac40"
         # project_id = 1
         # date = "20260118"
         # verbose = True

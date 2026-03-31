@@ -4,6 +4,7 @@ setlocal enabledelayedexpansion
 REM ============================================
 REM Python Scripts-Only Deployment
 REM Copies server_python/scripts to production VM (no servers, no Docker)
+REM SSH: deploy.config.local + SSH_KEY ^(set-deploy-ssh-opts.bat^).
 REM ============================================
 
 set "SCRIPT_DIR=%~dp0"
@@ -51,19 +52,19 @@ if "%SSH_USER%"=="" (
     pause
     exit /b 1
 )
-if "%SSH_KEY%"=="" (
-    echo [ERROR] SSH_KEY not set in %CONFIG_FILE%
-    pause
-    exit /b 1
-)
 if "%VM_BASE_PATH%"=="" (
     echo [ERROR] VM_BASE_PATH not set in %CONFIG_FILE%
     pause
     exit /b 1
 )
 
-if not exist "%SSH_KEY%" (
-    echo [ERROR] SSH key not found: %SSH_KEY%
+call "%SCRIPT_DIR%set-deploy-ssh-opts.bat"
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+call "%SCRIPT_DIR%establish-ssh-mux.bat"
+if errorlevel 1 (
     pause
     exit /b 1
 )
@@ -87,49 +88,18 @@ if "%DEPLOY_DRY_RUN%"=="true" (
     exit /b 0
 )
 
-set "TEMP_DIR=%TEMP%\hunico-scripts-deploy-%RANDOM%"
-echo [INFO] Creating archive from server_python\scripts...
-mkdir "%TEMP_DIR%" 2>nul
-if not exist "%TEMP_DIR%" (
-    echo [ERROR] Failed to create temp dir
-    pause
-    exit /b 1
-)
-
-tar -czf "%TEMP_DIR%\scripts.tar.gz" -C server_python scripts 2>nul
+echo [INFO] Streaming server_python\scripts to VM ^(single SSH — one password^)...
+cd /d "%PROJECT_ROOT%\server_python"
+tar -czf - scripts 2>nul | ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'mkdir -p %REMOTE_SCRIPTS% && (rm -rf %REMOTE_SCRIPTS%/* 2>/dev/null; true) && tar -xzf - -C %REMOTE_SCRIPTS% --strip-components=1'"
 if errorlevel 1 (
-    echo [ERROR] Failed to create scripts.tar.gz
-    rmdir /S /Q "%TEMP_DIR%" 2>nul
+    echo [ERROR] Deploy failed ^(tar stream or SSH extract^)
+    echo [INFO] SSH to VM and fix %REMOTE_SCRIPTS% if needed
+    cd /d "%PROJECT_ROOT%"
     pause
     exit /b 1
 )
-echo [SUCCESS] Archive created
-
-echo [INFO] Uploading to %SSH_USER%@%SSH_HOST%:%REMOTE_SCRIPTS%...
-scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\scripts.tar.gz" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/scripts.tar.gz
-if errorlevel 1 (
-    echo [ERROR] Upload failed
-    del /Q "%TEMP_DIR%\scripts.tar.gz" 2>nul
-    rmdir /S /Q "%TEMP_DIR%" 2>nul
-    pause
-    exit /b 1
-)
-echo [SUCCESS] Uploaded
-
-echo [INFO] Extracting on VM (same as DEPLOY_VM_SERVERS.bat)...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %REMOTE_SCRIPTS% && (rm -rf %REMOTE_SCRIPTS%/* 2>/dev/null; true) && tar -xzf %VM_BASE_PATH%/scripts.tar.gz -C %REMOTE_SCRIPTS% --strip-components=1 && rm -f %VM_BASE_PATH%/scripts.tar.gz"
-if errorlevel 1 (
-    echo [ERROR] Extract on VM failed
-    echo [INFO] SSH to VM and run: mkdir -p %REMOTE_SCRIPTS% ^&^& tar -xzf %VM_BASE_PATH%/scripts.tar.gz -C %REMOTE_SCRIPTS% --strip-components=1
-    del /Q "%TEMP_DIR%\scripts.tar.gz" 2>nul
-    rmdir /S /Q "%TEMP_DIR%" 2>nul
-    pause
-    exit /b 1
-)
+cd /d "%PROJECT_ROOT%"
 echo [SUCCESS] Scripts deployed to %REMOTE_SCRIPTS%
-
-del /Q "%TEMP_DIR%\scripts.tar.gz" 2>nul
-rmdir /S /Q "%TEMP_DIR%" 2>nul
 
 echo.
 echo ============================================

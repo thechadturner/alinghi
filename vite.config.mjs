@@ -6,6 +6,69 @@ import { visualizer } from 'rollup-plugin-visualizer';
 
 import { loadEnv } from 'vite';
 
+/**
+ * Parse port from env string; fall back when missing or invalid.
+ * @param {string | undefined} v
+ * @param {number} fallback
+ */
+function parsePort(v, fallback) {
+  const n = parseInt(String(v ?? ''), 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * When running `vite` on localhost:3000 without nginx, forward /api/* to local
+ * Node/Python services (same split as docker/nginx/nginx-dev.conf).
+ * @param {Record<string, string>} env from loadEnv
+ */
+function createDevApiProxy(env) {
+  const appPort = parsePort(env.VITE_APP_PORT, 8069);
+  const adminPort = parsePort(env.VITE_ADMIN_PORT, 8059);
+  const filePort = parsePort(env.VITE_FILE_PORT, 8079);
+  const mediaPort = parsePort(env.VITE_MEDIA_PORT, 8089);
+  const streamPort = parsePort(env.VITE_STREAM_PORT, 8099);
+  const pythonPort = parsePort(env.VITE_PYTHON_PORT, 8049);
+
+  const app = `http://127.0.0.1:${appPort}`;
+  const admin = `http://127.0.0.1:${adminPort}`;
+  const file = `http://127.0.0.1:${filePort}`;
+  const media = `http://127.0.0.1:${mediaPort}`;
+  const stream = `http://127.0.0.1:${streamPort}`;
+  const python = `http://127.0.0.1:${pythonPort}`;
+
+  const forward = (target, rewrite) => ({
+    target,
+    changeOrigin: true,
+    ...(rewrite ? { rewrite: (path) => rewrite(path) } : {}),
+  });
+
+  /** @type {import('vite').ProxyOptions} */
+  const base = { changeOrigin: true };
+
+  // Longest / most specific paths first (first match wins in dev).
+  return {
+    '/api/admin/events/upload-progress': forward(admin, (path) =>
+      path.replace(/^\/api\/admin\/events\/upload-progress/, '/api/events/upload-progress')
+    ),
+    '/api/admin/api/upload/progress': forward(admin, (path) =>
+      path.replace(/^\/api\/admin\/api\/upload\/progress/, '/api/upload/progress')
+    ),
+    '/api/admin/log_activity': { ...base, target: app },
+    '/api/admin/user_activity': { ...base, target: app },
+    '/api/admin/timezones': { ...base, target: app },
+    '/api/file/health': forward(file, () => '/api/health'),
+    '/api/file': { ...base, target: file },
+    '/api/stream/ws': { ...base, target: stream, ws: true },
+    '/api/stream': { ...base, target: stream, ws: true },
+    '/api/python': forward(python, (path) => path.replace(/^\/api\/python/, '/api')),
+    '/api/media/video': forward(media, (path) => path.replace(/^\/api\/media\/video/, '/api/video')),
+    '/api/media/': { ...base, target: app },
+    '/api/log': { ...base, target: admin },
+    '/api/admin/': forward(admin, (path) => path.replace(/^\/api\/admin\/?/, '/api/')),
+    '/api': { ...base, target: app },
+  };
+}
+
 // Repo root (directory containing this config); avoids hardcoded machine paths
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = resolve(__dirname);
@@ -212,6 +275,8 @@ export default defineConfig(({ mode }) => {
   server: {
     port: 3000,
     host: true, // Allow external connections
+    // Forward /api to local backends (login, data, file, admin, …) — same roles as nginx in Docker
+    proxy: isDev ? createDevApiProxy(env) : undefined,
     // Middleware to rewrite /public/assets/ paths to /assets/ for SQLite worker files
     // This handles runtime requests that Vite detects
     middlewareMode: false,
@@ -278,7 +343,6 @@ export default defineConfig(({ mode }) => {
       usePolling: false, // Keep false unless file watching is unreliable
       interval: 1000, // Polling interval in ms (only used if usePolling is true)
     },
-    // No proxy configuration - nginx handles all API routing
     // COOP/COEP headers required for SharedArrayBuffer (SQLite WASM OPFS)
     // Only set for trustworthy origins (localhost, 127.0.0.1, or HTTPS)
     // Network IPs (like 192.168.0.18) are not trustworthy for these headers
@@ -333,7 +397,7 @@ export default defineConfig(({ mode }) => {
           }
           // Report components - keep each class in its own chunk for better code splitting
           if (id.includes('/reports/')) {
-            // Extract class name from path (e.g., frontend/reports/gp50/UploadDatasets.tsx)
+            // Extract class name from path (e.g., frontend/reports/ac40/UploadDatasets.tsx)
             const match = id.match(/reports\/([^/]+)\//);
             if (match) {
               const className = match[1];

@@ -88,6 +88,8 @@ services:
       - ${MEDIA_DIRECTORY:-./media}:/media
     networks:
       - hunico-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis:
         condition: service_healthy
@@ -137,6 +139,8 @@ services:
       - ${SCRIPTS_DIRECTORY:-./scripts}:/app/server_python/scripts
     networks:
       - hunico-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       node:
         condition: service_healthy
@@ -161,8 +165,10 @@ services:
       - "${NGINX_HTTPS_PORT:-443}:443"
     volumes:
       - ../../docker/nginx/nginx-prod.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../../frontend:/usr/share/nginx/html:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Vite outputs to repo-root dist/ (npm run build). Paths are relative to this compose file (docker/compose/).
+      # Override FRONTEND_STATIC_DIRECTORY in .env.production.local if your VM deploys static files elsewhere.
+      - ${FRONTEND_STATIC_DIRECTORY:-../../dist}:/usr/share/nginx/html:ro
+      - ../../docker/nginx/ssl:/etc/nginx/ssl:ro
       - ../../docker/nginx/logs:/var/log/nginx
     extra_hosts:
       - "host.docker.internal:host-gateway"

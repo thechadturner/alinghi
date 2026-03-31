@@ -277,7 +277,7 @@ export const extractFilterOptions = async (data: any[], context?: 'dataset' | 'd
   try {
     const UnifiedFilterService = (await import('../services/unifiedFilterService')).default;
     const { persistantStore } = await import('../store/persistantStore');
-    const className = persistantStore.selectedClassName?.() || 'gp50';
+    const className = persistantStore.selectedClassName?.() || 'ac40';
     const filterContext = context || 'dataset'; // Default to dataset context
     filterConfig = await UnifiedFilterService.getFilterConfig(className, filterContext);
     debug('🔍 extractFilterOptions: Retrieved filter config:', { 
@@ -309,7 +309,7 @@ export const extractFilterOptions = async (data: any[], context?: 'dataset' | 'd
       const { huniDBStore } = await import('../store/huniDBStore');
       const { TableNames, escapeTableName } = await import('../store/huniDBTypes');
       
-      const className = persistantStore.selectedClassName?.() || 'gp50';
+      const className = persistantStore.selectedClassName?.() || 'ac40';
       const projectId = persistantStore.selectedProjectId?.();
       const datasetId = persistantStore.selectedDatasetId?.();
       const sourceId = persistantStore.selectedSourceId?.();
@@ -476,7 +476,7 @@ export const extractFilterOptions = async (data: any[], context?: 'dataset' | 'd
       const { huniDBStore } = await import('../store/huniDBStore');
       const { TableNames, escapeTableName } = await import('../store/huniDBTypes');
 
-      const className = persistantStore.selectedClassName?.() || 'gp50';
+      const className = persistantStore.selectedClassName?.() || 'ac40';
       const projectId = persistantStore.selectedProjectId?.();
       const datasetId = persistantStore.selectedDatasetId?.();
       const sourceId = persistantStore.selectedSourceId?.();

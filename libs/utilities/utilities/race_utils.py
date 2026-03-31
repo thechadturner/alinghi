@@ -194,7 +194,7 @@ def getMetadata(df: pd.DataFrame, ts: float, class_name: str) -> Dict[str, Any]:
     Args:
         df (pd.DataFrame): DataFrame containing race and sail data
         ts (float): Reference timestamp to filter data
-        class_name (str): Class name ('gp50')
+        class_name (str): Class name ('ac40')
     Returns:
         dict: Dictionary containing race and sail metadata with standardized IDs
     """
@@ -211,7 +211,7 @@ def getMetadata(df: pd.DataFrame, ts: float, class_name: str) -> Dict[str, Any]:
             info["Leg_number"] = int(number(row.get('Leg_number', 0)))
             eventinfo["RACES"] = info
 
-            if class_name.lower() == 'gp50':
+            if class_name.lower() == 'ac40':
                 info = {}
                 info["Name"] = str(row.get('Name', ''))
                 info["Wing_code"] = str(row.get('Wing_code', ''))

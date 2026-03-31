@@ -87,7 +87,7 @@ function getDatasetTableColumns(phase: string, color: string, className?: string
   }
 
   // Determine TWS unit based on class name
-  const twsUnit = className?.toLowerCase() === 'gp50' ? '[kph]' : '[kts]';
+  const twsUnit = className?.toLowerCase() === 'ac40' ? '[kph]' : '[kts]';
   const twsDesc = `TWS ${twsUnit}`;
 
   // Dataset: always show RACE (race number) after DATETIME; when color is RACE use TACK as second data column to avoid duplicate
@@ -153,7 +153,7 @@ function getFleetTableColumns(phase: string, color: string, className?: string):
   }
 
   // Determine TWS unit based on class name
-  const twsUnit = className?.toLowerCase() === 'gp50' ? '[kph]' : '[kts]';
+  const twsUnit = className?.toLowerCase() === 'ac40' ? '[kph]' : '[kts]';
   const twsDesc = `TWS ${twsUnit}`;
 
   // Fleet: always show RACE (race number) after DATETIME; when color is RACE use TACK as second data column to avoid duplicate
@@ -269,7 +269,7 @@ export function getBigTableColumns(context: ManeuversContext, color: string, cla
   }
 
   // Determine TWS unit based on class name
-  const twsUnit = className?.toLowerCase() === 'gp50' ? '[kph]' : '[kts]';
+  const twsUnit = className?.toLowerCase() === 'ac40' ? '[kph]' : '[kts]';
   const twsDesc = `TWS ${twsUnit}`;
 
   const fullColumns = [

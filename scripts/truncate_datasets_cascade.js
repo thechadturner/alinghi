@@ -2,7 +2,7 @@
  * Script to truncate datasets tables with CASCADE and reset all affected identity sequences
  * 
  * This script will:
- * 1. Truncate datasets tables in gp50 and ac75 schemas with CASCADE
+ * 1. Truncate datasets tables in ac40 and ac75 schemas with CASCADE
  *    (which automatically truncates all dependent tables via foreign keys)
  * 2. Reset all identity sequences (sequences) for all affected tables
  * 
@@ -158,7 +158,7 @@ async function main() {
   // Wait 5 seconds
   await new Promise(resolve => setTimeout(resolve, 5000));
   
-  const schemas = ['gp50', 'ac75'];
+  const schemas = ['ac40', 'ac75'];
   let totalTruncated = 0;
   let totalSequencesReset = 0;
   

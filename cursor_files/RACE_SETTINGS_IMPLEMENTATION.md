@@ -18,14 +18,14 @@ Created a new `RaceSettings` modal component for managing source visibility in R
 
 ## Files Modified
 
-### 2. `frontend/reports/gp50/day/reports/RaceSummary.tsx`
+### 2. `frontend/reports/ac40/day/reports/RaceSummary.tsx`
 - **Changes**:
   - Added import for `RaceSettings` component
   - Added settings icon in the upper left of the page header
   - Restructured header layout with flexbox to accommodate settings icon
   - Settings icon appears before the "Race Summary" title with proper spacing (1rem gap)
 
-### 3. `frontend/reports/gp50/day/reports/Prestart.tsx`
+### 3. `frontend/reports/ac40/day/reports/Prestart.tsx`
 - **Changes**:
   - Added import for `RaceSettings` component
   - Added settings icon to the left of the existing dropdown buttons

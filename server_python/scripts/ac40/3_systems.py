@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Determine environment mode
 is_production = os.getenv("NODE_ENV") == "production"
 
-# Get project root (three levels up from server_python/scripts/gp50/)
+# Get project root (three levels up from server_python/scripts/ac40/)
 project_root = Path(__file__).parent.parent.parent.parent
 
 base_env_file = ".env.production" if is_production else ".env"
@@ -203,7 +203,7 @@ if __name__ == "__main__":
 
     try:
         if USE_MANUAL_TEST_INPUTS:
-            class_name = "GP50"
+            class_name = "AC40"
             project_id = 1
             date = "20260215"
             source_name = "GBR"

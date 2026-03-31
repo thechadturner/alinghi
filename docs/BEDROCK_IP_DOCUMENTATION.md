@@ -10,7 +10,7 @@
 ## 1. Application Overview
 
 - **Product name:** RACESIGHT (user-facing product and repository/organization name).
-- **Domain:** Sailing and racing analytics platform — real-time and historical performance data, event detection, fleet comparison, and visualization for sailing classes (e.g. AC75, GP50).
+- **Domain:** Sailing and racing analytics platform — real-time and historical performance data, event detection, fleet comparison, and visualization for sailing classes (e.g. AC75, AC40).
 - **Stack:** SolidJS frontend, Node.js/Express backend services, Python (FastAPI) for processing scripts, Redis for streaming, PostgreSQL for persistence, SQLite/WASM (HuniDB) for client-side storage.
 
 ---
@@ -30,7 +30,7 @@
 ### 3.1 Architecture and System Design
 
 - **Multi-service backend:** Separate services for app API, admin, file/media, streaming, and Python script execution (server_app, server_admin, server_file, server_media, server_stream, server_python).
-- **Class-driven schema:** Database and APIs are organized by sailing “class” (e.g. `ac75`, `gp50`) with parallel table sets per class (datasets, events, media, targets, etc.).
+- **Class-driven schema:** Database and APIs are organized by sailing “class” (e.g. `ac75`, `ac40`) with parallel table sets per class (datasets, events, media, targets, etc.).
 - **Unified data store and caching policy:** Central frontend store that applies global filters and time windows; in-session in-memory caches for chart/query data; HuniDB used only for non-timeseries (events, aggregates, map data, objects). Timeseries are not persisted client-side.
 - **Data normalization pattern:** Metadata fields normalized to lowercase with underscores in store/HuniDB; channel names preserved in original case for InfluxDB compatibility. Documented in `docs/architecture/DATA_NORMALIZATION_PATTERN.md`.
 - **Multi-window synchronization:** Hybrid approach using SyncStore (localStorage/IndexedDB) plus hub-based postMessage (filter store, selection store) for cross-window and cross-browser-window sync; guard flags to avoid echo loops.
@@ -56,13 +56,13 @@
 
 ### 3.3 Sailing and Racing Domain Logic
 
-- **Maneuver detection and segmentation:** Python utilities and GP50 scripts for identifying and segmenting maneuvers (tacks, gybes, bearaways, roundups, takeoffs, prestart, etc.) using angular rate (e.g. LOWESS on yaw rate), entry/exit bounds, and sailing-specific thresholds.
+- **Maneuver detection and segmentation:** Python utilities and AC40 scripts for identifying and segmenting maneuvers (tacks, gybes, bearaways, roundups, takeoffs, prestart, etc.) using angular rate (e.g. LOWESS on yaw rate), entry/exit bounds, and sailing-specific thresholds.
 - **Race/leg and performance:** Identification of race legs, VMG/VMC-style metrics, polar interpolation (TWA, VMG, BSP), mark wind, and performance aggregates. Metadata (race_number, leg_number, grade, state, config) stored in event tags and used for filtering.
 - **Event types and tags:** Dataset events (e.g. CREW, HEADSAIL, CONFIGURATION, race/prestart) with sync/diff logic (update/insert/delete) and tag updates (e.g. mid_time, key-value tags). Server-side event tag updates and matching by time containment.
 - **Wind/weather and geo:** True wind from apparent, current adjustment, air density, range/bearing from lat/lng, angle normalization (360/180), mean360/std360 for circular stats.
 
 **Key references:**  
-`libs/utilities/utilities/race_utils.py`, `libs/utilities/` (math_utils, geo_utils, wind_utils, interp_utils), `server_python/scripts/gp50/` (maneuvers, performance, map, race, markwind, normalization, processing), `server_admin/controllers/events.js`.
+`libs/utilities/utilities/race_utils.py`, `libs/utilities/` (math_utils, geo_utils, wind_utils, interp_utils), `server_python/scripts/ac40/` (maneuvers, performance, map, race, markwind, normalization, processing), `server_admin/controllers/events.js`.
 
 ---
 
@@ -86,7 +86,7 @@
 
 - **Admin events API:** CRUD and bulk operations for dataset events; updateEventTags; syncDatasetEvents (diff desired CREW/HEADSAIL/race/prestart vs current, optional CONFIG/CONFIGURATION updates); time normalization and timezone handling (preserveTimezone, ensureExplicitTimezone).
 - **Authentication and authorization:** JWT and Personal Access Tokens (PAT); permission levels (e.g. SUPERUSER, ADMINISTRATOR, PUBLISHER, CONTRIBUTOR, READER) and access types (READ, WRITE, DELETE, ADMIN); project-scoped permissions and user_projects.
-- **Python service:** FastAPI wrapper for running scripts (e.g. GP50 normalization, processing, maneuvers, performance, map); SSE for progress; env-based config (e.g. SYSTEM_KEY) and parameter passing (class_name, project_id, dataset_id, etc.).
+- **Python service:** FastAPI wrapper for running scripts (e.g. AC40 normalization, processing, maneuvers, performance, map); SSE for progress; env-based config (e.g. SYSTEM_KEY) and parameter passing (class_name, project_id, dataset_id, etc.).
 
 **Key references:**  
 `server_admin/controllers/events.js`, `docs/system/subscriptions-and-permissions.md`, `docs/python/python-service-overview.md`, `server_python/app/main.py`.
@@ -100,7 +100,7 @@ The Python scripting layer is a FastAPI service that executes class-specific scr
 #### Service and execution model
 
 - **FastAPI app** (`server_python/app/main.py`): Exposes script execution (sync and background), progress over SSE, running-process listing, and cancel. Authenticates via JWT or PAT; loads env from project root (`.env` / `.env.local` or `.env.production` / `.env.production.local` based on `NODE_ENV`); uses `SYSTEM_KEY`, `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `APP_BASE_URL`, `CORS_ORIGINS`.
-- **Script discovery:** Scripts live under `server_python/scripts/<class_name>/` (e.g. `scripts/gp50/`). The API accepts `class_name` and `script_name` (e.g. `0_map.py`); path is `scripts/<class_name.lower()>/<script_name>`. Case-insensitive script name matching is used when the file system differs.
+- **Script discovery:** Scripts live under `server_python/scripts/<class_name>/` (e.g. `scripts/ac40/`). The API accepts `class_name` and `script_name` (e.g. `0_map.py`); path is `scripts/<class_name.lower()>/<script_name>`. Case-insensitive script name matching is used when the file system differs.
 - **Parameter passing:** The caller passes a JSON object (e.g. `class_name`, `project_id`, `dataset_id`, `date`, `source_name`, `start_time`, `end_time`, `batch`, `verbose`). The service invokes the script with this JSON as a single command-line argument (`sys.argv[1]`). Scripts often parse it and store context in `utilities.LocalStorage()` (in-memory key-value) for use by imported modules (e.g. Maneuvers, Map, Race).
 - **Process management:** Subprocess execution with configurable timeout (e.g. 1 hour); stdout/stderr read in a loop and forwarded to SSE; error/warning keyword detection; process registry by `process_id`; graceful shutdown and SSE connection cleanup to avoid memory leaks.
 - **SSE:** Real-time progress stream per user; events include script output, progress, completion, timeout; keepalive and heartbeat; cleanup of stale connections.
@@ -110,11 +110,11 @@ The Python scripting layer is a FastAPI service that executes class-specific scr
 All scripts depend on the shared `utilities` package (imported as `import utilities as u`). It provides:
 
 - **API access:** `get_api_data`, `post_api_data`, `get_channel_values` (timeseries from app API/Influx), `log` (async logging to API).
-- **Race/sailing logic:** `race_utils` — `PrepareTimeReference`, `IdentifyEntryExit` (LOWESS-based maneuver bounds), `getMostLikelyValue`, `PrepareManeuverData`, `identifyManeuvers`, `IdentifyRaceLegs`, `remove_gaps`/`removeGaps`, and related helpers used across GP50 scripts.
+- **Race/sailing logic:** `race_utils` — `PrepareTimeReference`, `IdentifyEntryExit` (LOWESS-based maneuver bounds), `getMostLikelyValue`, `PrepareManeuverData`, `identifyManeuvers`, `IdentifyRaceLegs`, `remove_gaps`/`removeGaps`, and related helpers used across AC40 scripts.
 - **Math/geo/datetime/wind:** `math_utils` (angle normalization, mean360, etc.), `geo_utils` (range/bearing, lat/lng conversions), `datetime_utils`, `wind_utils`, `interp_utils` (polar interpolation), `weather_utils`.
 - **Local context:** `LocalStorage()` — in-memory key-value store for `api_token`, `class_name`, `project_id`, `dataset_id`, `date`, `source_name`, `start_time`, `end_time`, `batch`, `verbose` so that downstream modules do not need to thread parameters.
 
-#### GP50 script pipeline (numbered flow)
+#### AC40 script pipeline (numbered flow)
 
 Scripts are named by execution order and purpose:
 
@@ -125,7 +125,7 @@ Scripts are named by execution order and purpose:
 | **0_race.py** | Race segmentation and race/leg metadata (e.g. identifies races and legs, posts or updates race/leg structure). |
 | **0_performance.py** | Performance aggregates for the dataset (e.g. VMG, polar, or other performance metrics). |
 | **0_map.py** | Map-related data generation (tracks, waypoints, or other map payloads) for the dataset. |
-| **1_normalization_influx.py** | Fetches raw data from InfluxDB, applies class-specific channel mapping (angle vs regular vs special), normalizes names and units, and writes normalized timeseries (e.g. to API/Influx or internal store). Defines `get_influx_to_normalized_mapping()` for GP50. |
+| **1_normalization_influx.py** | Fetches raw data from InfluxDB, applies class-specific channel mapping (angle vs regular vs special), normalizes names and units, and writes normalized timeseries (e.g. to API/Influx or internal store). Defines `get_influx_to_normalized_mapping()` for AC40. |
 | **1_normalization_csv.py** | CSV-based normalization path (alternative to Influx). |
 | **1_parseXml.py** | Parses XML input (e.g. race or config) and prepares structured data for downstream steps. |
 | **2_processing.py** | Main processing: fetches normalized channel data via `get_channel_values`, applies gap removal, filters, and sailing-specific logic; can write events, aggregates, or derived channels; uses PyArrow and batch processing for large datasets. |
@@ -138,8 +138,8 @@ Scripts are named by execution order and purpose:
 
 #### Maneuvers subsystem
 
-- **Maneuvers.py** (in `scripts/gp50/`): Orchestrator that loads Datetime/ts/Maneuver_type channel data via `get_channel_values`, then calls each maneuver module in sequence: tacks, gybes, roundups, bearaways, takeoffs, prestart, update_loss. Each submodule detects its maneuver type, computes entry/exit (often using `race_utils` such as `IdentifyEntryExit`), and posts events to the dataset-events API.
-- **maneuvers/** (under `scripts/gp50/`):  
+- **Maneuvers.py** (in `scripts/ac40/`): Orchestrator that loads Datetime/ts/Maneuver_type channel data via `get_channel_values`, then calls each maneuver module in sequence: tacks, gybes, roundups, bearaways, takeoffs, prestart, update_loss. Each submodule detects its maneuver type, computes entry/exit (often using `race_utils` such as `IdentifyEntryExit`), and posts events to the dataset-events API.
+- **maneuvers/** (under `scripts/ac40/`):  
   - **tacks.py**, **gybes.py**: Tack and gybe detection and event creation.  
   - **roundups.py**, **bearaways.py**, **takeoffs.py**: Roundup, bearaway, and takeoff detection.  
   - **prestart.py**: Prestart phase detection and events.  
@@ -156,7 +156,7 @@ Scripts are named by execution order and purpose:
 - Normalization and processing use fixed channel sets (e.g. Datetime, ts, Lat_dd, Lng_dd, Tws_kts, Hdg_deg, Twd_deg, Bsp_kts, Twa_deg, Vmg_kts, Foiling_state, Yaw_rate_dps, Race_number, Leg_number, etc.) and type hints (datetime, float, angle360, angle180) for correct parsing and storage.
 
 **Key references:**  
-`server_python/app/main.py`, `server_python/app/dependencies/auth.py`, `server_python/scripts/gp50/` (all numbered and maintenance scripts), `server_python/scripts/gp50/Maneuvers.py`, `server_python/scripts/gp50/maneuvers/`, `libs/utilities/` (especially `race_utils.py`, `api_utils.py`), `docs/python/python-service-overview.md`, `docs/python/API_DOCUMENTATION.md`.
+`server_python/app/main.py`, `server_python/app/dependencies/auth.py`, `server_python/scripts/ac40/` (all numbered and maintenance scripts), `server_python/scripts/ac40/Maneuvers.py`, `server_python/scripts/ac40/maneuvers/`, `libs/utilities/` (especially `race_utils.py`, `api_utils.py`), `docs/python/python-service-overview.md`, `docs/python/API_DOCUMENTATION.md`.
 
 ---
 
@@ -200,12 +200,12 @@ Filter and API usage follow this scope: dataset-level uses `filters_dataset`; da
 
 #### Targets and polars
 
-- **Targets:** The Targets tool (`frontend/reports/gp50/tools/Targets.tsx`) uses `TargetScatter` and `TargetTable` to compare boat performance against configurable target curves (e.g. red/green/blue target names stored in localStorage). Data is fetched by project/source; users select TWS/BSP (or other) axes and assign targets to series for scatter and table views. Target definitions can be managed via DayInfo or configuration (e.g. `parseTargetFilename`).
-- **Polars:** The Polars tool (`frontend/reports/gp50/tools/Polars.tsx`) uses `PolarPlot` to display polar data (BSP or VMG vs TWA). Users can select TWS band, choose among multiple polars (red/green/blue), toggle display mode (BSP/VMG), and in some flows save or “save as” polar configurations. Data is project/source-scoped; polars are used for performance comparison and tuning.
+- **Targets:** The Targets tool (`frontend/reports/ac40/tools/Targets.tsx`) uses `TargetScatter` and `TargetTable` to compare boat performance against configurable target curves (e.g. red/green/blue target names stored in localStorage). Data is fetched by project/source; users select TWS/BSP (or other) axes and assign targets to series for scatter and table views. Target definitions can be managed via DayInfo or configuration (e.g. `parseTargetFilename`).
+- **Polars:** The Polars tool (`frontend/reports/ac40/tools/Polars.tsx`) uses `PolarPlot` to display polar data (BSP or VMG vs TWA). Users can select TWS band, choose among multiple polars (red/green/blue), toggle display mode (BSP/VMG), and in some flows save or “save as” polar configurations. Data is project/source-scoped; polars are used for performance comparison and tuning.
 
 #### Customized reports: daily notes, cheat sheets, race reports, prestart
 
-- **Daily notes and day info:** DayInfo (`frontend/reports/gp50/DayInfo.tsx`) is the class-specific “day info” page (e.g. for a fleet day). It provides rich-text fields for summary, daily notes, technique notes, winning notes, and day-type notes (Quill + DOMPurify). It also supports dataset metadata (event name, description, timezone, TWS/TWD, shared flag, mast/foils/rudder), target selection, and links to process/SSE for running scripts. Used by admin/publisher for editing day-level notes and metadata that feed into daily summaries and context.
+- **Daily notes and day info:** DayInfo (`frontend/reports/ac40/DayInfo.tsx`) is the class-specific “day info” page (e.g. for a fleet day). It provides rich-text fields for summary, daily notes, technique notes, winning notes, and day-type notes (Quill + DOMPurify). It also supports dataset metadata (event name, description, timezone, TWS/TWD, shared flag, mast/foils/rudder), target selection, and links to process/SSE for running scripts. Used by admin/publisher for editing day-level notes and metadata that feed into daily summaries and context.
 - **Cheat sheet summaries:**  
   - **Fleet Cheat Sheet** (`FleetCheatSheet.tsx`, project/all): Straight-line and maneuver cheat sheets across selected sources. Straight-line: group by Channel (one row per CONFIG per wind band) or by Wind (columns per wind bin); TWS and metric (BSP, TWA, VMG, heel, pitch, etc.) and point of sail selectors; API `cheat-sheet`. Maneuvers: group by Channel/Wind, TWS, maneuver type; API `maneuver-cheat-sheet`. Users can select/deselect sources and copy tables (with optional deltas).  
   - **Cheat Sheet** (project/source): Same concept for a single source across time (source-scoped cheat sheet).
@@ -221,7 +221,7 @@ Filter and API usage follow this scope: dataset-level uses `filters_dataset`; da
 Other report types (e.g. Maneuvers, Performance, Events) are available at dataset, day, or project scope depending on the menu; all follow the same data-scope rules and filter/store integration above.
 
 **Key references:**  
-`frontend/store/playbackStore.ts`, `frontend/components/charts/Video.tsx`, `frontend/components/charts/map/MapTimeSeries.tsx`, `frontend/components/utilities/VideoSyncHelper.tsx`, `frontend/services/mediaFilesService.ts`, `frontend/services/mediaAvailabilityService.ts`, `docs/frontend/sidebar-menu-logic.md`, `frontend/components/dashboard/Sidebar.tsx`, `frontend/reports/gp50/tools/Targets.tsx`, `frontend/reports/gp50/tools/Polars.tsx`, `frontend/reports/gp50/DayInfo.tsx`, `frontend/reports/gp50/project/all/reports/FleetCheatSheet.tsx`, `frontend/reports/gp50/project/source/reports/CheatSheet.tsx`, `frontend/reports/gp50/day/reports/RaceSummary.tsx`, `frontend/reports/gp50/day/reports/TrainingSummary.tsx`, `frontend/reports/gp50/day/reports/Prestart.tsx`, `docs/backend/VIDEO_UPLOAD_BYPASS_AND_MED_RES_ONLY.md`, `server_app/controllers/data.js` (getRaceSummary_TableData, getCheatSheet_TableData, maneuver-cheat-sheet).
+`frontend/store/playbackStore.ts`, `frontend/components/charts/Video.tsx`, `frontend/components/charts/map/MapTimeSeries.tsx`, `frontend/components/utilities/VideoSyncHelper.tsx`, `frontend/services/mediaFilesService.ts`, `frontend/services/mediaAvailabilityService.ts`, `docs/frontend/sidebar-menu-logic.md`, `frontend/components/dashboard/Sidebar.tsx`, `frontend/reports/ac40/tools/Targets.tsx`, `frontend/reports/ac40/tools/Polars.tsx`, `frontend/reports/ac40/DayInfo.tsx`, `frontend/reports/ac40/project/all/reports/FleetCheatSheet.tsx`, `frontend/reports/ac40/project/source/reports/CheatSheet.tsx`, `frontend/reports/ac40/day/reports/RaceSummary.tsx`, `frontend/reports/ac40/day/reports/TrainingSummary.tsx`, `frontend/reports/ac40/day/reports/Prestart.tsx`, `docs/backend/VIDEO_UPLOAD_BYPASS_AND_MED_RES_ONLY.md`, `server_app/controllers/data.js` (getRaceSummary_TableData, getCheatSheet_TableData, maneuver-cheat-sheet).
 
 ---
 
@@ -235,10 +235,10 @@ Other report types (e.g. Maneuvers, Performance, Events) are available at datase
 | Server Admin | `server_admin/` | Admin API, events, users, projects |
 | Server File/Media | `server_file/`, `server_media/` | File upload and media serving |
 | Streaming | `server_stream/` | WebSocket/InfluxDB ingestion, processor, Redis, client WS |
-| Python | `server_python/` | FastAPI app and GP50 (and class-specific) scripts |
+| Python | `server_python/` | FastAPI app and AC40 (and class-specific) scripts |
 | Libraries | `libs/huni_db/`, `libs/utilities/` | HuniDB (TS), sailing/race utilities (Python) |
 | Docs | `docs/` | Architecture, backend, streaming, frontend, DB, system, optimization |
-| Database schema | `database/` (and docs) | admin, ac75, gp50 schemas |
+| Database schema | `database/` (and docs) | admin, ac75, ac40 schemas |
 
 ---
 
@@ -249,11 +249,11 @@ Other report types (e.g. Maneuvers, Performance, Events) are available at datase
 - **HuniDB schema/usage:** `frontend/store/huniDBSchema.ts`, `frontend/store/huniDBStore.ts`, `frontend/store/huniDBQueries.ts`, `libs/huni_db/`
 - **Streaming processor:** `server_stream/controllers/processor.js`, `server_stream/controllers/redis.js`, `server_stream/controllers/websocket.js`
 - **Events (admin):** `server_admin/controllers/events.js`
-- **Race/maneuver logic:** `libs/utilities/utilities/race_utils.py`, `server_python/scripts/gp50/maneuvers/`, `server_python/scripts/gp50/0_maneuvers.py`, `server_python/scripts/gp50/Maneuvers.py`
+- **Race/maneuver logic:** `libs/utilities/utilities/race_utils.py`, `server_python/scripts/ac40/maneuvers/`, `server_python/scripts/ac40/0_maneuvers.py`, `server_python/scripts/ac40/Maneuvers.py`
 - **Scatter/worker:** `frontend/components/charts/SimpleScatter.tsx`, `frontend/workers/enhanced-scatter-processor.ts`, `frontend/utils/enhancedScatterWorkerManager.ts`
 - **Sync and cross-window:** `frontend/store/selectionStore.ts`, `frontend/store/filterStore.ts`, `scripts/build-syncstore.js`, dependency `@solidjs/sync` (github: thechadturner/syncstore)
-- **Python service and scripts:** `server_python/app/main.py`, `server_python/app/dependencies/auth.py`, `server_python/scripts/gp50/` (0_init_class, 0_maneuvers, 0_race, 0_performance, 0_map, 1_normalization_influx, 1_normalization_csv, 2_processing, 2_process_and_execute, 3_execute, 4_cleanup, 5_markwind), `server_python/scripts/gp50/Maneuvers.py`, `server_python/scripts/gp50/maneuvers/` (tacks, gybes, roundups, bearaways, takeoffs, prestart, update_loss), `libs/utilities/` (race_utils, api_utils, math_utils, geo_utils, wind_utils, interp_utils)
-- **Video, scope, and reports:** `frontend/store/playbackStore.ts`, `frontend/components/charts/Video.tsx`, `frontend/components/charts/map/MapTimeSeries.tsx`, `frontend/components/utilities/VideoSyncHelper.tsx`, `frontend/services/mediaFilesService.ts`, `frontend/reports/gp50/tools/Targets.tsx`, `frontend/reports/gp50/tools/Polars.tsx`, `frontend/reports/gp50/DayInfo.tsx`, `frontend/reports/gp50/day/reports/Prestart.tsx`, `frontend/reports/gp50/day/reports/RaceSummary.tsx`, `frontend/reports/gp50/day/reports/TrainingSummary.tsx`, `frontend/reports/gp50/project/all/reports/FleetCheatSheet.tsx`, `frontend/reports/gp50/project/source/reports/CheatSheet.tsx`, `docs/frontend/sidebar-menu-logic.md`
+- **Python service and scripts:** `server_python/app/main.py`, `server_python/app/dependencies/auth.py`, `server_python/scripts/ac40/` (0_init_class, 0_maneuvers, 0_race, 0_performance, 0_map, 1_normalization_influx, 1_normalization_csv, 2_processing, 2_process_and_execute, 3_execute, 4_cleanup, 5_markwind), `server_python/scripts/ac40/Maneuvers.py`, `server_python/scripts/ac40/maneuvers/` (tacks, gybes, roundups, bearaways, takeoffs, prestart, update_loss), `libs/utilities/` (race_utils, api_utils, math_utils, geo_utils, wind_utils, interp_utils)
+- **Video, scope, and reports:** `frontend/store/playbackStore.ts`, `frontend/components/charts/Video.tsx`, `frontend/components/charts/map/MapTimeSeries.tsx`, `frontend/components/utilities/VideoSyncHelper.tsx`, `frontend/services/mediaFilesService.ts`, `frontend/reports/ac40/tools/Targets.tsx`, `frontend/reports/ac40/tools/Polars.tsx`, `frontend/reports/ac40/DayInfo.tsx`, `frontend/reports/ac40/day/reports/Prestart.tsx`, `frontend/reports/ac40/day/reports/RaceSummary.tsx`, `frontend/reports/ac40/day/reports/TrainingSummary.tsx`, `frontend/reports/ac40/project/all/reports/FleetCheatSheet.tsx`, `frontend/reports/ac40/project/source/reports/CheatSheet.tsx`, `docs/frontend/sidebar-menu-logic.md`
 
 ---
 

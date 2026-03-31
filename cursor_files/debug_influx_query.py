@@ -1,5 +1,5 @@
 """
-Debug script to check InfluxDB query results for GP50 data.
+Debug script to check InfluxDB query results for AC40 data.
 This script will help diagnose why Docker returns only one file while local execution returns four.
 """
 

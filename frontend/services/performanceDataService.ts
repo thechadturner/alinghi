@@ -2,7 +2,7 @@
  * Performance Data Service
  * 
  * Handles fetching and managing performance data (aggregates, cloud, targets)
- * for the GP50 Performance report
+ * for the AC40 Performance report
  * 
  * FILTER SEPARATION:
  * - API Filters (sent to backend): YEAR, EVENT, CONFIG, SOURCE_NAME, optionally GRADE (for HistoricalPerformance)
@@ -2806,10 +2806,10 @@ const processPerformanceData = (
       // CRITICAL: Also add fields using default channel names for compatibility
       // These are needed for FleetScatter and other components that expect these field names
       // Use default channel names from defaultChannelsStore (class-specific, e.g., Tws_kts/Tws_kph, Bsp_kts/Bsp_kph)
-      [twsField]: tws,  // Add default TWS field (class-specific, e.g., Tws_kph for GP50)
-      [bspField]: bsp,  // Add default BSP field (class-specific, e.g., Bsp_kph for GP50)
+      [twsField]: tws,  // Add default TWS field (class-specific, e.g., Tws_kph for AC40)
+      [bspField]: bsp,  // Add default BSP field (class-specific, e.g., Bsp_kph for AC40)
       [twaField]: twa,  // Add default TWA field (e.g., Twa_deg - same for all classes)
-      [defaultChannelsStore.vmgName()]: vmg,  // Add default VMG field (class-specific, e.g., Vmg_kph for GP50)
+      [defaultChannelsStore.vmgName()]: vmg,  // Add default VMG field (class-specific, e.g., Vmg_kph for AC40)
       Cwa_n_deg: cwa_n,  
       tack: tack,
       race_number: race,
@@ -2939,10 +2939,10 @@ const processPerformanceData = (
       // CRITICAL: Also add fields using default channel names for compatibility
       // These are needed for FleetScatter and other components that expect these field names
       // Use default channel names from defaultChannelsStore (class-specific, e.g., Tws_kts/Tws_kph, Bsp_kts/Bsp_kph)
-      [twsField]: tws,  // Add default TWS field (class-specific, e.g., Tws_kph for GP50)
-      [bspField]: bsp,  // Add default BSP field (class-specific, e.g., Bsp_kph for GP50)
+      [twsField]: tws,  // Add default TWS field (class-specific, e.g., Tws_kph for AC40)
+      [bspField]: bsp,  // Add default BSP field (class-specific, e.g., Bsp_kph for AC40)
       [twaField]: twa,  // Add default TWA field (e.g., Twa_deg - same for all classes)
-      [defaultChannelsStore.vmgName()]: vmg,  // Add default VMG field (class-specific, e.g., Vmg_kph for GP50)
+      [defaultChannelsStore.vmgName()]: vmg,  // Add default VMG field (class-specific, e.g., Vmg_kph for AC40)
       Cwa_n_deg: cwa_n,  // Add Cwa_n_deg field (same value as Cwa_n)
 
       // Lowercase metadata only (single nomenclature; resolveDataField maps UI keys)

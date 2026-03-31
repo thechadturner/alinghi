@@ -5,7 +5,7 @@ import { huniDBStore } from '../store/huniDBStore';
 
 /**
  * Get channels from PostgreSQL API endpoint
- * @param className - Class name (e.g., 'gp50')
+ * @param className - Class name (e.g., 'ac40')
  * @param projectId - Project ID
  * @param date - Date in YYYYMMDD or YYYY-MM-DD format
  * @param dataSource - Optional data source filter ('FILE', 'INFLUX', or 'UNIFIED')
@@ -48,7 +48,7 @@ export async function getChannels(
 /**
  * Sync channels from PostgreSQL API to hunidb meta.channel_names table
  * This is a non-blocking background function that populates hunidb cache
- * @param className - Class name (e.g., 'gp50')
+ * @param className - Class name (e.g., 'ac40')
  * @param projectId - Project ID
  * @param date - Date in YYYYMMDD or YYYY-MM-DD format
  * @param sourceName - Optional source name (for logging)
@@ -129,7 +129,7 @@ export async function syncChannelsFromPostgreSQL(
  * Get channels from the file server (live discovery from parquet + Influx).
  * Use this to include channels that exist on disk (e.g. fusion_corrections_racesight.parquet)
  * but may not yet be in PostgreSQL (e.g. after running 3_corrections without re-populating channels).
- * @param className - Class name (e.g., 'gp50')
+ * @param className - Class name (e.g., 'ac40')
  * @param projectId - Project ID
  * @param date - Date in YYYYMMDD format
  * @param sourceName - Source name (e.g., 'GER')

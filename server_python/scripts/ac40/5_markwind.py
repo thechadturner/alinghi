@@ -31,7 +31,7 @@ except Exception as e:
     sys.stdout.flush()
     sys.exit(1)
 
-# Environment and project root (four levels up: gp50 -> scripts -> server_python -> root)
+# Environment and project root (four levels up: ac40 -> scripts -> server_python -> root)
 is_production = os.getenv("NODE_ENV") == "production"
 project_root = Path(__file__).parent.parent.parent.parent
 base_env_file = ".env.production" if is_production else ".env"
@@ -202,7 +202,7 @@ def main():
         date = parameters_json.get("date")
         timezone_str = parameters_json.get("timezone") or "Europe/Madrid"
 
-        # class_name = 'gp50'
+        # class_name = 'ac40'
         # project_id = 1
         # date = '20260301'
         # timezone_str = 'Australia/Sydney'

@@ -3,7 +3,7 @@
 -- ============================================================================
 -- 
 -- This script will:
--- 1. Truncate datasets table in gp50 schema with CASCADE
+-- 1. Truncate datasets table in ac40 schema with CASCADE
 --    (which automatically truncates all dependent tables via foreign keys)
 -- 2. Reset all identity sequences (sequences) for all affected tables
 -- 
@@ -33,10 +33,10 @@ DECLARE
     sequence_key TEXT;
 BEGIN
     RAISE NOTICE '============================================================================';
-    RAISE NOTICE 'TRUNCATE DATASETS CASCADE AND RESET IDENTITIES (gp50 schema)';
+    RAISE NOTICE 'TRUNCATE DATASETS CASCADE AND RESET IDENTITIES (ac40 schema)';
     RAISE NOTICE '============================================================================';
     RAISE NOTICE '';
-    RAISE NOTICE 'WARNING: This will delete ALL dataset-related data in gp50 schema!';
+    RAISE NOTICE 'WARNING: This will delete ALL dataset-related data in ac40 schema!';
     RAISE NOTICE 'This includes: datasets, dataset_events, dataset_objects, dataset_pages,';
     RAISE NOTICE 'dataset_sharing, dataset_targets, events_aggregate, events_cloud,';
     RAISE NOTICE 'events_mapdata, events_timeseries, maneuver_stats.';
@@ -49,9 +49,9 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 
         FROM information_schema.schemata s
-        WHERE s.schema_name = 'gp50'
+        WHERE s.schema_name = 'ac40'
     ) THEN
-        RAISE NOTICE '  ✗ Schema gp50 does not exist, aborting...';
+        RAISE NOTICE '  ✗ Schema ac40 does not exist, aborting...';
         RETURN;
     END IF;
     
@@ -59,19 +59,19 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 
         FROM information_schema.tables 
-        WHERE table_schema = 'gp50' 
+        WHERE table_schema = 'ac40' 
         AND table_name = 'datasets'
     ) THEN
-        RAISE NOTICE '  ✗ Table gp50.datasets does not exist, aborting...';
+        RAISE NOTICE '  ✗ Table ac40.datasets does not exist, aborting...';
         RETURN;
     END IF;
     
     -- Truncate datasets with CASCADE
     BEGIN
-        TRUNCATE TABLE gp50.datasets RESTART IDENTITY CASCADE;
-        RAISE NOTICE '  ✓ Successfully truncated gp50.datasets with CASCADE';
+        TRUNCATE TABLE ac40.datasets RESTART IDENTITY CASCADE;
+        RAISE NOTICE '  ✓ Successfully truncated ac40.datasets with CASCADE';
     EXCEPTION WHEN OTHERS THEN
-        RAISE NOTICE '  ✗ Error truncating gp50.datasets: %', SQLERRM;
+        RAISE NOTICE '  ✗ Error truncating ac40.datasets: %', SQLERRM;
         RETURN;
     END;
     
@@ -88,7 +88,7 @@ BEGIN
                 t.table_schema,
                 t.table_name
             FROM information_schema.tables t
-            WHERE t.table_schema = 'gp50' 
+            WHERE t.table_schema = 'ac40' 
                 AND t.table_name IN ('datasets', 'dataset_events')
             
             UNION ALL
@@ -111,7 +111,7 @@ BEGIN
                 ON ccu.table_schema = dt.table_schema
                 AND ccu.table_name = dt.table_name
             WHERE tc.constraint_type = 'FOREIGN KEY'
-                AND t.table_schema = 'gp50'
+                AND t.table_schema = 'ac40'
         )
         SELECT DISTINCT
             n.nspname::TEXT as sequence_schema,
@@ -125,7 +125,7 @@ BEGIN
             ON d.refobjid = t.oid
             AND d.deptype = 'a'  -- 'a' = auto dependency (sequence owned by column)
         INNER JOIN pg_class seq ON d.objid = seq.oid AND seq.relkind = 'S'
-        INNER JOIN pg_namespace n ON seq.relnamespace = n.oid AND n.nspname = 'gp50'
+        INNER JOIN pg_namespace n ON seq.relnamespace = n.oid AND n.nspname = 'ac40'
         INNER JOIN pg_attribute a ON d.refobjsubid = a.attnum AND a.attrelid = t.oid
         ORDER BY sequence_schema, sequence_name
     LOOP
@@ -168,7 +168,7 @@ BEGIN
                 ''::TEXT as table_name,
                 ''::TEXT as column_name
             FROM information_schema.sequences seq
-            WHERE seq.sequence_schema = 'gp50'
+            WHERE seq.sequence_schema = 'ac40'
             ORDER BY seq.sequence_name
         LOOP
             sequence_key := sequence_record.sequence_schema || '.' || sequence_record.sequence_name;
@@ -201,8 +201,8 @@ BEGIN
     RAISE NOTICE '============================================================================';
     RAISE NOTICE 'SUMMARY';
     RAISE NOTICE '============================================================================';
-    RAISE NOTICE 'Schema processed: gp50';
-    RAISE NOTICE 'Table truncated: gp50.datasets';
+    RAISE NOTICE 'Schema processed: ac40';
+    RAISE NOTICE 'Table truncated: ac40.datasets';
     RAISE NOTICE 'Sequences reset: %', total_sequences_reset;
     RAISE NOTICE '';
     RAISE NOTICE '✓ Operation completed successfully!';

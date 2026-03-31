@@ -636,12 +636,17 @@ class AuthManager {
 
       // Check if response is ok – use friendly messages for auth failure and rate limit
       if (!response.ok) {
-        const message =
-          response.status === 401
-            ? 'Invalid email or password'
-            : response.status === 429
-              ? 'Too many attempts. Please try again later.'
-              : `Login failed: ${response.status} ${response.statusText}${responseText ? ` - ${responseText}` : ''}`;
+        let message: string;
+        if (response.status === 401) {
+          message = 'Invalid email or password';
+        } else if (response.status === 429) {
+          message = 'Too many attempts. Please try again later.';
+        } else if (response.status === 503) {
+          message =
+            'Server cannot reach the database. Check DB_HOST, that Postgres allows connections from Docker, and DB_PASSWORD in .env.production.local.';
+        } else {
+          message = `Login failed: ${response.status} ${response.statusText}${responseText ? ` - ${responseText}` : ''}`;
+        }
         return { success: false, message };
       }
 

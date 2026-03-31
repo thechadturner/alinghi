@@ -128,7 +128,7 @@ This means if `DB_NAME` is not set in the environment passed to Compose, it defa
 3. **Check logs** to confirm the application is using the correct database
 4. **Use the verification script** to diagnose issues quickly
 
-## InfluxDB Configuration (Required for GP50 Normalization)
+## InfluxDB Configuration (Required for AC40 Normalization)
 
 The Python service requires InfluxDB environment variables for the normalization scripts (`1_normalization_influx.py`):
 

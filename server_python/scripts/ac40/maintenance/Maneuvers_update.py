@@ -33,7 +33,7 @@ USAGE EXAMPLE:
 PARAMETERS:
 - api_token: API authentication token
 - project_id: Project identifier
-- class_name: Class name (e.g., 'gp50')
+- class_name: Class name (e.g., 'ac40')
 - dates: List of dates or single date string
 - source_names: List of source names or single source string
 - event_types: List of event types to update (e.g., ['TACK', 'GYBE'])
@@ -56,7 +56,7 @@ from pathlib import Path
 # Determine environment mode
 is_production = os.getenv("NODE_ENV") == "production"
 
-# Get project root (three levels up from server_python/scripts/gp50/)
+# Get project root (three levels up from server_python/scripts/ac40/)
 project_root = Path(__file__).parent.parent.parent.parent
 
 # Load environment files based on mode
@@ -332,7 +332,7 @@ channels = [
 dates_list = ['2026-01-13','2026-01-14','2026-01-15','2026-01-16','2026-01-17','2026-01-18']
 sources_list = ['USA','GER','SUI','FRA','ITA','ESP','AUS','NZL','DEN','SWE','BRA','GBR','CAN']
 event_types_list = ['TACK', 'GYBE']
-start(api_token, 1, 'gp50', dates_list, sources_list, event_types_list, channels, None, None, True)
+start(api_token, 1, 'ac40', dates_list, sources_list, event_types_list, channels, None, None, True)
 
 
     

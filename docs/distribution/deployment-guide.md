@@ -4,7 +4,7 @@ This guide explains how to deploy the RaceSight application to a production Linu
 
 ## Prerequisites
 
-1. **SSH Access**: You need SSH access to the production VM with a private key
+1. **SSH Access**: SSH to the production VM with a private key (set `SSH_KEY` in `deploy.config.local`) or password (leave `SSH_KEY` empty; multiplex prompts once per batch run)
 2. **Local Build Tools**: Node.js and npm installed locally
 3. **VM Requirements**: 
    - Docker and docker-compose installed on the VM
@@ -32,6 +32,8 @@ VM_MEDIA_PATH=/home/racesight/racesight/media
 ```
 
 **Note**: `deploy.config.local` is gitignored and should not be committed. If your VM still uses a legacy deployment root (for example `/home/racesight/hunico`), set `VM_BASE_PATH` and related paths in `deploy.config.local` to match the server.
+
+**Password SSH (empty `SSH_KEY`)**: Microsoft’s **Win32-OpenSSH** client does not reliably support **ControlMaster** with `scp` (you may see `getsockname failed: Not a socket`). The deploy `.bat` scripts therefore leave multiplex **off** unless you set `SSH_USE_MULTIPLEX=force` in `deploy.config.local` (still not recommended on Windows for large `scp` uploads). For fewer prompts, use a **private key** in `SSH_KEY` and `authorized_keys` on the server, or run deploy from **WSL** / Git Bash with a Unix OpenSSH build if you need advanced sharing.
 
 ### 2. Create Production Environment Files
 

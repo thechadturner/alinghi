@@ -36,7 +36,7 @@ const TEST_CONFIG = {
   date: '20250315', // 2025-08-16 in YYYYMMDD format
   channel: 'LATITUDE_GPS_unk',
   project_id: '2',
-  class_name: 'gp50',
+  class_name: 'ac40',
   level: 'strm'
 };
 

@@ -6,7 +6,7 @@ const { sendResponse, sanitizeChannelNames, listtostring, formatDatetimeUTC } = 
 /**
  * Shared filter builder for maneuver queries
  * @param {Object} filtersObj - Parsed filters object
- * @param {string} class_name - Class name (e.g., 'GP50')
+ * @param {string} class_name - Class name (e.g., 'AC40')
  * @param {boolean} isHistory - If true, includes YEAR, EVENT, CONFIG filters; if false, only GRADE, STATE, SOURCE_NAME
  * @param {string} tableAlias - Table alias for dataset_events (usually 'b')
  * @param {string} datasetAlias - Table alias for datasets (usually 'c' or 'd')
@@ -17,7 +17,7 @@ function buildManeuverFilters(filtersObj, class_name, isHistory, tableAlias = 'b
   const filterClauses = [];
   const filterParams = [];
 
-  if (!filtersObj || class_name.toUpperCase() !== 'GP50') {
+  if (!filtersObj || class_name.toUpperCase() !== 'AC40') {
     return { filterClauses, filterParams };
   }
 
@@ -139,13 +139,13 @@ function buildFilterSelectFields(tableAlias = 'b', datasetAlias = 'c', sourceAli
 }
 
 /**
- * Build GP50-specific TWS bin logic
+ * Build AC40-specific TWS bin logic
  * @param {string} class_name - Class name
  * @param {string} statsAlias - Alias for maneuver_stats table (usually 'a' or 'c')
  * @returns {Object} { twsBinWhereClause, twsBinPartitionExpr, twsBinFinalFilter, orderByExpr }
  */
-function buildGP50TwsBinLogic(class_name, statsAlias = 'a') {
-  const isGP50 = class_name.toUpperCase() === 'GP50';
+function buildAC40TwsBinLogic(class_name, statsAlias = 'a') {
+  const isAC40 = class_name.toUpperCase() === 'AC40';
   const bins = [5, 10, 15, 20, 25, 30, 35, 40, 45];
 
   let twsBinWhereClause = '';
@@ -153,7 +153,7 @@ function buildGP50TwsBinLogic(class_name, statsAlias = 'a') {
   let twsBinFinalFilter = '';
   let orderByExpr = 'Q.tws_bin';
 
-  if (isGP50) {
+  if (isAC40) {
     // Build OR conditions for each bin: Tws_avg >= (bin - 2.5) AND Tws_avg < (bin + 2.5)
     const binConditions = bins.map(bin => {
       const minTws = bin - 2.5;
@@ -253,7 +253,7 @@ exports.getBestManeuvers_TableData = async (req, res) => {
       let filterParams = [];
 
       if (filtersObj) {
-        if (class_name.toUpperCase() === 'GP50') {
+        if (class_name.toUpperCase() === 'AC40') {
           // GRADE filter: Filter on dataset_events.tags->>'GRADE'
           if (filtersObj.GRADE && Array.isArray(filtersObj.GRADE) && filtersObj.GRADE.length > 0) {
             const gradeValues = filtersObj.GRADE.map(g => parseInt(g)).filter(g => !isNaN(g) && g >= 0 && g <= 5);
@@ -324,12 +324,12 @@ exports.getBestManeuvers_TableData = async (req, res) => {
       // Use Tws_bin column directly from table
       const twsBinExpr = `a."Tws_bin"`;
 
-      // For GP50, filter by Tws_avg within ±2.5 of bin values instead of exact tws_bin matches
-      const isGP50 = class_name.toUpperCase() === 'GP50';
+      // For AC40, filter by Tws_avg within ±2.5 of bin values instead of exact tws_bin matches
+      const isAC40 = class_name.toUpperCase() === 'AC40';
 
       // WHERE conditions - only grade filter (class-specific)
       let whereConditions;
-      if (class_name.toUpperCase() === 'GP50') {
+      if (class_name.toUpperCase() === 'AC40') {
         whereConditions = `(b.tags->>'GRADE')::int > 1`;
       } else {
         // Default fallback
@@ -364,13 +364,13 @@ exports.getBestManeuvers_TableData = async (req, res) => {
       const hasTwsBinInChannels = safeChannels.some(ch => ch.toLowerCase() === 'tws_bin');
       const twsBinSelect = hasTwsBinInChannels ? '' : `${twsBinExpr} as tws_bin,`;
 
-      // For GP50: filter by Tws_avg within ±2.5 of bin values, partition by calculated bin
+      // For AC40: filter by Tws_avg within ±2.5 of bin values, partition by calculated bin
       let twsBinWhereClause = '';
       let twsBinPartitionExpr = twsBinExpr;
       let twsBinFinalFilter = '';
       let orderByExpr = 'Q.tws_bin';
 
-      if (isGP50) {
+      if (isAC40) {
         // Build OR conditions for each bin: Tws_avg >= (bin - 2.5) AND Tws_avg < (bin + 2.5)
         const binConditions = bins.map(bin => {
           const minTws = bin - 2.5;
@@ -532,7 +532,7 @@ exports.getBestFleetManeuvers_TableData = async (req, res) => {
       let filterParams = [];
 
       if (filtersObj) {
-        if (class_name.toUpperCase() === 'GP50') {
+        if (class_name.toUpperCase() === 'AC40') {
           // GRADE filter: Filter on dataset_events.tags->>'GRADE'
           if (filtersObj.GRADE && Array.isArray(filtersObj.GRADE) && filtersObj.GRADE.length > 0) {
             const gradeValues = filtersObj.GRADE.map(g => parseInt(g)).filter(g => !isNaN(g) && g >= 0 && g <= 5);
@@ -644,7 +644,7 @@ exports.getBestFleetManeuvers_TableData = async (req, res) => {
 
       // WHERE conditions - only grade filter (class-specific)
       let whereConditions;
-      if (class_name.toUpperCase() === 'GP50') {
+      if (class_name.toUpperCase() === 'AC40') {
         whereConditions = `(b.tags->>'GRADE')::int > 1`;
       } else {
         // Default fallback
@@ -1158,7 +1158,7 @@ exports.getManeuvers_MapDataByRange = async (req, res) => {
       let filterParams = [];
 
       if (filtersObj) {
-        if (class_name.toUpperCase() === 'GP50') {
+        if (class_name.toUpperCase() === 'AC40') {
           // GRADE filter
           if (filtersObj.GRADE && Array.isArray(filtersObj.GRADE) && filtersObj.GRADE.length > 0) {
             const gradeValues = filtersObj.GRADE.map(g => parseInt(g)).filter(g => !isNaN(g) && g >= 0 && g <= 5);
@@ -1260,7 +1260,7 @@ exports.getManeuvers_MapDataByRange = async (req, res) => {
 
       // WHERE conditions - only grade filter (class-specific)
       let whereConditions;
-      if (class_name.toUpperCase() === 'GP50') {
+      if (class_name.toUpperCase() === 'AC40') {
         whereConditions = `(b.tags->>'GRADE')::int > 1`;
       } else {
         // Default fallback
@@ -1270,17 +1270,17 @@ exports.getManeuvers_MapDataByRange = async (req, res) => {
       // Use Tws_bin column directly from table
       const twsBinExpr = `c."Tws_bin"`;
 
-      // For GP50, filter by Tws_avg within ±2.5 of bin values instead of exact tws_bin matches
-      const isGP50 = class_name.toUpperCase() === 'GP50';
+      // For AC40, filter by Tws_avg within ±2.5 of bin values instead of exact tws_bin matches
+      const isAC40 = class_name.toUpperCase() === 'AC40';
       let bins = [5, 10, 15, 20, 25, 30, 35, 40, 45];
 
-      // For GP50: filter by Tws_avg within ±2.5 of bin values, partition by calculated bin
+      // For AC40: filter by Tws_avg within ±2.5 of bin values, partition by calculated bin
       let twsBinWhereClause = '';
       let twsBinPartitionExpr = twsBinExpr;
       let twsBinFinalFilter = '';
       let orderByExpr = 'Q.tws_bin';
 
-      if (isGP50) {
+      if (isAC40) {
         // Build OR conditions for each bin: Tws_avg >= (bin - 2.5) AND Tws_avg < (bin + 2.5)
         const binConditions = bins.map(bin => {
           const minTws = bin - 2.5;
@@ -1312,7 +1312,7 @@ exports.getManeuvers_MapDataByRange = async (req, res) => {
           a.event_id "event_id",
           ${filter_str},
           c."Tws_bin" "tws_bin",
-          ${isGP50 ? 'c."Tws_avg" "tws_avg",' : ''}
+          ${isAC40 ? 'c."Tws_avg" "tws_avg",' : ''}
           c."Vmg_perc_avg" "vmg_perc_avg", 
           c."Twa_entry" "twa_entry", 
           a.json,
@@ -1415,7 +1415,7 @@ exports.getManeuvers_TimeSeriesDataByRange = async (req, res) => {
       let filterParams = [];
 
       if (filtersObj) {
-        if (class_name.toUpperCase() === 'GP50') {
+        if (class_name.toUpperCase() === 'AC40') {
           // GRADE filter
           if (filtersObj.GRADE && Array.isArray(filtersObj.GRADE) && filtersObj.GRADE.length > 0) {
             const gradeValues = filtersObj.GRADE.map(g => parseInt(g)).filter(g => !isNaN(g) && g >= 0 && g <= 5);
@@ -1517,7 +1517,7 @@ exports.getManeuvers_TimeSeriesDataByRange = async (req, res) => {
 
       // WHERE conditions - only grade filter (class-specific)
       let whereConditions;
-      if (class_name.toUpperCase() === 'GP50') {
+      if (class_name.toUpperCase() === 'AC40') {
         whereConditions = `(b.tags->>'GRADE')::int > 1`;
       } else {
         // Default fallback
@@ -1527,17 +1527,17 @@ exports.getManeuvers_TimeSeriesDataByRange = async (req, res) => {
       // Use Tws_bin column directly from table
       const twsBinExpr = `c."Tws_bin"`;
 
-      // For GP50, filter by Tws_avg within ±2.5 of bin values instead of exact tws_bin matches
-      const isGP50 = class_name.toUpperCase() === 'GP50';
+      // For AC40, filter by Tws_avg within ±2.5 of bin values instead of exact tws_bin matches
+      const isAC40 = class_name.toUpperCase() === 'AC40';
       let bins = [5, 10, 15, 20, 25, 30, 35, 40, 45];
 
-      // For GP50: filter by Tws_avg within ±2.5 of bin values, partition by calculated bin
+      // For AC40: filter by Tws_avg within ±2.5 of bin values, partition by calculated bin
       let twsBinWhereClause = '';
       let twsBinPartitionExpr = twsBinExpr;
       let twsBinFinalFilter = '';
       let orderByExpr = 'Q.tws_bin';
 
-      if (isGP50) {
+      if (isAC40) {
         // Build OR conditions for each bin: Tws_avg >= (bin - 2.5) AND Tws_avg < (bin + 2.5)
         const binConditions = bins.map(bin => {
           const minTws = bin - 2.5;
@@ -1569,7 +1569,7 @@ exports.getManeuvers_TimeSeriesDataByRange = async (req, res) => {
           a.event_id "event_id",
           ${filter_str},
           c."Tws_bin" "tws_bin",
-          ${isGP50 ? 'c."Tws_avg" "tws_avg",' : ''}
+          ${isAC40 ? 'c."Tws_avg" "tws_avg",' : ''}
           c."Vmg_perc_avg" "vmg_perc_avg", 
           c."Twa_entry" "twa_entry", 
           a.json,
@@ -1873,7 +1873,7 @@ exports.getPerformanceData = async (req, res) => {
         let filterParams = [];
 
         if (filtersObj) {
-          if (class_name.toUpperCase() === 'GP50') {
+          if (class_name.toUpperCase() === 'AC40') {
             // GRADE filter: Check GRADE in the event's own tags
             if (filtersObj.GRADE && Array.isArray(filtersObj.GRADE) && filtersObj.GRADE.length > 0) {
               const gradeValues = filtersObj.GRADE.map(g => parseInt(g)).filter(g => !isNaN(g) && g >= 0 && g <= 5);
@@ -2152,7 +2152,7 @@ exports.getFleetPerformanceData = async (req, res) => {
       let filterParams = [];
 
       if (filtersObj) {
-        if (class_name.toUpperCase() === 'GP50') {
+        if (class_name.toUpperCase() === 'AC40') {
           // GRADE filter: Check GRADE in the event's own tags
           if (filtersObj.GRADE && Array.isArray(filtersObj.GRADE) && filtersObj.GRADE.length > 0) {
             const gradeValues = filtersObj.GRADE.map(g => parseInt(g)).filter(g => !isNaN(g) && g >= 0 && g <= 5);
@@ -2363,7 +2363,7 @@ exports.getSharedCloudData = async (req, res) => {
         let filterParams = [];
 
         if (filtersObj) {
-          if (class_name.toUpperCase() === 'GP50') {
+          if (class_name.toUpperCase() === 'AC40') {
             // GRADE filter: Check GRADE in the event's own tags
             if (filtersObj.GRADE && Array.isArray(filtersObj.GRADE) && filtersObj.GRADE.length > 0) {
               const gradeValues = filtersObj.GRADE.map(g => parseInt(g)).filter(g => !isNaN(g) && g >= 0 && g <= 5);
@@ -2815,17 +2815,17 @@ exports.getManeuversHistory_TableData = async (req, res) => {
       // Datetime in UTC; clients use row timezone for display
       const datetimeExpr = formatDatetimeUTC('a."Datetime"', '"Datetime"');
 
-      // GP50 TWS bin logic
-      const { twsBinWhereClause, twsBinPartitionExpr, twsBinFinalFilter, orderByExpr } = buildGP50TwsBinLogic(class_name, 'a');
-      const isGP50 = class_name.toUpperCase() === 'GP50';
+      // AC40 TWS bin logic
+      const { twsBinWhereClause, twsBinPartitionExpr, twsBinFinalFilter, orderByExpr } = buildAC40TwsBinLogic(class_name, 'a');
+      const isAC40 = class_name.toUpperCase() === 'AC40';
 
       // Check if tws_bin is already in channels
       const hasTwsBinInChannels = safeChannels.some(ch => ch.toLowerCase() === 'tws_bin');
       const twsBinSelect = hasTwsBinInChannels ? '' : `a."Tws_bin" as tws_bin,`;
-      // For GP50, we need to select Tws_avg for the outer query's twsBinFinalFilter and orderByExpr
+      // For AC40, we need to select Tws_avg for the outer query's twsBinFinalFilter and orderByExpr
       // But only if it's not already in the channels list (to avoid ambiguous column reference)
       const hasTwsAvgInChannels = safeChannels.some(ch => ch.toLowerCase() === 'tws_avg');
-      const twsAvgSelect = (isGP50 && !hasTwsAvgInChannels) ? 'a."Tws_avg" "tws_avg",' : '';
+      const twsAvgSelect = (isAC40 && !hasTwsAvgInChannels) ? 'a."Tws_avg" "tws_avg",' : '';
 
       const params = [...baseParams, ...filterParams];
 
@@ -2986,8 +2986,8 @@ exports.getManeuversHistory_MapData = async (req, res) => {
       // For takeoff, twa_entry in maneuver_stats comes from Twa_start
       const twaEntryCol = eventTypeLowerMap === 'takeoff' ? 'c."Twa_start"' : 'c."Twa_entry"';
 
-      // GP50 TWS bin logic
-      const { twsBinWhereClause, twsBinPartitionExpr, twsBinFinalFilter, orderByExpr } = buildGP50TwsBinLogic(class_name, 'c');
+      // AC40 TWS bin logic
+      const { twsBinWhereClause, twsBinPartitionExpr, twsBinFinalFilter, orderByExpr } = buildAC40TwsBinLogic(class_name, 'c');
       const countNum = parseInt(count) || 5;
 
       sql = `SELECT * FROM (
@@ -2995,7 +2995,7 @@ exports.getManeuversHistory_MapData = async (req, res) => {
           a.event_id "event_id",
           ${filter_str},
           c."Tws_bin" "tws_bin",
-          ${class_name.toUpperCase() === 'GP50' ? 'c."Tws_avg" "tws_avg",' : ''}
+          ${class_name.toUpperCase() === 'AC40' ? 'c."Tws_avg" "tws_avg",' : ''}
           c."Vmg_perc_avg" "vmg_perc_avg", 
           ${twaEntryCol} "twa_entry", 
           a.json,
@@ -3150,8 +3150,8 @@ exports.getManeuversHistory_TimeSeriesData = async (req, res) => {
       // For takeoff, twa_entry in maneuver_stats comes from Twa_start
       const twaEntryCol = eventTypeLowerTs === 'takeoff' ? 'c."Twa_start"' : 'c."Twa_entry"';
 
-      // GP50 TWS bin logic
-      const { twsBinWhereClause, twsBinPartitionExpr, twsBinFinalFilter, orderByExpr } = buildGP50TwsBinLogic(class_name, 'c');
+      // AC40 TWS bin logic
+      const { twsBinWhereClause, twsBinPartitionExpr, twsBinFinalFilter, orderByExpr } = buildAC40TwsBinLogic(class_name, 'c');
       const countNum = parseInt(count) || 5;
 
       sql = `SELECT * FROM (
@@ -3159,7 +3159,7 @@ exports.getManeuversHistory_TimeSeriesData = async (req, res) => {
           a.event_id "event_id",
           ${filter_str},
           c."Tws_bin" "tws_bin",
-          ${class_name.toUpperCase() === 'GP50' ? 'c."Tws_avg" "tws_avg",' : ''}
+          ${class_name.toUpperCase() === 'AC40' ? 'c."Tws_avg" "tws_avg",' : ''}
           c."Vmg_perc_avg" "vmg_perc_avg", 
           ${twaEntryCol} "twa_entry", 
           a.json,
@@ -4206,7 +4206,7 @@ exports.getCheatSheet_TableData = async (req, res) => {
 
 /**
  * Get maneuver cheat sheet table: group by Channel (one row per CONFIG for a wind band) or group by Wind (one row per CONFIG with columns per wind bin).
- * Uses gp50.maneuver_stats + dataset_events, event_type in TACK/GYBE/ROUNDUP/BEARAWAY. Removes outliers via IQR (Q1–Q3 on Loss_total_tgt), then keeps lowest 10% of cleaned set (Loss_total_tgt <= P10 of IQR) and averages metrics per CONFIG.
+ * Uses ac40.maneuver_stats + dataset_events, event_type in TACK/GYBE/ROUNDUP/BEARAWAY. Removes outliers via IQR (Q1–Q3 on Loss_total_tgt), then keeps lowest 10% of cleaned set (Loss_total_tgt <= P10 of IQR) and averages metrics per CONFIG.
  * @query class_name, project_id, group_by (channel|wind), tws (when group_by=channel), metric (when group_by=wind), maneuver_type (tack|gybe|roundup|bearaway), source_id (optional)
  */
 exports.getManeuverCheatSheet_TableData = async (req, res) => {

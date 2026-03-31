@@ -196,7 +196,7 @@ const CAL_LEGEND_SECTOR =
 const CAL_TIMESERIES_GRADES_NOTE =
   "All grades: offset curves use the full calibration dataset (offsets trained on grade ≥ 2 only). AWA Δ: Awa_offset_deg when present, else Awa_n_cor−before; 10 s box smooth; clamp ±5°. LWY Δ: Lwy_offset_norm_deg or Lwy_n_cor−Lwy_n; 5 min box smooth; clamp ±5°.";
 
-/** Knots → km/h (matches GP50 `3_corrections.py` Tws_cor_kph from Tws_kts). */
+/** Knots → km/h (matches AC40 `3_corrections.py` Tws_cor_kph from Tws_kts). */
 const KTS_TO_KPH = 1.852;
 
 /** Fused-channel before/after row config. */

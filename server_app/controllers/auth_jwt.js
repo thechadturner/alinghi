@@ -116,7 +116,17 @@ exports.Login = async (req, res) => {
     }, false);
 
   } catch (error) {
-    return sendResponse(res, info, 500, false, error.message, null, true);
+    const code = error && error.code;
+    const isDbUnavailable =
+      code === 'ECONNREFUSED' ||
+      code === 'ETIMEDOUT' ||
+      code === 'ENOTFOUND' ||
+      code === '57P03';
+    const status = isDbUnavailable ? 503 : 500;
+    const message = isDbUnavailable
+      ? 'Database unavailable — check DB_HOST, Postgres on the host, and pg_hba.conf.'
+      : error.message;
+    return sendResponse(res, info, status, false, message, null, true);
   }
 };
 

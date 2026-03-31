@@ -1133,10 +1133,10 @@ export default function AdminScriptExecution() {
     }
   };
 
-  // Populate/update Postgres channels table for the fetched datasets (gp50 only). One status row per date.
+  // Populate/update Postgres channels table for the fetched datasets (ac40 only). One status row per date.
   const updateChannels = async () => {
-    if (selectedClassName() !== 'gp50') {
-      setChannelUpdateMessage('Channel update is only supported for gp50.');
+    if (selectedClassName() !== 'ac40') {
+      setChannelUpdateMessage('Channel update is only supported for ac40.');
       return;
     }
     if (datasets().length === 0) {
@@ -1258,8 +1258,8 @@ export default function AdminScriptExecution() {
 
   // Run 4_cleanup.py for each unique date. Full run: VMG + race position + day page sync; pagesOnly: day pages refresh only.
   const runCleanup = async (pagesOnly: boolean) => {
-    if (selectedClassName() !== 'gp50') {
-      setCleanupMessage('Cleanup is only supported for gp50.');
+    if (selectedClassName() !== 'ac40') {
+      setCleanupMessage('Cleanup is only supported for ac40.');
       return;
     }
     if (datasets().length === 0) {
@@ -1391,8 +1391,8 @@ export default function AdminScriptExecution() {
       logError("No datasets or project selected. Fetch datasets first.");
       return;
     }
-    if (selectedClassName() !== "gp50") {
-      logError("Markwind script is only supported for gp50.");
+    if (selectedClassName() !== "ac40") {
+      logError("Markwind script is only supported for ac40.");
       return;
     }
 
@@ -2568,18 +2568,18 @@ export default function AdminScriptExecution() {
               <button
                 class="px-4 py-2 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50"
                 onClick={updateChannels}
-                disabled={executing() || updatingChannels() || datasets().length === 0 || selectedClassName() !== 'gp50'}
-                title={selectedClassName() !== 'gp50' ? 'Channel update is only supported for gp50' : 'Populate Postgres channels table for the fetched datasets (force refresh)'}
+                disabled={executing() || updatingChannels() || datasets().length === 0 || selectedClassName() !== 'ac40'}
+                title={selectedClassName() !== 'ac40' ? 'Channel update is only supported for ac40' : 'Populate Postgres channels table for the fetched datasets (force refresh)'}
               >
                 {updatingChannels() ? 'Updating channels...' : 'Update channels'}
               </button>
               <button
                 class="px-4 py-2 bg-violet-600 text-white rounded hover:bg-violet-700 disabled:opacity-50"
                 onClick={() => runCleanup(false)}
-                disabled={executing() || updatingCleanup() || datasets().length === 0 || selectedClassName() !== 'gp50'}
+                disabled={executing() || updatingCleanup() || datasets().length === 0 || selectedClassName() !== 'ac40'}
                 title={
-                  selectedClassName() !== 'gp50'
-                    ? 'Cleanup is only supported for gp50'
+                  selectedClassName() !== 'ac40'
+                    ? 'Cleanup is only supported for ac40'
                     : 'Run 4_cleanup.py (day-level VMG + race position + day page sync) for each unique date in the fetched datasets'
                 }
               >
@@ -2588,10 +2588,10 @@ export default function AdminScriptExecution() {
               <button
                 class="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
                 onClick={() => runCleanup(true)}
-                disabled={executing() || updatingCleanup() || datasets().length === 0 || selectedClassName() !== 'gp50'}
+                disabled={executing() || updatingCleanup() || datasets().length === 0 || selectedClassName() !== 'ac40'}
                 title={
-                  selectedClassName() !== 'gp50'
-                    ? 'Cleanup is only supported for gp50'
+                  selectedClassName() !== 'ac40'
+                    ? 'Cleanup is only supported for ac40'
                     : 'Run 4_cleanup.py with pages_only: refresh dataset_pages and day_pages from events/channels only (no VMG, race position, grade-by-VMG)'
                 }
               >
@@ -2600,8 +2600,8 @@ export default function AdminScriptExecution() {
               <button
                 class="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50"
                 onClick={runMarkwind}
-                disabled={executing() || updatingMarkwind() || datasets().length === 0 || selectedClassName() !== 'gp50'}
-                title={selectedClassName() !== 'gp50' ? 'Markwind is only supported for gp50' : 'Run 5_markwind.py: build and post markwind from Influx MDSS for each unique date (timezone fetched per date)'}
+                disabled={executing() || updatingMarkwind() || datasets().length === 0 || selectedClassName() !== 'ac40'}
+                title={selectedClassName() !== 'ac40' ? 'Markwind is only supported for ac40' : 'Run 5_markwind.py: build and post markwind from Influx MDSS for each unique date (timezone fetched per date)'}
               >
                 {updatingMarkwind() ? 'Running markwind...' : 'Run markwind'}
               </button>

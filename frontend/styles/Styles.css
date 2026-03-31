@@ -446,31 +446,6 @@ body.index-page .index-page-scroll-container {
   height: auto !important;
 }
 
-/* Index hero — subtle Alinghi swirl + wordmark (under gradient overlays) */
-.alinghi-hero-backdrop {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  z-index: 0;
-  pointer-events: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.alinghi-hero-backdrop__svg {
-  width: min(148vmin, 58rem);
-  height: auto;
-  max-height: 95%;
-  opacity: 0.2;
-  transform: translateY(2%);
-  flex-shrink: 0;
-}
-
-.alinghi-hero-backdrop__image {
-  pointer-events: none;
-}
-
 /* Optimize feature cards for scrolling - prevent hover effects from interrupting scroll */
 body.index-page .group {
   touch-action: pan-y;
@@ -498,6 +473,35 @@ body.index-page .group:hover {
   flex-direction: column !important;
   justify-content: center !important;
   align-items: center !important;
+}
+
+body.index-page .welcome-back-section .welcome-back-logo {
+  width: 300px;
+  height: 300px;
+  opacity: 1;
+  object-fit: contain;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  margin-bottom: 1.5rem;
+}
+
+/* Guest hero: Alinghi logo stacked above “Welcome to RACESIGHT” */
+body.index-page .index-guest-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+body.index-page .index-hero-alinghi-logo {
+  width: 300px;
+  max-width: min(300px, 90vw);
+  height: auto;
+  object-fit: contain;
+  display: block;
+  flex-shrink: 0;
+  margin-bottom: 1.5rem;
 }
 
 /* Root styles - scoped to index page */
@@ -4046,7 +4050,7 @@ html::-webkit-scrollbar-corner {
   /* Filters + count + bottom form approx */
 }
 
-/* GP50 Table layout fixes */
+/* AC40 Table layout fixes */
 .explore-table-container {
   display: flex;
   flex-direction: column;

@@ -41,7 +41,7 @@ const isValidateMediaSourceName = (name) => {
 
 const isValidatePath = (path) => {
     // Allow paths with forward slashes, alphanumeric characters, underscores, hyphens, and dots
-    // Examples: "folder/file.js", "src/components/Button.jsx", "gp50/dataset/explore/TimeSeries"
+    // Examples: "folder/file.js", "src/components/Button.jsx", "ac40/dataset/explore/TimeSeries"
     const pathRegex = /^[a-zA-Z0-9_\-\.\/]+$/;
     return pathRegex.test(path);
 }

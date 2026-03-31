@@ -17,7 +17,7 @@ try {
 
 /**
  * Get source_name from source_id via JOIN with sources table
- * @param {string} class_name - Class name (e.g., 'gp50')
+ * @param {string} class_name - Class name (e.g., 'ac40')
  * @param {number} source_id - Source ID
  * @returns {Promise<string|null>} Source name or null if not found
  */
@@ -44,7 +44,7 @@ const safeJoin = (...paths) => path.join(...paths);
 
 /**
  * Get FILE channels using file server's logic
- * @param {string} class_name - Class name (e.g., 'gp50')
+ * @param {string} class_name - Class name (e.g., 'ac40')
  * @param {number} project_id - Project ID
  * @param {string} date - Date in YYYYMMDD format
  * @param {string} source_name - Source name
@@ -132,7 +132,7 @@ async function getInfluxChannels(date, source_name, level = 'strm', skipCache = 
  */
 async function channelsExistForDate(date) {
   try {
-    const sql = `SELECT COUNT(*) as count FROM gp50.channels WHERE date = $1`;
+    const sql = `SELECT COUNT(*) as count FROM ac40.channels WHERE date = $1`;
     const params = [date];
     const result = await db.GetRows(sql, params);
     
@@ -154,7 +154,7 @@ async function channelsExistForDate(date) {
  */
 async function channelsExistForDateAndDataset(date, dataset_id) {
   try {
-    const sql = `SELECT COUNT(*) as count FROM gp50.channels WHERE date = $1 AND dataset_id = $2`;
+    const sql = `SELECT COUNT(*) as count FROM ac40.channels WHERE date = $1 AND dataset_id = $2`;
     const params = [date, dataset_id];
     const result = await db.GetRows(sql, params);
     
@@ -169,7 +169,7 @@ async function channelsExistForDateAndDataset(date, dataset_id) {
 }
 
 /**
- * Insert or update channels in gp50.channels table
+ * Insert or update channels in ac40.channels table
  * @param {number} dataset_id - Dataset ID
  * @param {string} date - Date in YYYYMMDD format
  * @param {string[]} channels - Array of channel names
@@ -191,14 +191,14 @@ async function insertChannels(dataset_id, date, channels, data_source) {
     // Use ExecuteCommand but wrap in try-catch to get error details
     // First, verify table exists
     try {
-      const checkTableSql = `SELECT COUNT(*) as count FROM information_schema.tables WHERE table_schema = 'gp50' AND table_name = 'channels'`;
+      const checkTableSql = `SELECT COUNT(*) as count FROM information_schema.tables WHERE table_schema = 'ac40' AND table_name = 'channels'`;
       const tableCheck = await db.GetRows(checkTableSql, []);
       if (!tableCheck || tableCheck.length === 0 || tableCheck[0].count === 0) {
-        throw new Error('Table gp50.channels does not exist. Please run the database migration.');
+        throw new Error('Table ac40.channels does not exist. Please run the database migration.');
       }
     } catch (checkErr) {
       error('[insertChannels] Error checking table existence:', checkErr);
-      throw new Error(`Table gp50.channels does not exist or is not accessible: ${checkErr.message}`);
+      throw new Error(`Table ac40.channels does not exist or is not accessible: ${checkErr.message}`);
     }
     
     // Use shared database connection for better error handling
@@ -211,7 +211,7 @@ async function insertChannels(dataset_id, date, channels, data_source) {
       }
       
       const sql = `
-        INSERT INTO gp50.channels (dataset_id, date, channel_name, data_source, last_update)
+        INSERT INTO ac40.channels (dataset_id, date, channel_name, data_source, last_update)
         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
         ON CONFLICT (date, channel_name, data_source) 
         DO UPDATE SET 
@@ -256,7 +256,7 @@ async function insertChannels(dataset_id, date, channels, data_source) {
 /**
  * Main function to populate channels for a date from both FILE and INFLUX sources
  * Only updates once per unique date (checks if date already exists)
- * @param {string} class_name - Class name (e.g., 'gp50')
+ * @param {string} class_name - Class name (e.g., 'ac40')
  * @param {number} project_id - Project ID
  * @param {number} source_id - Source ID
  * @param {string} date - Date in YYYYMMDD format (will be normalized)

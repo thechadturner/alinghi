@@ -1,0 +1,82 @@
+On-premises (e.g. *.arbr.int) — self-signed or internal CA; not public racesight.cloud.
+HTTPS and "can't reach this page"
+================================================================================
+
+1) Browser "can't reach" (connection failed)
+   - From your PC: does the hostname resolve?  ping dis-ui.arbr.int
+   - If you rely on hosts file on Windows:
+       10.100.30.110    dis-ui.arbr.int ta-npl-dis-ui01.arbr.int
+     (use your VM IP from deploy.config.local)
+   - On the VM open firewall for HTTP/HTTPS:
+       sudo ufw allow 80,443/tcp
+       sudo ufw reload
+   - Confirm containers listen on all interfaces:
+       docker ps
+     hunico-nginx should show 0.0.0.0:80->80 and 0.0.0.0:443->443
+
+2) nginx fails to start — missing TLS PEMs
+   nginx-prod.conf expects ON THE HOST (mounted read-only into the container):
+     <deploy>/servers/docker/nginx/ssl/fullchain.pem
+     <deploy>/servers/docker/nginx/ssl/privkey.pem
+
+   Names matter: cert.pem / key.pem are NOT read by nginx-prod.conf. If those are all you have:
+     cd <deploy>/servers/docker/nginx/ssl   (or .../docker/nginx/ssl on the repo layout)
+     cp cert.pem fullchain.pem && cp key.pem privkey.pem
+   Then: docker compose restart nginx   (or your quick-restart script).
+
+   A) Quick self-signed (browsers show a warning until users trust something — see section 3):
+       cd .../servers/docker/nginx/ssl
+       sed -i 's/\r$//' generate-self-signed.sh
+       bash generate-self-signed.sh
+     (SAN includes 10.100.30.110 by default; pass another IP as arg if needed.)
+
+   B) Network-wide trust (recommended): internal CA + one CA file for everyone:
+       bash generate-internal-ca-for-network-trust.sh
+     Then distribute ca-cert.pem and have clients trust it (section 3). Restart nginx:
+       cd <deploy>
+       docker compose -f docker-compose.yml restart nginx
+
+   Cloud with Let's Encrypt on the host: copy fullchain.pem and privkey.pem into that ssl/
+   directory (see docs/distribution/https-ssl-setup.md).
+
+3) Trusted by users on your network (no scary warning)
+   - Browsers only trust certificates that chain to a root they already know.
+   - A self-signed SERVER cert is its own “root” — each user must trust THAT cert, or you
+     publish a single INTERNAL CA and users trust the CA once.
+
+   Best options:
+   - Corporate PKI: ask IT for a server cert for dis-ui.arbr.int (or a SAN) from your
+     existing AD CS / enterprise CA — then replace fullchain.pem / privkey.pem and skip our scripts.
+   - Our internal CA script (generate-internal-ca-for-network-trust.sh):
+     - Copy ca-cert.pem to a share or internal wiki.
+     - Windows (per machine, or via GPO): double-click ca-cert.pem → Install Certificate →
+       Local Machine → Place in “Trusted Root Certification Authorities”.
+     - Or PowerShell (admin):  
+       Import-Certificate -FilePath .\ca-cert.pem -CertStoreLocation Cert:\LocalMachine\Root
+     - Linux: copy ca-cert.pem to /usr/local/share/ca-certificates/ and run update-ca-certificates
+       (paths vary by distro).
+   - After the CA is trusted, use https://dis-ui.arbr.int/ or https://ta-npl-dis-ui01.arbr.int/
+     — the cert must list those names in SAN (the scripts include them).
+
+4) Browser still warns about name mismatch
+   Use a URL that matches the certificate SAN (hostnames or https://10.100.30.110 if that IP
+   is listed). Regenerate certs after changing nginx server_name or VM IP.
+
+5) Using the VM IP only (no DNS)
+   nginx server_name and CORS can include 10.100.30.110; regenerate TLS so SAN includes
+   IP:10.100.30.110 (scripts default to this). Deploy .env with CORS_ORIGINS=https://10.100.30.110,...
+
+6) After HTTPS works, the app needs SharedArrayBuffer (COOP/COEP) — use HTTPS
+   (not plain HTTP) for full frontend features.
+
+7) https://10.100.30.110/ still does not load (browser “can’t reach” or spins)
+   From your Windows PC (same LAN/VPN as the VM):
+     ping 10.100.30.110
+     Test-NetConnection -ComputerName 10.100.30.110 -Port 443
+     Test-NetConnection -ComputerName 10.100.30.110 -Port 80
+   - If ping fails: routing/VPN/wrong subnet — fix network first.
+   - If ping OK but port 443 TcpTestSucceeded = False: host firewall (ufw), corporate ACL,
+     or nginx container not bound (docker ps should show 0.0.0.0:443->443).
+   On the VM: sudo ufw allow 80,443/tcp && sudo ufw reload
+   If nginx is Restarting: docker logs hunico-nginx — usually missing/invalid PEMs under
+   servers/docker/nginx/ssl/ (regenerate scripts). Repo helper: docker/CHECK_HTTPS_VM.bat

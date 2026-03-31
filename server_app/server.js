@@ -9,6 +9,7 @@ const { installConsoleGate, logAlways, log, error, warn, debug } = require('../s
 
 const config = require('./middleware/config');
 const { resolveAllowedOrigins } = require('../shared/utils/allowedOrigins');
+const { getReadinessReport } = require('../shared/utils/readiness');
 const adminRoutes = require('./routes/admin');
 const authJwtRoutes = require('./routes/auth_jwt');
 const userRoutes = require('./routes/users');
@@ -123,16 +124,29 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'app', uptime: process.uptime(), timestamp: Date.now() });
 });
 
-// Readiness check (DB connectivity)
+// Readiness: Postgres + data/media bind mounts (when paths are configured)
 app.get('/api/ready', async (req, res) => {
   try {
-    const val = await db.getValue('SELECT 1 as value');
-    if (val === 1) {
-      return res.json({ status: 'ready', service: 'app', db: 'ok', timestamp: Date.now() });
+    const report = await getReadinessReport(db, config);
+    const payload = {
+      status: report.ok ? 'ready' : 'unready',
+      service: 'app',
+      timestamp: Date.now(),
+      postgres: report.postgres,
+      data: report.data,
+      media: report.media
+    };
+    if (report.ok) {
+      return res.json(payload);
     }
-    return res.status(503).json({ status: 'degraded', service: 'app', db: 'fail', timestamp: Date.now() });
+    return res.status(503).json(payload);
   } catch (err) {
-    return res.status(503).json({ status: 'unready', service: 'app', db: 'error', message: err?.message });
+    return res.status(503).json({
+      status: 'unready',
+      service: 'app',
+      postgres: { ok: false, detail: 'error', message: err?.message },
+      timestamp: Date.now()
+    });
   }
 });
 

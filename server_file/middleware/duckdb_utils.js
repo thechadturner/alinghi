@@ -183,7 +183,7 @@ function buildTimeBucketSQL(resolutionSeconds) {
 }
 
 /**
- * Canonical epoch-seconds key for merging rows across parquet files (matches GP50 fusion script ts.round(3)).
+ * Canonical epoch-seconds key for merging rows across parquet files (matches AC40 fusion script ts.round(3)).
  * Prevents near-duplicate floats from splitting processed_data vs fusion_corrections onto different rows,
  * which made _cor series sparse and drew bogus straight segments in time-series charts.
  */

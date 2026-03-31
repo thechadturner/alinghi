@@ -89,7 +89,8 @@ class AuthManager {
       };
     } catch (err) {
       error('shared/auth/index.js', 'Authentication error:', err);
-      return null;
+      // Do not mask DB/network failures as "wrong password" — propagate for HTTP 503/500
+      throw err;
     }
   }
 

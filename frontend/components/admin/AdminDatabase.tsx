@@ -17,7 +17,7 @@ export default function AdminDatabase() {
   const [populateError, setPopulateError] = createSignal<string | null>(null);
 
   const handlePopulateChannels = async () => {
-    const className = 'gp50';
+    const className = 'ac40';
     const projectId = persistantStore.selectedProjectId?.() || 1; // Default to project 1 if not set
     const testDate = '2026-01-17';
     const hardcodedSourceName = 'GER';

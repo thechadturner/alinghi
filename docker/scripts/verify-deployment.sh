@@ -65,6 +65,15 @@ pool.query('SELECT 1', (err, res) => {
 "
 
 echo
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${SCRIPT_DIR}/quick-restart-connectivity.sh" ]; then
+    echo "[INFO] Mounts + /api/ready (shared with QUICK_RESTART_VM_SERVICES.bat)..."
+    bash "${SCRIPT_DIR}/quick-restart-connectivity.sh" || exit 1
+else
+    echo "[WARNING] quick-restart-connectivity.sh not found in ${SCRIPT_DIR} — skipping mount/ready checks"
+fi
+
+echo
 echo "[INFO] Testing Redis connection..."
 docker exec hunico-node node -e "
 const Redis = require('ioredis');

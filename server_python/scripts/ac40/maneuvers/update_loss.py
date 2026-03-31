@@ -13,7 +13,7 @@ from pathlib import Path
 # Determine environment mode
 is_production = os.getenv("NODE_ENV") == "production"
 
-# Get project root (three levels up from server_python/scripts/gp50/)
+# Get project root (three levels up from server_python/scripts/ac40/)
 project_root = Path(__file__).parent.parent.parent.parent
 
 # Load environment files based on mode
@@ -60,7 +60,7 @@ def process_maneuver_type(api_token, class_name, project_id, dataset_id, event_t
     
     Args:
         api_token: API authentication token
-        class_name: Class name (e.g., 'GP50')
+        class_name: Class name (e.g., 'AC40')
         project_id: Project ID
         dataset_id: Dataset ID
         event_type: Maneuver type (e.g., 'tack', 'gybe', etc.)

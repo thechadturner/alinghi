@@ -844,7 +844,7 @@ if __name__ == "__main__":
         timezone_str = parameters_json.get('timezone') or 'Europe/Madrid'
         batch = parameters_json.get('batch', False)
 
-        # class_name = 'gp50'
+        # class_name = 'ac40'
         # project_id = 1
         # date = '20260213'
         # source_name = 'GER'

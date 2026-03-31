@@ -287,10 +287,10 @@ export class HuniDBStore {
         'idx_cache_filters_dataset',
       ];
 
-      // Filter expected indexes based on class (GP50 has additional indexes)
+      // Filter expected indexes based on class (AC40 has additional indexes)
       const classNameUpper = className.toUpperCase();
       const filteredExpected = expectedIndexes.filter(idx => {
-        if (idx.includes('gp50') && classNameUpper !== 'GP50') {
+        if (idx.includes('ac40') && classNameUpper !== 'AC40') {
           return false;
         }
         return true;

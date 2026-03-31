@@ -87,7 +87,7 @@ export default function DatasetInfo() {
         setState(state_str)
     }
 
-    // GP50 Configuration state
+    // AC40 Configuration state
     const [configurations, setConfigurations] = createSignal<ConfigurationEntry[]>([]);
     const [headsailEvents, setHeadsailEvents] = createSignal<any[]>([]);
     const [crewCountEvents, setCrewCountEvents] = createSignal<any[]>([]);
@@ -815,7 +815,7 @@ export default function DatasetInfo() {
     };
 
     const handleReviewEvents = async () => {
-        const className = selectedClassName() || 'gp50';
+        const className = selectedClassName() || 'ac40';
         const pid = selectedProjectId();
         const dateVal = selectedDate();
         const q = dateVal ? `?pid=${pid}&date=${encodeURIComponent(dateVal)}` : `?pid=${pid}`;
@@ -1204,7 +1204,7 @@ export default function DatasetInfo() {
                     <Show when={fromEvents() && configurations().length > 0}>
                         <div class="info-container">
                             <div class="info-item">
-                                <label class="label_bold">GP50 Configurations</label>
+                                <label class="label_bold">AC40 Configurations</label>
                                 <label class="label_italic">Enter wing, daggerboard, and rudder for each unique headsail+crew combination</label>
                                 <div style="margin-top: 10px;">
                                     <table style="width: 100%; border-collapse: collapse;">

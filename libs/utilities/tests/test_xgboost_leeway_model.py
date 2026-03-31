@@ -13,7 +13,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 # Import modules to test
-sys.path.insert(0, str(_project_root / "server_python" / "scripts" / "gp50"))
+sys.path.insert(0, str(_project_root / "server_python" / "scripts" / "ac40"))
 from xgboost_leeway_model import (
     prepare_features,
     compute_raw_leeway,

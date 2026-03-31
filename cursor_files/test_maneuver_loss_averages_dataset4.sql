@@ -1,5 +1,5 @@
 -- Test queries from getManeuverLossAverages for dataset_id 4
--- Schema: gp50 (change to your class_name if different)
+-- Schema: ac40 (change to your class_name if different)
 -- Run in your PostgreSQL client (psql, DBeaver, etc.)
 
 -- ========== RACE-LEVEL AGGREGATES ==========
@@ -10,8 +10,8 @@ SELECT e.dataset_id,
   AVG(CASE WHEN e.event_type = 'GYBE' THEN m."Loss_total_tgt" END) AS gybe_loss_avg,
   AVG(CASE WHEN e.event_type = 'ROUNDUP' THEN m."Loss_total_tgt" END) AS roundup_loss_avg,
   AVG(CASE WHEN e.event_type = 'BEARAWAY' THEN m."Loss_total_tgt" END) AS bearaway_loss_avg
-FROM gp50.dataset_events e
-INNER JOIN gp50.maneuver_stats m ON e.event_id = m.event_id
+FROM ac40.dataset_events e
+INNER JOIN ac40.maneuver_stats m ON e.event_id = m.event_id
 WHERE e.dataset_id = 4
   AND e.event_type IN ('TACK','GYBE','ROUNDUP','BEARAWAY')
   AND (e.tags->>'GRADE') IS NOT NULL AND (e.tags->>'GRADE') ~ '^[0-9]+$' AND (e.tags->>'GRADE')::int > 1
@@ -26,8 +26,8 @@ SELECT e.dataset_id,
   AVG(CASE WHEN e.event_type = 'GYBE' THEN m."Loss_total_tgt" END) AS gybe_loss_avg,
   AVG(CASE WHEN e.event_type = 'ROUNDUP' THEN m."Loss_total_tgt" END) AS roundup_loss_avg,
   AVG(CASE WHEN e.event_type = 'BEARAWAY' THEN m."Loss_total_tgt" END) AS bearaway_loss_avg
-FROM gp50.dataset_events e
-INNER JOIN gp50.maneuver_stats m ON e.event_id = m.event_id
+FROM ac40.dataset_events e
+INNER JOIN ac40.maneuver_stats m ON e.event_id = m.event_id
 WHERE e.dataset_id = 4
   AND e.event_type IN ('TACK','GYBE','ROUNDUP','BEARAWAY')
   AND (e.tags->>'GRADE') IS NOT NULL AND (e.tags->>'GRADE') ~ '^[0-9]+$' AND (e.tags->>'GRADE')::int > 1

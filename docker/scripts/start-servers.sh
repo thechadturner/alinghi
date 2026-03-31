@@ -145,16 +145,31 @@ echo "[INFO] [$(get_timestamp)] Waiting for servers to be ready..."
 echo
 
 # Function to check if a server is ready
+# Use 127.0.0.1 (not localhost): in many Linux containers /etc/hosts lists ::1 first,
+# so "localhost" hits IPv6 while Node may listen on IPv4-only (0.0.0.0) — health would
+# fail even when the server is up.
 check_health() {
     PORT=$1
     NAME=$2
-    MAX_ATTEMPTS=15
+    MAX_ATTEMPTS=25
     ATTEMPT=0
     
     while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
         ATTEMPT=$((ATTEMPT + 1))
-        # Use timeout to avoid hanging
-        if node -e "const http=require('http');const req=http.get('http://localhost:$PORT/api/health',{timeout:2000},(r)=>{process.exit(r.statusCode===200?0:1)});req.on('error',()=>process.exit(1));req.on('timeout',()=>{req.destroy();process.exit(1)});" 2>/dev/null; then
+        # Pass PORT as argv; drain response body so the socket closes cleanly
+        if node -e "
+const http = require('http');
+const port = parseInt(process.argv[1], 10);
+const req = http.get(
+  { hostname: '127.0.0.1', port, path: '/api/health', family: 4, timeout: 5000 },
+  (r) => {
+    r.resume();
+    r.on('end', () => process.exit(r.statusCode === 200 ? 0 : 1));
+  }
+);
+req.on('error', () => process.exit(1));
+req.on('timeout', () => { try { req.destroy(); } catch (e) {} process.exit(1); });
+" "$PORT" 2>/dev/null; then
             echo "[SUCCESS] [$(get_timestamp)] $NAME is ready!"
             return 0
         fi
@@ -167,7 +182,7 @@ check_health() {
 }
 
 # Check health of all servers (give them more time to start)
-sleep 3
+sleep 5
 check_health "${APP_PORT:-8069}" "server_app" || true
 check_health "${ADMIN_PORT:-8059}" "server_admin" || true
 check_health "${FILE_PORT:-8079}" "server_file" || true

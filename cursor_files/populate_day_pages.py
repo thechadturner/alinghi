@@ -4,7 +4,7 @@ Populate {schema}.day_pages for existing (project_id, date) pairs that have data
 
 For each sailing day:
   - Inserts the correct summary row: RACE SUMMARY vs TRAINING SUMMARY, using the same
-    rules as server_app/controllers/datasets.js (getRaces) and server_python/scripts/gp50/4_cleanup.py.
+    rules as server_app/controllers/datasets.js (getRaces) and server_python/scripts/ac40/4_cleanup.py.
   - Ensures PERFORMANCE and MANEUVERS day/reports rows exist (FleetPerformance / FleetManeuvers in the UI).
 
 Requires a direct PostgreSQL connection (same DB_* variables as the Node servers).
@@ -13,9 +13,9 @@ Optional dependency (install once if you approve it for your environment):
     pip install psycopg2-binary
 
 Usage examples:
-    python cursor_files/populate_day_pages.py --schema gp50
-    python cursor_files/populate_day_pages.py --schema gp50 --project-id 2
-    python cursor_files/populate_day_pages.py --schema gp50 --dry-run
+    python cursor_files/populate_day_pages.py --schema ac40
+    python cursor_files/populate_day_pages.py --schema ac40 --project-id 2
+    python cursor_files/populate_day_pages.py --schema ac40 --dry-run
 """
 
 from __future__ import annotations
@@ -157,7 +157,7 @@ def fetch_races_like_api(
 
 
 def choose_summary_page(data: List[Dict[str, Any]]) -> str:
-    """Same rules as server_python/scripts/gp50/4_cleanup.py (day_pages summary)."""
+    """Same rules as server_python/scripts/ac40/4_cleanup.py (day_pages summary)."""
     has_data = len(data) > 0
     has_training_only = has_data and all(r.get("HOUR") is not None for r in data)
     has_actual_races = has_data and (not has_training_only) and any(safe_race_number(r) > 0 for r in data)
@@ -311,7 +311,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "--schema",
         required=True,
-        help="Class schema name (e.g. gp50).",
+        help="Class schema name (e.g. ac40).",
     )
     p.add_argument(
         "--project-id",

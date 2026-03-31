@@ -721,11 +721,11 @@ const uploadData = async (req, res) => {
       );
     }
 
-    // Phase 3: Process XML files if class_name is 'gp50'
+    // Phase 3: Process XML files if class_name is 'ac40'
     // IMPORTANT: This runs regardless of normalization success/failure - XML parsing is independent
     // It runs after all normalizations complete to ensure all files have been processed
     // parseXml always runs when XML files are present (regardless of skip_normalization flag)
-    if (xmlFiles.length > 0 && class_name.toLowerCase() === 'gp50') {
+    if (xmlFiles.length > 0 && class_name.toLowerCase() === 'ac40') {
       // Use the target date (should be the same for all files in this batch)
       const xmlDate = targetDate || dates[0];
       
@@ -734,7 +734,7 @@ const uploadData = async (req, res) => {
         const xmlDir = xmlFiles[0].saveDir;
         const formattedXmlDate = xmlDate.replace(/-/g, '');
         
-        logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Processing ${xmlFiles.length} XML file(s) for gp50 class (runs regardless of normalization success)`, { xmlDir, date: xmlDate });
+        logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Processing ${xmlFiles.length} XML file(s) for ac40 class (runs regardless of normalization success)`, { xmlDir, date: xmlDate });
         
         // Wrap in try-catch to ensure XML parsing attempt happens even if there were previous errors
         try {

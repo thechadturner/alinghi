@@ -40,7 +40,7 @@ from utilities.cal_utils import (
 
 CONFIG = CalibrationConfig(
     api_token="8493d8284a19ae9f5a23cafdec7de5bfccdce799d651d053e81bc2adc75a4002",
-    class_name="gp50",
+    class_name="ac40",
     project_id="1",
     date="20260118",  
     source_name="GER",

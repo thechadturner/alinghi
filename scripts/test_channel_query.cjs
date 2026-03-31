@@ -32,7 +32,7 @@ const TEST_CONFIG = {
   channel: 'LATITUDE_GPS_unk',
   // You may need to adjust these based on your setup
   project_id: '2', // Default project ID - adjust if needed
-  class_name: 'gp50', // Default class name - adjust if needed
+  class_name: 'ac40', // Default class name - adjust if needed
   host: 'localhost',
   port: config.FILE_PORT || config.PORT || 3002,
   useHttps: false,

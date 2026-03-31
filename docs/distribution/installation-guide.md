@@ -8,9 +8,34 @@ This guide explains how to install Docker on the production VM and manage the Ra
 - Root or sudo access on the VM
 - Ubuntu/Debian-based Linux system
 
+## Fresh VM (no Docker yet): push installer from Windows
+
+If the server does not have Docker and you have not run a full deploy yet, the install script is not on the VM. From your Windows machine (with `deploy.config` or gitignored `docker/deploy.config.local` pointing at the server):
+
+1. Run `docker\PUSH_INSTALL_DOCKER_TO_VM.bat`. It copies `docker/install-docker.sh` to `/tmp/racesight-install-docker.sh` using the same SSH settings as `DEPLOY_VM_SERVERS.bat` (key or password).
+2. SSH in and run the installer:
+   ```bash
+   ssh ta@10.100.30.110
+   sudo bash /tmp/racesight-install-docker.sh
+   ```
+   Adjust user and host to match your config.
+3. If the script adds your user to the `docker` group, log out and SSH back in before running Docker without `sudo`.
+4. Create layout and Docker network (paths should match `VM_BASE_PATH` in your deploy config), for example:
+   ```bash
+   export VM_BASE_PATH=/home/ta/racesight
+   export VM_FRONTEND_PATH=/home/ta/racesight/frontend
+   export VM_SERVERS_PATH=/home/ta/racesight/servers
+   export VM_DATA_PATH=/home/ta/racesight/data
+   export VM_MEDIA_PATH=/home/ta/racesight/media
+   sudo -E bash /home/ta/racesight/servers/docker/setup-vm.sh
+   ```
+   Use the real `servers/docker` path on your server (after a server deploy it matches `VM_SERVERS_PATH`/docker). If that folder does not exist yet, copy `docker/setup-vm.sh` from the repo to the VM (same idea as `PUSH_INSTALL_DOCKER_TO_VM.bat`), `chmod +x` it, and run `sudo -E bash setup-vm.sh` from its directory with the exports above.
+
+After Docker is installed, run `DEPLOY_VM_SERVERS.bat` / `DEPLOY_VM_FRONTEND.bat` as usual.
+
 ## Step 1: Install Docker
 
-SSH to your VM and run the installation script:
+SSH to your VM and run the installation script (paths depend on your deployment root):
 
 ```bash
 ssh -i "your-key.pem" racesight@20.224.64.96

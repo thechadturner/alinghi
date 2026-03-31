@@ -589,7 +589,7 @@ export default function ManeuversHistoryPage() {
     if (tws() == 'ALL') {
       filteredData_tws = maneuversData;
     } else {
-      // For gp50, filter by TWS bin (intervals of 5, ±2.5 from selected value)
+      // For ac40, filter by TWS bin (intervals of 5, ±2.5 from selected value)
       const selectedTws = Number(tws());
       if (!isNaN(selectedTws)) {
         filteredData_tws = maneuversData.filter((item: any) => {

@@ -3,10 +3,11 @@ import { createSignal, onMount, Show } from "solid-js";
 import { persistantStore } from "../store/persistantStore";
 import { debug, error as logError } from "../utils/console";
 
-const DEFAULT_REPORT_CLASS = "gp50";
+const DEFAULT_REPORT_CLASS = "ac40";
 
+// Report implementations live under reports/ac40
 const uploadDatasetsMap: Record<string, () => Promise<any>> = {
-  gp50: () => import("../reports/gp50/UploadDatasets"),
+  ac40: () => import("../reports/ac40/UploadDatasets"),
 };
 
 export default function UploadDatasetsRoute() {

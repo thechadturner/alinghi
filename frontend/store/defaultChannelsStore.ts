@@ -62,14 +62,14 @@ let initializationPromise: Promise<void> | null = null;
 
 /**
  * Get class-specific fallback channel names
- * GP50 uses _kph (kilometers per hour)
+ * AC40 uses _kph (kilometers per hour)
  */
 const getDefaultFallbacks = (className?: string): Record<string, string> => {
   const classLower = className?.toLowerCase() || '';
-  const isGP50 = classLower === 'gp50';
+  const isAC40 = classLower === 'ac40';
   
-  // GP50 uses _kph
-  const speedUnit = isGP50 ? 'kph' : 'kts';
+  // AC40 uses _kph
+  const speedUnit = isAC40 ? 'kph' : 'kts';
   
   return {
     bsp_name: `Bsp_${speedUnit}`,

@@ -9,7 +9,7 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 
 /** Allowed class names (schema) for grade-by-vmg updates to avoid SQL injection */
-const ALLOWED_CLASS_NAMES = ['gp50'];
+const ALLOWED_CLASS_NAMES = ['ac40'];
 
 // Clear all logs
 exports.clearLogs = async (req, res) => {

@@ -6450,7 +6450,7 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
   const getChartData = async (chartType: ChartType): Promise<any[]> => {
     try {
       const dataSource = getDataSourceForChart(chartType);
-      const className = persistantStore.selectedClassName?.() || 'gp50';
+      const className = persistantStore.selectedClassName?.() || 'ac40';
       const sourceId = persistantStore.selectedSourceId?.()?.toString() || '1';
       
       const data = await getDataFromIndexedDB(dataSource, className, sourceId);
@@ -6465,7 +6465,7 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
   const updateChartData = async (chartType: ChartType, data: any[]): Promise<void> => {
     try {
       const dataSource = getDataSourceForChart(chartType);
-      const className = persistantStore.selectedClassName?.() || 'gp50';
+      const className = persistantStore.selectedClassName?.() || 'ac40';
       const sourceId = persistantStore.selectedSourceId?.()?.toString() || '1';
       const datasetId = String(persistantStore.selectedDatasetId() || '0');
       const projectId = String(persistantStore.selectedProjectId?.() || '0');
@@ -6589,7 +6589,7 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
 
   const getDataAsync = async (category: DataCategory, sourceId: string): Promise<any[]> => {
     const dataSource = getDataSourceForChart(category as ChartType);
-    const className = persistantStore.selectedClassName?.() || 'gp50';
+    const className = persistantStore.selectedClassName?.() || 'ac40';
     const datasetId = String(persistantStore.selectedDatasetId() || '0');
     const projectId = String(persistantStore.selectedProjectId?.() || '0');
     const key = createDataKey(datasetId, projectId, sourceId, dataSource);
@@ -6629,7 +6629,7 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
 
   const setData = async (category: DataCategory, sourceId: string, data: any[]): Promise<void> => {
     const dataSource = getDataSourceForChart(category as ChartType);
-    const className = persistantStore.selectedClassName?.() || 'gp50';
+    const className = persistantStore.selectedClassName?.() || 'ac40';
     const datasetId = Number(persistantStore.selectedDatasetId() || 0);
     const projectId = Number(persistantStore.selectedProjectId?.() || 0);
     const key = createDataKey(String(datasetId), String(projectId), sourceId, dataSource);
@@ -6888,22 +6888,22 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
 
   // Simple object storage methods
   const storeObject = async (objectName: string, data: any): Promise<void> => {
-    const className = persistantStore.selectedClassName?.() || 'gp50';
+    const className = persistantStore.selectedClassName?.() || 'ac40';
     await huniDBStore.storeObject(className, objectName, data);
   };
 
   const getObject = async (objectName: string): Promise<any | null> => {
-    const className = persistantStore.selectedClassName?.() || 'gp50';
+    const className = persistantStore.selectedClassName?.() || 'ac40';
     return await huniDBStore.getObject(className, objectName);
   };
 
   const deleteObject = async (objectName: string): Promise<void> => {
-    const className = persistantStore.selectedClassName?.() || 'gp50';
+    const className = persistantStore.selectedClassName?.() || 'ac40';
     await huniDBStore.deleteObject(className, objectName);
   };
 
   const listObjects = async (): Promise<string[]> => {
-    const className = persistantStore.selectedClassName?.() || 'gp50';
+    const className = persistantStore.selectedClassName?.() || 'ac40';
     return await huniDBStore.listObjects(className);
   };
 
@@ -6912,7 +6912,7 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
   // Filter configuration is retrieved via UnifiedFilterService.getFilterConfig()
   const getFilterOptions = async (context?: FilterContext): Promise<{ races: number[]; legOptions?: number[]; legs?: number[]; grades: number[]; raceToLegs?: Record<number, number[]> } | null> => {
     try {
-      const className = persistantStore.selectedClassName?.() || 'gp50';
+      const className = persistantStore.selectedClassName?.() || 'ac40';
       
       // Determine context if not provided
       const filterContext = context || determineFilterContext();
@@ -7289,7 +7289,7 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
 
   const getEventTimeRanges = async (eventIds: number[]): Promise<Map<number, { starttime: string; endtime: string }>> => {
     try {
-      const className = persistantStore.selectedClassName?.() || 'gp50';
+      const className = persistantStore.selectedClassName?.() || 'ac40';
       // Pass datasetId and projectId to ensure correct event lookup
       const datasetId = persistantStore.selectedDatasetId();
       const projectId = persistantStore.selectedProjectId();
@@ -7303,7 +7303,7 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
   // Get cached dataset metadata for a class from HuniDB (meta.datasets)
   const getCachedDatasetsForClass = async (className?: string): Promise<DatasetMetadata[]> => {
     try {
-      const effectiveClass = className || persistantStore.selectedClassName?.() || 'gp50';
+      const effectiveClass = className || persistantStore.selectedClassName?.() || 'ac40';
       if (!effectiveClass) {
         debug('[UnifiedDataStore] getCachedDatasetsForClass: no className available');
         return [];
@@ -8147,7 +8147,7 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
   /**
    * Load map data for a dataset to hunidb
    * This ensures map data is available for filtering even when map components aren't rendered
-   * @param className - Class name (e.g., 'gp50')
+   * @param className - Class name (e.g., 'ac40')
    * @param projectId - Project ID
    * @param datasetId - Dataset ID
    */

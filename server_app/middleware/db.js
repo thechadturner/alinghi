@@ -1,4 +1,5 @@
 const { Pool } = require("pg");
+const { pgSocketFamily } = require('../../shared/database/pgFamily');
 const env = require('./config');
 const { logMessage } = require('./logging');
 const { error } = require('../../shared');
@@ -14,7 +15,13 @@ const sslConfig = sslEnabled ? {
   rejectUnauthorized: env.DB_SSL_REJECT_UNAUTHORIZED === 'true' || env.DB_SSL_REJECT_UNAUTHORIZED === '1'
 } : false;
 
-const pool = new Pool({
+const connectionTimeoutMillis = Math.min(
+  120000,
+  Math.max(1000, parseInt(String(env.DB_CONNECTION_TIMEOUT_MS || '10000'), 10) || 10000)
+);
+
+const family = pgSocketFamily(env.DB_HOST, env);
+const poolOpts = {
   host: env.DB_HOST,
   port: env.DB_PORT,
   database: env.DB_NAME,
@@ -23,10 +30,12 @@ const pool = new Pool({
   ssl: sslConfig,
   max: 20,                        // Maximum number of clients in the pool
   min: 2,                         // Minimum number of clients in the pool
-  connectionTimeoutMillis: 10000, // 10 second timeout
+  connectionTimeoutMillis,
   idleTimeoutMillis: 300000,      // 5 minute idle timeout
   acquireTimeoutMillis: 30000     // 30 second acquire timeout
-});
+};
+if (family !== undefined) poolOpts.family = family;
+const pool = new Pool(poolOpts);
 
 pool.on('error', (err, client) => {
   error('Error:', err);

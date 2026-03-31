@@ -1,6 +1,6 @@
 # Sailing sensor calibration (performance-model AWA + leeway + fusion)
 
-The `utilities.cal_utils` module calibrates apparent wind angle (AWA) using **tack × mode performance models** (port/starboard × upwind/downwind XGBoost surfaces on `Bsp_kph` and `Tws_kph`), applies **half-hour leeway symmetry offsets** (48 keys per tack), and supports **multi-sensor fusion** via `calibrate_and_fuse_pipeline` (as used by GP50 `3_corrections.py`).
+The `utilities.cal_utils` module calibrates apparent wind angle (AWA) using **tack × mode performance models** (port/starboard × upwind/downwind XGBoost surfaces on `Bsp_kph` and `Tws_kph`), applies **half-hour leeway symmetry offsets** (48 keys per tack), and supports **multi-sensor fusion** via `calibrate_and_fuse_pipeline` (as used by AC40 `3_corrections.py`).
 
 ## Overview
 
@@ -27,7 +27,7 @@ from utilities.cal_utils import CalibrationConfig, calibrate_sailing_data
 
 config = CalibrationConfig(
     api_token=os.environ["SYSTEM_KEY"],
-    class_name="gp50",
+    class_name="ac40",
     project_id="1",
     date="20260118",
     source_name="GER",
@@ -64,7 +64,7 @@ df_fused = out["data"]
 
 ### Applying to new data
 
-There is **no** separate “apply pre-trained models only” helper in the library. Re-run `calibrate_sailing_data` / `calibrate_and_fuse_pipeline` with a `CalibrationConfig` that points at the new time range (or integrate the same steps in your own job). For GP50, `server_python/scripts/gp50/3_corrections.py` writes `fusion_corrections_racesight.parquet` for downstream use.
+There is **no** separate “apply pre-trained models only” helper in the library. Re-run `calibrate_sailing_data` / `calibrate_and_fuse_pipeline` with a `CalibrationConfig` that points at the new time range (or integrate the same steps in your own job). For AC40, `server_python/scripts/ac40/3_corrections.py` writes `fusion_corrections_racesight.parquet` for downstream use.
 
 ## API reference
 

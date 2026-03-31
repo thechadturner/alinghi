@@ -34,7 +34,7 @@ When a project is created via `POST /api/projects`, the system:
 
 ### Step 1: Populate the `pages` Table
 
-For each new class (e.g., `gp50`, `ac75`), you must populate the `{class_name}.pages` table with available pages:
+For each new class (e.g., `ac40`, `ac75`), you must populate the `{class_name}.pages` table with available pages:
 
 ```sql
 INSERT INTO {class_name}.pages (page_id, sort_id, page_type, page_name, description, path_name, icon, permission_level)

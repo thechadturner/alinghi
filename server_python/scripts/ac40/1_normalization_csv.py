@@ -213,11 +213,11 @@ if __name__ == "__main__":
             sys.exit(1)
 
         # # MANUAL INPUT
-        # class_name = 'GP50'
+        # class_name = 'AC40'
         # project_id = 2
         # date = '20250314'
         # source_name = 'GER'
-        # file_name = r'C:\MyApps\Hunico\Uploads\Data\Raw\2\gp50\20250314\GER\log_GER_2025-03-14_10Hz.csv'
+        # file_name = r'C:\MyApps\Hunico\Uploads\Data\Raw\2\ac40\20250314\GER\log_GER_2025-03-14_10Hz.csv'
         # batch = False
 
         filename_only = os.path.basename(file_name)

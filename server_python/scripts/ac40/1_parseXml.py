@@ -14,7 +14,7 @@ from pathlib import Path
 # Determine environment mode
 is_production = os.getenv("NODE_ENV") == "production"
 
-# Get project root (three levels up from server_python/scripts/gp50/)
+# Get project root (three levels up from server_python/scripts/ac40/)
 project_root = Path(__file__).parent.parent.parent.parent
 
 # Load environment files based on mode
@@ -319,10 +319,10 @@ def main():
         date = parameters_json.get('date')
         file_path = parameters_json.get('file_path')
 
-        # class_name = 'gp50'
+        # class_name = 'ac40'
         # project_id = 2
         # date = '20250817'
-        # file_path = r'C:\MyApps\Hunico\Uploads\Data\Raw\2\gp50\20250817'
+        # file_path = r'C:\MyApps\Hunico\Uploads\Data\Raw\2\ac40\20250817'
         
         # Check if file_path exists
         if not file_path:

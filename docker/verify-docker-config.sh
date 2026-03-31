@@ -136,7 +136,7 @@ echo ""
 
 # Check normalization script
 echo "7. Checking normalization script..."
-NORM_SCRIPT="$WORKSPACE_ROOT/server_python/scripts/gp50/1_normalization_influx.py"
+NORM_SCRIPT="$WORKSPACE_ROOT/server_python/scripts/ac40/1_normalization_influx.py"
 if [ -f "$NORM_SCRIPT" ]; then
     echo "   ✓ 1_normalization_influx.py exists"
     

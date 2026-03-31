@@ -758,7 +758,7 @@ export default function PerfSettings(props: PerfSettingsProps) {
               endDate = `${end.getFullYear()}-${String(end.getMonth()+1).padStart(2,'0')}-${String(end.getDate()).padStart(2,'0')}`;
             }
             // Validate className before making API call
-            if (!className || className.toLowerCase() !== 'gp50') {
+            if (!className || className.toLowerCase() !== 'ac40') {
               logDebug('PerfSettings: Skipping API call - invalid className', { className, projectId });
               return;
             }
@@ -904,7 +904,7 @@ export default function PerfSettings(props: PerfSettingsProps) {
               endDate = `${end.getFullYear()}-${String(end.getMonth()+1).padStart(2,'0')}-${String(end.getDate()).padStart(2,'0')}`;
             }
             // Validate className before making API call
-            if (!className || className.toLowerCase() !== 'gp50') {
+            if (!className || className.toLowerCase() !== 'ac40') {
               logDebug('PerfSettings: Skipping API call - invalid className', { className, projectId });
               return;
             }

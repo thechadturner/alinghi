@@ -193,7 +193,7 @@ export default function Window() {
                 logDebug('Window: Attempting to load component from path:', basePath);
                 
                 // Convert file path to the glob key format (relative to reports directory)
-                // e.g., "gp50/dataset/explore/Map" -> "../reports/gp50/dataset/explore/Map.tsx"
+                // e.g., "ac40/dataset/explore/Map" -> "../reports/ac40/dataset/explore/Map.tsx"
                 let globKey = `../reports/${basePath}.tsx`;
                 
                 // Get the loader function from the glob map (exact match first)
@@ -519,7 +519,7 @@ export default function Window() {
                                 // Ensure sources are ready before loading component
                                 await ensureSourcesReady();
                                 
-                                // Try loading from the expected path: gp50/dataset/reports/Maneuvers
+                                // Try loading from the expected path: ac40/dataset/reports/Maneuvers
                                 const expectedPath = `${className}/dataset/reports/Maneuvers`;
                                 logDebug('Window: Attempting to load MANEUVERS from expected path:', expectedPath);
                                 await loadComponent(expectedPath);

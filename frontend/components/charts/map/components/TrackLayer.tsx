@@ -167,7 +167,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     const twdField = twdName();
     const twaField = twaName();
 
-    if (selectedClassName() === 'gp50') {
+    if (selectedClassName() === 'ac40') {
       return `<table class='table-striped'>
         <tr><td>TIME</td><td>${formatTime(point.Datetime, timezone)}</td></tr>
         <tr><td>TWS</td><td>${point[twsField] || ''}</td></tr>

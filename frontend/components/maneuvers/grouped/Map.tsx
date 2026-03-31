@@ -1133,7 +1133,7 @@ export default function ManeuverMap(props: ManeuverMapGroupedProps) {
     const getTooltipContent = (point: MapTrackPoint | undefined) => {
       if (!point) return "";
   
-      // Check if we have State/Config (GP50)
+      // Check if we have State/Config (AC40)
       const hasStateConfig = point.State !== undefined || point.Config !== undefined;
       
       // Use template literals to build an HTML table dynamically
@@ -1150,7 +1150,7 @@ export default function ManeuverMap(props: ManeuverMapGroupedProps) {
               <tr><td>TWS BIN:</td><td>${point.tws_bin}</td></tr>`;
       
       if (hasStateConfig) {
-        // GP50: Show State and Config
+        // AC40: Show State and Config
         tooltipRows += `
               <tr><td>STATE:</td><td>${point.State ?? ''}</td></tr>
               <tr><td>CONFIG:</td><td>${point.Config ?? ''}</td></tr>`;

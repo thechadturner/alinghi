@@ -1,4 +1,5 @@
 const { Pool } = require("pg");
+const { pgSocketFamily } = require("./pgFamily");
 const path = require('path');
 const dotenv = require("dotenv");
 const fs = require("fs");
@@ -77,8 +78,14 @@ class DatabaseConnection {
     const sslConfig = sslEnabled ? {
       rejectUnauthorized: config.DB_SSL_REJECT_UNAUTHORIZED === 'true' || config.DB_SSL_REJECT_UNAUTHORIZED === '1'
     } : false;
-    
-    this.pool = new Pool({
+
+    const connectionTimeoutMillis = Math.min(
+      120000,
+      Math.max(1000, parseInt(String(config.DB_CONNECTION_TIMEOUT_MS || '10000'), 10) || 10000)
+    );
+
+    const family = pgSocketFamily(dbHost, config);
+    const poolOpts = {
       host: dbHost,
       port: dbPort,
       database: dbName,
@@ -87,10 +94,13 @@ class DatabaseConnection {
       ssl: sslConfig,
       max: 20,                        // Maximum number of clients in the pool
       min: 2,                         // Minimum number of clients in the pool
-      connectionTimeoutMillis: 10000, // 10 second timeout
+      connectionTimeoutMillis,
       idleTimeoutMillis: 300000,      // 5 minute idle timeout
       acquireTimeoutMillis: 30000     // 30 second acquire timeout
-    });
+    };
+    if (family !== undefined) poolOpts.family = family;
+
+    this.pool = new Pool(poolOpts);
 
     this.pool.on('error', (err, client) => {
       console.error('Database pool error:', err);
@@ -184,6 +194,13 @@ class DatabaseConnection {
   getSuperUser() {
     const superUser = config.SUPER_USER;
     return superUser ? superUser.trim() : superUser;
+  }
+
+  /**
+   * Expose pool for callers that must distinguish "no rows" from query failures (e.g. auth).
+   */
+  getPool() {
+    return this.pool;
   }
 
   /**

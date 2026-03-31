@@ -10,7 +10,7 @@ const connectionManager = require('./connections');
  * - MANEUVER_TYPE: Track previous TWA, detect tacks (prevTwa < 0 && twa > 0 ? 'T' : ...)
  * 
  * Maps InfluxDB field names to default channel names following 1_normalization.py convention:
- * - GP50 uses _kph (kilometers per hour) for speed channels
+ * - AC40 uses _kph (kilometers per hour) for speed channels
  * - AC75 uses _kts (knots) for speed channels
  */
 
@@ -24,10 +24,10 @@ class StateMachineProcessor extends EventEmitter {
   }
 
   /**
-   * Get class name for a source (GP50 or AC75)
-   * Determines the unit suffix to use (_kph for GP50, _kts for AC75)
+   * Get class name for a source (AC40 or AC75)
+   * Determines the unit suffix to use (_kph for AC40, _kts for AC75)
    * @param {string|number} sourceIdentifier - Source name (normalized) or source_id (for backward compatibility)
-   * @returns {string} - Class name ('gp50' or 'ac75'), defaults to 'gp50'
+   * @returns {string} - Class name ('ac40' or 'ac75'), defaults to 'ac40'
    */
   getClassName(sourceIdentifier) {
     // Normalize if it's a string (source_name)
@@ -63,8 +63,8 @@ class StateMachineProcessor extends EventEmitter {
       debug(`[StateMachineProcessor] Error getting class for source "${key}":`, err.message);
     }
 
-    // Default to GP50 (uses _kph)
-    const defaultClass = 'gp50';
+    // Default to AC40 (uses _kph)
+    const defaultClass = 'ac40';
     this.sourceClassCache.set(key, defaultClass);
     return defaultClass;
   }
@@ -73,15 +73,15 @@ class StateMachineProcessor extends EventEmitter {
    * Get default channel name for an InfluxDB field name
    * Maps InfluxDB field names to default channel names with units following 1_normalization.py
    * @param {string} influxFieldName - InfluxDB field name (case-insensitive)
-   * @param {string} className - Class name ('gp50' or 'ac75')
+   * @param {string} className - Class name ('ac40' or 'ac75')
    * @returns {string|null} - Default channel name or null if no mapping
    */
   getDefaultChannelName(influxFieldName, className) {
     if (!influxFieldName) return null;
 
     const fieldLower = influxFieldName.toLowerCase();
-    const isGP50 = className === 'gp50';
-    const speedUnit = isGP50 ? 'kph' : 'kts';
+    const isAC40 = className === 'ac40';
+    const speedUnit = isAC40 ? 'kph' : 'kts';
 
     // Mapping following 1_normalization.py lines 172-193
     // Include all InfluxDB measurement name variants from REQUIRED_CHANNELS (influxdb.js)
@@ -284,7 +284,7 @@ class StateMachineProcessor extends EventEmitter {
         this.sourceStates.set(normalizedSourceName, state);
       }
 
-      // Get class name for this source to determine unit suffix (_kph for GP50, _kts for AC75)
+      // Get class name for this source to determine unit suffix (_kph for AC40, _kts for AC75)
       const className = this.getClassName(normalizedSourceName);
 
       // OPTIMIZED: Single pass through data with case-insensitive normalization

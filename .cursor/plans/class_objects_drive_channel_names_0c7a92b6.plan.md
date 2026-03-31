@@ -13,7 +13,7 @@ isProject: false
 - **Frontend** hardcodes:
   - `INTERNAL_TO_PARQUET_CHANNEL_NAMES` / `PARQUET_TO_INTERNAL_CHANNEL_NAMES` in [unifiedDataAPI.ts](frontend/store/unifiedDataAPI.ts)
   - `TIMESERIES_METADATA_CHANNELS_FALLBACK` in [unifiedDataStore.ts](frontend/store/unifiedDataStore.ts) and [unifiedDataAPI.ts](frontend/store/unifiedDataAPI.ts)
-  - `getDefaultGP50Config()` with `name: "State"` and hardcoded `filter_types["State"]` in [unifiedFilterService.ts](frontend/services/unifiedFilterService.ts)
+  - `getDefaultAC40Config()` with `name: "State"` and hardcoded `filter_types["State"]` in [unifiedFilterService.ts](frontend/services/unifiedFilterService.ts)
   - `colorCapableFields` array and many `'State'` / `'Foiling_state'` checks in store and [dataNormalization.ts](frontend/utils/dataNormalization.ts)
 
 So the app mixes “internal” names (State) and parquet names (Foiling_state) and keeps the mapping in code instead of in the class object.
@@ -73,7 +73,7 @@ No other new fields are required. If you prefer not to add `internal_name` yet, 
 - **New: getParquetToInternalNameMap(className, context):** Return `Record<string, string>` built from the current filter config: for each `filter_channels[]` entry that has `internal_name`, set `map[ch.name] = ch.internal_name`. If a channel has no `internal_name`, do not add it (so parquet name is used as-is). This replaces the hardcoded `PARQUET_TO_INTERNAL_CHANNEL_NAMES` when config is available.
 - **New (optional): getInternalToParquetNameMap(className, context):** Inverse of the above: `internal_name → name`. Useful for applying filters (filter state key `State` → column `Foiling_state` in data rows).
 - **getDisplayNameForChannel(name):** Given a channel `name` (parquet name), return `display_name` from `filter_channels` for UI. Use when rendering filter labels so UI shows “State” for `Foiling_state`.
-- **getDefaultGP50Config (fallback):** Align with the convention: use `name: "Foiling_state"`, `display_name: "State"`, and `internal_name: "State"` for the foiling channel; `default_filters` and `filter_types` keys use `"Foiling_state"`. This keeps fallback behavior consistent when the API is unavailable.
+- **getDefaultAC40Config (fallback):** Align with the convention: use `name: "Foiling_state"`, `display_name: "State"`, and `internal_name: "State"` for the foiling channel; `default_filters` and `filter_types` keys use `"Foiling_state"`. This keeps fallback behavior consistent when the API is unavailable.
 
 ## 3. unifiedDataAPI
 
@@ -106,13 +106,13 @@ No other new fields are required. If you prefer not to add `internal_name` yet, 
 
 ## 7. Optional: extend the schema for future flexibility
 
-- **parquet_name** (optional): If you ever need to support a channel whose `name` is the “internal” key (e.g. for non-parquet sources), you could add `parquet_name` for the file API and keep `name` as the primary key. For the current GP50 case, `name` = parquet name is enough.
+- **parquet_name** (optional): If you ever need to support a channel whose `name` is the “internal” key (e.g. for non-parquet sources), you could add `parquet_name` for the file API and keep `name` as the primary key. For the current AC40 case, `name` = parquet name is enough.
 - **description** and **type** in `filter_channels` are already useful for UI and validation; keep using them from the class object instead of duplicating in code.
 
 ## Implementation order
 
 1. **API/DB:** Update the four filter objects: `default_filters` use `"Foiling_state"`; add `filter_types["Foiling_state"]`; add `internal_name: "State"` to the Foiling_state entry in `filter_channels`.
-2. **UnifiedFilterService:** Add `getParquetToInternalNameMap`, `getInternalToParquetNameMap`, and `getDisplayNameForChannel`; update `getDefaultGP50Config` to the new convention.
+2. **UnifiedFilterService:** Add `getParquetToInternalNameMap`, `getInternalToParquetNameMap`, and `getDisplayNameForChannel`; update `getDefaultAC40Config` to the new convention.
 3. **unifiedDataAPI:** Use parquet names from `getRequiredFilterChannels` for the request; use `getParquetToInternalNameMap` (with hardcoded fallback) in the response path; remove hardcoded INTERNAL_TO_PARQUET / PARQUET_TO_INTERNAL.
 4. **unifiedDataStore:** Leave fallback list as-is (or switch to parquet names and document); ensure no new hardcoded channel names.
 5. **Filter UI / dataFiltering:** Use filter_types and filter_channels by `name`; use display_name for labels.

@@ -160,7 +160,7 @@ export default function Events() {
   // Note: We compute this inline in loadTasksForStep to avoid timing issues
 
   // Store default channel names
-  const [bspName, setBspName] = createSignal<string>('Bsp_kph'); // Default fallback for GP50
+  const [bspName, setBspName] = createSignal<string>('Bsp_kph'); // Default fallback for AC40
   const [twaName, setTwaName] = createSignal<string>('Twa_n_deg'); // Default fallback
 
   const [changeMade, setChangeMade] = createSignal(false);
@@ -2984,7 +2984,7 @@ const hotKey = (key: string) => {
     // Map original channel names (including default names) to normalized field names
     // Normalized names are always: Bsp, Twa_n, Hdg, Tws, Twd
     const channelMap: Record<string, string> = {
-      // BSP variations (GP50 uses _kph, but keep _kts for backward compatibility)
+      // BSP variations (AC40 uses _kph, but keep _kts for backward compatibility)
       [bspDefault]: 'Bsp',
       'Bsp_kph': 'Bsp',
       'bsp_kph': 'Bsp',
@@ -3003,7 +3003,7 @@ const hotKey = (key: string) => {
       'Hdg_deg': 'Hdg',
       'hdg_deg': 'Hdg',
       'HDG': 'Hdg',
-      // TWS variations (GP50 uses _kph, but keep _kts for backward compatibility)
+      // TWS variations (AC40 uses _kph, but keep _kts for backward compatibility)
       [twsDefault]: 'Tws',
       'Tws_kph': 'Tws',
       'tws_kph': 'Tws',

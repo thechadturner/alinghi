@@ -4,6 +4,12 @@ setlocal enabledelayedexpansion
 REM ============================================
 REM Server Deployment Script
 REM Builds and deploys all servers to production VM
+REM SSH: use docker\deploy.config.local with SSH_KEY=path\to\private key ^(see set-deploy-ssh-opts.bat^).
+REM
+REM TLS: PEMs are gitignored. Before wiping VM_SERVERS_PATH we copy servers/docker/nginx/ssl into
+REM VM_BASE_PATH/.deploy-ssl-preserve, then merge it back after extract. If still no fullchain.pem
+REM + privkey.pem, docker/scripts/ensure-nginx-tls-on-vm.sh generates self-signed certs ^(optional
+REM DEPLOY_NGINX_TLS_SAN_IP in deploy.config.local for an extra IP in SAN^).
 REM ============================================
 
 REM Get script directory and set up logging
@@ -57,20 +63,19 @@ if "%SSH_USER%"=="" (
     pause
     exit /b 1
 )
-if "%SSH_KEY%"=="" (
-    echo [ERROR] SSH_KEY not configured in %CONFIG_FILE%
-    pause
-    exit /b 1
-)
 if "%VM_SERVERS_PATH%"=="" (
     echo [ERROR] VM_SERVERS_PATH not configured in %CONFIG_FILE%
     pause
     exit /b 1
 )
 
-REM Validate SSH key exists
-if not exist "%SSH_KEY%" (
-    echo [ERROR] SSH key not found: %SSH_KEY%
+call "%SCRIPT_DIR%set-deploy-ssh-opts.bat"
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+call "%SCRIPT_DIR%establish-ssh-mux.bat"
+if errorlevel 1 (
     pause
     exit /b 1
 )
@@ -279,6 +284,12 @@ if exist "docker\nginx" (
         REM Create empty logs directory on VM (nginx will populate it at runtime)
         mkdir "%TEMP_DIR%\servers\docker\nginx\logs" 2>nul
     )
+    if not exist "%TEMP_DIR%\servers\docker\nginx\nginx-prod.conf" (
+        echo [ERROR] Packaged tree is missing servers\docker\nginx\nginx-prod.conf - Docker will fail to start hunico-nginx.
+        echo [ERROR] Ensure docker\nginx\nginx-prod.conf exists in the repo and robocopy succeeded.
+        pause
+        exit /b 1
+    )
 )
 REM Copy docker scripts (exclude docs and test files)
 if exist "docker\scripts" (
@@ -360,7 +371,7 @@ goto :real_deploy_section
 
 :dry_run_section
 echo [DRY RUN] Would deploy to: %SSH_USER%@%SSH_HOST%:%VM_SERVERS_PATH%
-echo [DRY RUN] Would use SSH key: %SSH_KEY%
+if "%SSH_KEY%"=="" (echo [DRY RUN] Would use password or ssh-agent auth) else (echo [DRY RUN] Would use SSH key: %SSH_KEY%)
 echo [DRY RUN] Would copy files from: %TEMP_DIR%
 goto :deploy_end
 
@@ -371,38 +382,22 @@ echo.
 
 REM Step 5a: Clean up existing files on VM (clean deployment)
 echo [INFO] Step 5a: Cleaning up existing files on VM...
-echo [INFO] Ensuring deploy user owns VM paths (fixes root-owned leftovers from Docker)...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "sudo chown -R %SSH_USER% %VM_SERVERS_PATH% %VM_BASE_PATH% 2>/dev/null || true"
-echo [INFO] Stopping Docker containers first...
-set "SSH_CMD=cd %VM_BASE_PATH% ; docker-compose -f docker-compose.yml down 2>/dev/null || true"
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "%SSH_CMD%" 2>nul
-
-echo [INFO] Removing old server files from %VM_SERVERS_PATH%...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "rm -rf %VM_SERVERS_PATH%/*" 2>nul
-
-echo [INFO] Removing old Docker images tar files...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "rm -f %VM_BASE_PATH%/docker-images.tar" 2>nul
-
-echo [INFO] Cleaning up old/unused Docker images...
-for /f "delims=" %%i in ('ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker image prune -f 2>&1"') do (
-    echo %%i
+if /i "%DEPLOY_SUDO_CHOWN%"=="false" (
+    echo [INFO] Skipping sudo chown ^(DEPLOY_SUDO_CHOWN=false in deploy.config^). Step 6 chmod on docker-compose.yml is skipped too. Use only if paths are owned by %SSH_USER%.
+) else (
+    echo [INFO] Ensuring deploy user owns VM paths ^(fixes root-owned leftovers from Docker^)...
+    echo [INFO] You may be prompted for your Linux sudo password for user %SSH_USER%. To skip, set DEPLOY_SUDO_CHOWN=false in deploy.config.local ^(see deploy.config^).
+    REM ssh -t allocates a TTY so remote sudo can prompt; without -t, sudo waits invisibly and appears hung
+    ssh -t %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "sudo chown -R %SSH_USER% %VM_SERVERS_PATH% %VM_BASE_PATH% || true"
 )
-echo [INFO] Image cleanup completed
-
-echo [INFO] Removing dangling Docker volumes...
-for /f "delims=" %%i in ('ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker volume prune -f 2>&1"') do (
-    echo %%i
-)
-echo [INFO] Volume cleanup completed
-
-echo [SUCCESS] VM cleanup completed
+REM TLS preserve + compose down + Docker wipe of server tree ^(two SSH calls; root-owned nginx/ssl needs container rm^)
+echo [INFO] Stopping Docker, cleaning server tree, pruning images/volumes, creating dirs ^(single SSH — one password^)...
+echo [INFO] Preserving TLS under %VM_BASE_PATH%/.deploy-ssl-preserve ^(Docker copy: PEMs may be root-owned from cert generation^)...
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_BASE_PATH%/.deploy-ssl-preserve && docker run --rm -v %VM_SERVERS_PATH%:/srv -v %VM_BASE_PATH%/.deploy-ssl-preserve:/out alpine sh -c \"mkdir -p /out && if [ -d /srv/docker/nginx/ssl ]; then cp -a /srv/docker/nginx/ssl/. /out/; fi; exit 0\""
+echo [INFO] Stopping Docker, cleaning server tree ^(Docker rm clears root-owned ssl under servers path^)...
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'cd %VM_BASE_PATH% && (docker compose -f docker-compose.yml down --remove-orphans 2>/dev/null || docker-compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true); docker run --rm -v %VM_SERVERS_PATH%:/mnt alpine rm -rf /mnt/* 2>/dev/null || true; rm -rf %VM_SERVERS_PATH%/* 2>/dev/null || true; rm -f %VM_BASE_PATH%/docker-images.tar; docker image prune -f; docker volume prune -f; mkdir -p %VM_SERVERS_PATH% %VM_BASE_PATH% %VM_BASE_PATH%/scripts'"
+echo [SUCCESS] VM cleanup and remote directories ready
 echo.
-
-REM Create remote directory structure (data, media, scripts all under VM_BASE_PATH e.g. ~/hunico)
-echo [INFO] Creating remote directories...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_SERVERS_PATH%" 2>nul
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_BASE_PATH%" 2>nul
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_BASE_PATH%/scripts" 2>nul
 echo [INFO] Scripts directory: %VM_BASE_PATH%/scripts
 
 REM Deploy server files using tar+gzip (more reliable for large transfers)
@@ -449,28 +444,38 @@ if errorlevel 1 (
 )
 echo [SUCCESS] Archive created (servers only - frontend deployed separately)
 
+echo.
+echo [INFO] Step 6: Uploading server archive, compose, env, and permissions to VM...
+echo [INFO] Testing SSH reachability to %SSH_USER%@%SSH_HOST% ...
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_SERVERS_PATH% && echo ok"
+if errorlevel 1 (
+    echo [ERROR] Cannot reach the VM over SSH ^(see hints below^).
+    call :print_ssh_connect_hints
+    pause
+    exit /b 1
+)
 echo [INFO] Uploading server files archive via SCP...
 echo [INFO] This may take a few minutes depending on file size...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_SERVERS_PATH%" 2>nul
-scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "%TEMP_DIR%\servers.tar.gz" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/servers.tar.gz
+scp %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 "%TEMP_DIR%\servers.tar.gz" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/servers.tar.gz
 if errorlevel 1 (
     echo [ERROR] Failed to upload server files archive
+    call :print_ssh_connect_hints
     pause
     exit /b 1
 )
 echo [SUCCESS] Server files archive uploaded
 
 echo [INFO] Extracting files on VM...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && tar -xzf servers.tar.gz && rm -rf %VM_SERVERS_PATH%/* && cp -r servers/* %VM_SERVERS_PATH%/ && rm -rf servers && rm servers.tar.gz"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker run --rm -v %VM_BASE_PATH%:/mnt alpine rm -rf /mnt/servers 2>/dev/null || true && rm -rf servers 2>/dev/null || true && tar -xzf servers.tar.gz && docker run --rm -v %VM_SERVERS_PATH%:/mnt alpine rm -rf /mnt/* 2>/dev/null || true && rm -rf %VM_SERVERS_PATH%/* 2>/dev/null || true && cp -r servers/* %VM_SERVERS_PATH%/ && mkdir -p %VM_SERVERS_PATH%/docker/nginx/ssl && cp -a %VM_BASE_PATH%/.deploy-ssl-preserve/. %VM_SERVERS_PATH%/docker/nginx/ssl/ 2>/dev/null || true && chmod 644 %VM_SERVERS_PATH%/docker/nginx/ssl/fullchain.pem 2>/dev/null || true && chmod 600 %VM_SERVERS_PATH%/docker/nginx/ssl/privkey.pem 2>/dev/null || true && chmod 600 %VM_SERVERS_PATH%/docker/nginx/ssl/ca-key.pem 2>/dev/null || true && rm -rf servers && rm -f servers.tar.gz"
 if errorlevel 1 (
     echo [ERROR] Failed to extract files on VM
     echo [INFO] Trying alternative extraction method...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_SERVERS_PATH% && tar -xzf %VM_BASE_PATH%/servers.tar.gz --strip-components=1 && rm %VM_BASE_PATH%/servers.tar.gz"
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker run --rm -v %VM_SERVERS_PATH%:/mnt alpine rm -rf /mnt/* 2>/dev/null || true && cd %VM_BASE_PATH% && docker run --rm -v %VM_BASE_PATH%:/mnt alpine rm -rf /mnt/servers 2>/dev/null || true && rm -rf servers 2>/dev/null || true && tar -xzf servers.tar.gz && cp -r servers/* %VM_SERVERS_PATH%/ && mkdir -p %VM_SERVERS_PATH%/docker/nginx/ssl && cp -a %VM_BASE_PATH%/.deploy-ssl-preserve/. %VM_SERVERS_PATH%/docker/nginx/ssl/ 2>/dev/null || true && chmod 644 %VM_SERVERS_PATH%/docker/nginx/ssl/fullchain.pem 2>/dev/null || true && chmod 600 %VM_SERVERS_PATH%/docker/nginx/ssl/privkey.pem 2>/dev/null || true && chmod 600 %VM_SERVERS_PATH%/docker/nginx/ssl/ca-key.pem 2>/dev/null || true && rm -rf servers && rm -f %VM_BASE_PATH%/servers.tar.gz"
     if errorlevel 1 (
         echo [ERROR] Alternative extraction also failed
         echo.
         echo [INFO] If you see "Permission denied" or "Cannot mkdir", fix ownership on the VM:
-        echo   ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST%
+        echo   ssh %SSH_REMOTE_OPTS% %SSH_USER%@%SSH_HOST%
         echo   sudo chown -R %SSH_USER%:%SSH_USER% %VM_BASE_PATH%
         echo   Then re-run this deploy script.
         echo.
@@ -480,6 +485,20 @@ if errorlevel 1 (
 )
 echo [SUCCESS] Server files deployed and extracted
 
+echo [INFO] Ensuring nginx TLS files on VM ^(preserve merge + generate if still missing^)...
+if not "%DEPLOY_NGINX_TLS_SAN_IP%"=="" (
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'bash %VM_SERVERS_PATH%/docker/scripts/ensure-nginx-tls-on-vm.sh %VM_SERVERS_PATH%/docker/nginx/ssl %DEPLOY_NGINX_TLS_SAN_IP%'"
+) else (
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'bash %VM_SERVERS_PATH%/docker/scripts/ensure-nginx-tls-on-vm.sh %VM_SERVERS_PATH%/docker/nginx/ssl'"
+)
+if errorlevel 1 (
+    echo [ERROR] ensure-nginx-tls-on-vm.sh failed ^(openssl missing on VM, or script not in archive^).
+    echo [INFO] Fix VM openssl or place fullchain.pem and privkey.pem under %VM_SERVERS_PATH%/docker/nginx/ssl
+    pause
+    exit /b 1
+)
+echo [SUCCESS] Nginx TLS directory ready
+
 cd /d "%PROJECT_ROOT%"
 
 REM Deploy Python scripts into VM_BASE_PATH/scripts (same tree as data and media, e.g. ~/hunico/scripts)
@@ -487,11 +506,11 @@ if exist "server_python\scripts" (
     echo [INFO] Deploying Python scripts to %VM_BASE_PATH%/scripts from project server_python/scripts...
     tar -czf "%TEMP_DIR%\scripts.tar.gz" -C server_python scripts 2>nul
     if exist "%TEMP_DIR%\scripts.tar.gz" (
-        scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\scripts.tar.gz" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/scripts.tar.gz
+        scp %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\scripts.tar.gz" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/scripts.tar.gz
         if errorlevel 1 (
             echo [WARNING] Failed to upload scripts archive
         ) else (
-            ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_BASE_PATH%/scripts && (rm -rf %VM_BASE_PATH%/scripts/* 2>/dev/null; true) && tar -xzf %VM_BASE_PATH%/scripts.tar.gz -C %VM_BASE_PATH%/scripts --strip-components=1 && rm -f %VM_BASE_PATH%/scripts.tar.gz"
+            ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_BASE_PATH%/scripts && (rm -rf %VM_BASE_PATH%/scripts/* 2>/dev/null; true) && tar -xzf %VM_BASE_PATH%/scripts.tar.gz -C %VM_BASE_PATH%/scripts --strip-components=1 && rm -f %VM_BASE_PATH%/scripts.tar.gz"
             if errorlevel 1 (
                 echo [WARNING] Failed to extract scripts on VM
             ) else (
@@ -508,7 +527,7 @@ if exist "server_python\scripts" (
 
 REM Deploy docker-compose.yml to base path
 echo [INFO] Uploading docker-compose.yml...
-scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\docker-compose.yml" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/docker-compose.yml
+scp %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\docker-compose.yml" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/docker-compose.yml
 if errorlevel 1 (
     echo [ERROR] Failed to upload docker-compose.yml
     pause
@@ -519,7 +538,7 @@ echo [SUCCESS] docker-compose.yml uploaded
 REM Deploy environment files to base path (for docker-compose)
 echo [INFO] Uploading environment files...
 if exist "%TEMP_DIR%\.env.production" (
-    scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\.env.production" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/.env.production
+    scp %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\.env.production" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/.env.production
     if errorlevel 1 (
         echo [WARNING] Failed to upload .env.production
     )
@@ -528,7 +547,7 @@ REM Check for .env.production.local and upload if it exists
 set "ENV_LOCAL_FOUND=0"
 if exist "%TEMP_DIR%\.env.production.local" (
     set "ENV_LOCAL_FOUND=1"
-    scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\.env.production.local" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/.env.production.local
+    scp %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\.env.production.local" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/.env.production.local
     if errorlevel 1 (
         echo [WARNING] Failed to upload .env.production.local
         set "ENV_LOCAL_FOUND=0"
@@ -545,14 +564,30 @@ if "%ENV_LOCAL_FOUND%"=="0" (
 )
 REM Ensure .env exists for Compose variable substitution (Compose only auto-loads .env, not .env.production)
 REM This makes SCRIPTS_DIRECTORY, DATA_DIRECTORY, MEDIA_DIRECTORY etc. apply to volume mounts
+REM Use scp (same as .env.production upload) instead of ssh+cp — avoids a second SSH that can appear
+REM "stalled" (hidden password prompt, mux reconnect, or ControlMaster wait after long uploads).
 echo [INFO] Ensuring .env for Compose volume substitution...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cp -f %VM_BASE_PATH%/.env.production %VM_BASE_PATH%/.env 2>/dev/null || true"
+if exist "%TEMP_DIR%\.env.production" (
+    scp %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "%TEMP_DIR%\.env.production" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/.env
+    if errorlevel 1 (
+        echo [WARNING] Failed to upload .env ^(copy of .env.production for Compose^)
+    ) else (
+        echo [SUCCESS] .env uploaded ^(Compose auto-loads .env for volume path substitution^)
+    )
+) else (
+    echo [WARNING] No packaged .env.production — cannot create .env on VM
+)
 echo [SUCCESS] Environment files uploaded
 
 REM Set permissions (compose file only; recursive chmod on servers tree can stall on large dirs)
-echo [INFO] Setting permissions...
-set "BASE_PATH_VAR=%VM_BASE_PATH%"
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ConnectTimeout=10 %SSH_USER%@%SSH_HOST% "chmod 644 %BASE_PATH_VAR%/docker-compose.yml 2>/dev/null || true"
+REM Same opt-out as Step 5a sudo chown: DEPLOY_SUDO_CHOWN=false skips this chmod on the VM
+if /i "%DEPLOY_SUDO_CHOWN%"=="false" (
+    echo [INFO] Skipping chmod on docker-compose.yml ^(DEPLOY_SUDO_CHOWN=false^).
+) else (
+    echo [INFO] Setting permissions on docker-compose.yml...
+    set "BASE_PATH_VAR=%VM_BASE_PATH%"
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ConnectTimeout=10 %SSH_USER%@%SSH_HOST% "chmod 644 %BASE_PATH_VAR%/docker-compose.yml 2>/dev/null || true"
+)
 
 REM Step 7: Note about dependencies
 REM Dependencies will be installed during Docker build, so we skip npm install here
@@ -566,9 +601,14 @@ echo.
 REM Step 6a: Upload and load Docker images on VM
 echo [INFO] Step 6a: Uploading Docker images to VM...
 echo [INFO] This may take several minutes depending on connection speed...
-echo [INFO] File size: 
-dir "%TEMP_DIR%\docker-images.tar" | findstr docker-images.tar
-scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o Compression=yes "%TEMP_DIR%\docker-images.tar" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/docker-images.tar
+REM Do not use: findstr docker-images.tar — hyphen makes findstr treat -images as switches and breaks cmd ^('take' / 'er-images.tar' errors^).
+if not exist "%TEMP_DIR%\docker-images.tar" (
+    echo [ERROR] docker-images.tar not found: %TEMP_DIR%\docker-images.tar
+    pause
+    exit /b 1
+)
+for %%A in ("%TEMP_DIR%\docker-images.tar") do echo [INFO] File size: %%~zA bytes ^(%%~nxA^)
+scp %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o Compression=yes "%TEMP_DIR%\docker-images.tar" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/docker-images.tar
 if errorlevel 1 (
     echo [ERROR] Failed to upload Docker images
     echo [INFO] Cannot proceed without images
@@ -577,17 +617,31 @@ if errorlevel 1 (
 ) else (
     echo [SUCCESS] Docker images uploaded
     echo.
-    echo [INFO] Loading Docker images on VM...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% ; docker load -i docker-images.tar"
+    echo [INFO] Checking Docker on VM ^(docker load requires Docker Engine installed and %SSH_USER% able to run docker^)...
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ConnectTimeout=15 %SSH_USER%@%SSH_HOST% "bash -lc 'command -v docker && docker --version'"
+    if errorlevel 1 (
+        echo [ERROR] Docker CLI not available on the VM for user %SSH_USER%.
+        echo [INFO] Install Docker Engine on the VM, then: sudo usermod -aG docker %SSH_USER% ^(re-login^). See docs/distribution/installation-guide.md
+        echo [INFO] Optional helper script: docker\PUSH_INSTALL_DOCKER_TO_VM.bat
+        pause
+        exit /b 1
+    )
+    echo.
+    echo [INFO] Loading Docker images on VM ^(large tar: may take many minutes with no extra output — normal^)...
+    REM bash -lc: login PATH ^(e.g. /snap/bin, /usr/local/bin^); plain ssh often only has /usr/bin:/bin
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10 %SSH_USER%@%SSH_HOST% "bash -lc 'cd %VM_BASE_PATH% && docker load -i docker-images.tar'"
     if errorlevel 1 (
         echo [ERROR] Failed to load Docker images on VM
+        echo [INFO] If the VM said docker was not found, install Docker Engine and ensure user %SSH_USER% can run docker ^(see docs/distribution/installation-guide.md^).
+        echo [INFO] If dockerd is stopped: sudo systemctl start docker ^(Linux^).
+        echo [INFO] Quick check: ssh %SSH_USER%@%SSH_HOST% "bash -lc 'command -v docker; docker --version'"
         pause
         exit /b 1
     ) else (
         echo [SUCCESS] Docker images loaded on VM
         echo.
         echo [INFO] Cleaning up tar file on VM...
-        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "rm -f %VM_BASE_PATH%/docker-images.tar" 2>nul
+        ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "rm -f %VM_BASE_PATH%/docker-images.tar" 2>nul
         echo [SUCCESS] Cleanup completed
     )
 )
@@ -602,7 +656,7 @@ if /i "%DEPLOY_DRY_RUN%"=="true" (
     echo [DRY RUN] Would verify Docker images on VM
 ) else (
     echo [INFO] Checking if Docker images are available on VM...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker images | grep hunico"
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'docker images | grep hunico'"
     if errorlevel 1 (
         echo [ERROR] Docker images not found on VM
         echo [INFO] Please check if images were loaded correctly
@@ -620,23 +674,12 @@ echo.
 if /i "%DEPLOY_DRY_RUN%"=="true" (
     echo [DRY RUN] Would clean up logs on VM
 ) else (
-    REM Use SSH timeouts so this step cannot hang indefinitely
-    set "SSH_OPTS=-i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
-    REM Bounded find (maxdepth 20, 60s timeout) to avoid runaway traversal
-    echo [INFO] Removing .log files under VM paths...
-    ssh %SSH_OPTS% %SSH_USER%@%SSH_HOST% "timeout 60 find %VM_SERVERS_PATH% -maxdepth 20 -type f -name '*.log' -delete 2>/dev/null || true" 2>nul
-    ssh %SSH_OPTS% %SSH_USER%@%SSH_HOST% "timeout 60 find %VM_BASE_PATH% -maxdepth 20 -type f -name '*.log' -delete 2>/dev/null || true" 2>nul
-    
-    REM Clean up application logs in shared/logs directory
-    echo [INFO] Cleaning shared and nginx log dirs...
-    ssh %SSH_OPTS% %SSH_USER%@%SSH_HOST% "rm -rf %VM_SERVERS_PATH%/shared/logs/* 2>/dev/null; mkdir -p %VM_SERVERS_PATH%/shared/logs 2>/dev/null || true" 2>nul
-    ssh %SSH_OPTS% %SSH_USER%@%SSH_HOST% "rm -rf %VM_SERVERS_PATH%/docker/nginx/logs/* 2>/dev/null; mkdir -p %VM_SERVERS_PATH%/docker/nginx/logs 2>/dev/null || true" 2>nul
-    
-    REM Clean up any server-specific log directories
-    echo [INFO] Cleaning server log dirs...
-    for %%s in (server_app server_admin server_file server_media server_stream) do (
-        ssh %SSH_OPTS% %SSH_USER%@%SSH_HOST% "rm -rf %VM_SERVERS_PATH%/%%s/logs/* 2>/dev/null; mkdir -p %VM_SERVERS_PATH%/%%s/logs 2>/dev/null || true" 2>nul
-    )
+    REM Use delayed expansion (!SSH_OPTS!) — inside ( ) blocks %SSH_OPTS% expands before set runs, so -i key was dropped and ssh asked for a password
+    REM Do NOT run recursive find over VM_SERVERS_PATH / VM_BASE_PATH — it can hang (large trees, NFS, bind mounts).
+    set "SSH_OPTS=!SSH_REMOTE_OPTS! -o StrictHostKeyChecking=no -o BatchMode=yes -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+    echo [INFO] Cleaning known log dirs only ^(no full-tree find^)...
+    REM One SSH: stray *.log only at VM_BASE_PATH depth 1-2 ^(fast^), then clear standard log folders
+    ssh !SSH_OPTS! %SSH_USER%@%SSH_HOST% "find %VM_BASE_PATH% -maxdepth 2 -type f -name '*.log' -delete 2>/dev/null; rm -rf %VM_SERVERS_PATH%/shared/logs/* %VM_SERVERS_PATH%/docker/nginx/logs/* %VM_SERVERS_PATH%/server_app/logs/* %VM_SERVERS_PATH%/server_admin/logs/* %VM_SERVERS_PATH%/server_file/logs/* %VM_SERVERS_PATH%/server_media/logs/* %VM_SERVERS_PATH%/server_stream/logs/* 2>/dev/null; mkdir -p %VM_SERVERS_PATH%/shared/logs %VM_SERVERS_PATH%/docker/nginx/logs %VM_SERVERS_PATH%/server_app/logs %VM_SERVERS_PATH%/server_admin/logs %VM_SERVERS_PATH%/server_file/logs %VM_SERVERS_PATH%/server_media/logs %VM_SERVERS_PATH%/server_stream/logs; echo log-cleanup-ok"
     
     echo [SUCCESS] All logs cleaned up
 )
@@ -649,26 +692,26 @@ echo.
 if /i "%DEPLOY_DRY_RUN%"=="true" (
     echo [DRY RUN] Would start services on VM
 ) else (
-    echo [INFO] Stopping and removing any existing containers...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% ; docker compose -f docker-compose.yml down --remove-orphans 2>/dev/null || docker-compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true"
+    echo [INFO] Stopping and removing any existing containers
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'cd %VM_BASE_PATH% && (docker compose -f docker-compose.yml down --remove-orphans 2>/dev/null || docker-compose -f docker-compose.yml down --remove-orphans 2>/dev/null || true)'"
     
-    echo [INFO] Removing any leftover containers with hunico names...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps -a --filter 'name=hunico' --format '{{.Names}}' | xargs -r docker rm -f 2>/dev/null || true"
+    echo [INFO] Removing any leftover containers with hunico names
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc \"docker ps -a --filter name=hunico --format '{{.Names}}' | xargs -r docker rm -f 2>/dev/null || true\""
     
     echo [SUCCESS] Old containers removed
     echo.
     
-    echo [INFO] Starting containers with docker compose...
+    echo [INFO] Starting containers with docker compose
     
     REM Try docker compose V2 first, then V1
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% ; docker compose -f docker-compose.yml up -d" 2>&1
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'cd %VM_BASE_PATH% && docker compose -f docker-compose.yml up -d'" 2>&1
     if errorlevel 1 (
-        echo [INFO] Trying docker-compose (V1)...
-        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% ; docker-compose -f docker-compose.yml up -d" 2>&1
+        echo [INFO] Trying docker-compose V1
+        ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'cd %VM_BASE_PATH% && docker-compose -f docker-compose.yml up -d'" 2>&1
         if errorlevel 1 (
             echo [ERROR] Failed to start Docker services
             echo [INFO] Checking for container conflicts...
-            ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps -a | grep hunico"
+            ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'docker ps -a | grep hunico'"
             pause
             exit /b 1
         ) else (
@@ -679,11 +722,11 @@ if /i "%DEPLOY_DRY_RUN%"=="true" (
     )
     
     echo.
-    echo [INFO] Waiting for services to be ready...
+    echo [INFO] Waiting for services to be ready
     timeout /t 5 /nobreak >nul
     
-    echo [INFO] Checking container status...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+    echo [INFO] Checking container status
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc \"docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'\""
     
     echo.
     echo [SUCCESS] All services started!
@@ -695,36 +738,36 @@ echo [INFO] Step 9: Verifying deployment...
 echo.
 
 echo [INFO] Checking all containers...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps -a"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'docker ps -a'"
 echo.
 
 echo [INFO] Checking Hunico containers specifically...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps -a | grep hunico || echo 'No Hunico containers found'"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc \"docker ps -a | grep hunico || echo No-hunico-containers\""
 echo.
 
 echo [INFO] Checking Docker network connectivity...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker network inspect hunico_hunico-network 2>&1 | grep -A 5 'Containers' || docker network inspect hunico-network 2>&1 | grep -A 5 'Containers' || echo 'Network not found'"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc \"docker network inspect hunico_hunico-network 2>&1 | grep -A 5 Containers || docker network inspect hunico-network 2>&1 | grep -A 5 Containers || echo Network-not-found\""
 echo.
 
 echo [INFO] Checking container logs for errors...
 echo [INFO] Redis logs:
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker logs hunico-redis --tail 20 2>&1 || echo 'Redis container not found'"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'docker logs hunico-redis --tail 20 2>&1 || echo redis-missing'"
 echo.
 
 echo [INFO] Node logs:
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker logs hunico-node --tail 30 2>&1 || echo 'Node container not found'"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'docker logs hunico-node --tail 30 2>&1 || echo node-missing'"
 echo.
 
 echo [INFO] Python logs:
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker logs hunico-python --tail 20 2>&1 || echo 'Python container not found'"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'docker logs hunico-python --tail 20 2>&1 || echo python-missing'"
 echo.
 
 echo [INFO] Nginx logs (last 30 lines - look for connection errors):
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker logs hunico-nginx --tail 30 2>&1 || echo 'Nginx container not found'"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'docker logs hunico-nginx --tail 30 2>&1 || echo nginx-missing'"
 echo.
 
 echo [INFO] Testing nginx -> node connectivity from inside nginx container:
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker exec hunico-nginx wget -q -O- http://node:8069/api/health 2>&1 || echo 'Cannot reach node container from nginx'"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'docker exec hunico-nginx wget -q -O- http://node:8069/api/health 2>&1 || echo cannot-reach-node'"
 echo.
 
 REM Step 10: Cleanup
@@ -745,15 +788,15 @@ echo [INFO] Server files deployed to: %VM_SERVERS_PATH%
 echo [INFO] Docker compose file deployed to: %VM_BASE_PATH%/docker-compose.yml
 echo.
 echo [INFO] To view live logs on VM:
-echo   ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST%
+echo   ssh %SSH_REMOTE_OPTS% %SSH_USER%@%SSH_HOST%
 echo   docker logs -f hunico-node
 echo.
 echo [INFO] To check service status:
-echo   ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST%
+echo   ssh %SSH_REMOTE_OPTS% %SSH_USER%@%SSH_HOST%
 echo   docker ps
 echo.
 echo [INFO] To restart services:
-echo   ssh -i "%SSH_KEY%" %SSH_USER%@%SSH_HOST%
+echo   ssh %SSH_REMOTE_OPTS% %SSH_USER%@%SSH_HOST%
 echo   cd %VM_BASE_PATH% ^&^& docker compose restart
 echo.
 echo [INFO] IMPORTANT: Verify InfluxDB configuration:
@@ -773,6 +816,18 @@ echo ============================================
 echo.
 echo Press any key to close...
 pause >nul
+exit /b 0
+
+REM Called when SSH/SCP cannot connect (e.g. Connection timed out)
+:print_ssh_connect_hints
+echo.
+echo [INFO] "Connection timed out" means your PC could not open TCP port 22 to %SSH_HOST%.
+echo   - Use VPN or the network segment that can reach this VM
+echo   - From this PC: ping %SSH_HOST%
+echo   - PowerShell: Test-NetConnection -ComputerName %SSH_HOST% -Port 22
+echo   - On the VM: sshd running, firewall allows 22 ^(e.g. sudo ufw allow 22/tcp^)
+echo   - Non-default SSH port: add -p to ssh/scp or document in your SSH config
+echo.
 exit /b 0
 
 REM Error exit handler - keeps window open and shows detailed error info

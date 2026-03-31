@@ -858,7 +858,7 @@ def get_dataset_timezone_for_date(
 
     Args:
         api_token: Bearer token for app API
-        class_name: Schema/class (e.g. gp50)
+        class_name: Schema/class (e.g. ac40)
         project_id: Project id
         date: YYYYMMDD or YYYY-MM-DD
 

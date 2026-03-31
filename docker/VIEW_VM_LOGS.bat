@@ -4,6 +4,7 @@ setlocal enabledelayedexpansion
 REM ============================================
 REM View VM Service Logs Script
 REM Views logs for Docker services on production VM
+REM SSH: deploy.config.local + SSH_KEY ^(set-deploy-ssh-opts.bat^).
 REM ============================================
 
 REM Get script directory
@@ -46,12 +47,6 @@ if "%SSH_USER%"=="" (
     pause
     exit /b 1
 )
-if "%SSH_KEY%"=="" (
-    echo [ERROR] SSH_KEY not configured
-    echo.
-    pause
-    exit /b 1
-)
 if "%VM_BASE_PATH%"=="" (
     echo [ERROR] VM_BASE_PATH not configured
     echo.
@@ -59,9 +54,14 @@ if "%VM_BASE_PATH%"=="" (
     exit /b 1
 )
 
-REM Validate SSH key exists
-if not exist "%SSH_KEY%" (
-    echo [ERROR] SSH key not found: %SSH_KEY%
+call "%SCRIPT_DIR%set-deploy-ssh-opts.bat"
+if errorlevel 1 (
+    echo.
+    pause
+    exit /b 1
+)
+call "%SCRIPT_DIR%establish-ssh-mux.bat"
+if errorlevel 1 (
     echo.
     pause
     exit /b 1
@@ -93,7 +93,7 @@ echo.
 
 REM First check if containers are running
 echo [INFO] Checking container status...
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps -a --format 'table {{.Names}}\t{{.Status}}' | grep hunico || echo 'No Hunico containers found'"
+ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps -a --format 'table {{.Names}}\t{{.Status}}' | grep hunico || echo 'No Hunico containers found'"
 echo.
 
 REM Try docker compose V2 first, then V1
@@ -106,16 +106,16 @@ goto :follow_logs
     echo.
     
     REM Try getting logs from container directly first (more reliable)
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker logs hunico-%SERVICE_NAME% --tail=100 2>&1" > "%LOG_FILE%" 2>&1
+    ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker logs hunico-%SERVICE_NAME% --tail=100 2>&1" > "%LOG_FILE%" 2>&1
     if errorlevel 1 (
         echo [INFO] Container hunico-%SERVICE_NAME% not found, trying compose service...
         echo.
-        call ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker compose -f docker-compose.yml logs --tail=100 %SERVICE_NAME%" > "%LOG_FILE%" 2>&1
+        call ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker compose -f docker-compose.yml logs --tail=100 %SERVICE_NAME%" > "%LOG_FILE%" 2>&1
         if errorlevel 1 (
             echo.
             echo [INFO] Trying docker-compose (V1)...
             echo.
-            call ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker-compose -f docker-compose.yml logs --tail=100 %SERVICE_NAME%" > "%LOG_FILE%" 2>&1
+            call ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker-compose -f docker-compose.yml logs --tail=100 %SERVICE_NAME%" > "%LOG_FILE%" 2>&1
             if errorlevel 1 (
                 echo.
                 echo [ERROR] Failed to retrieve logs
@@ -123,7 +123,7 @@ goto :follow_logs
                 echo [INFO] Check that the service name is correct and containers are running
                 echo.
                 echo [INFO] Checking what containers exist...
-                ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps -a"
+                ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "docker ps -a"
                 echo.
                 pause
                 exit /b 1
@@ -163,12 +163,12 @@ goto :follow_logs
 :follow_logs
     echo [INFO] Following logs (press Ctrl+C to exit)...
     echo.
-    call ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker compose -f docker-compose.yml logs -f %SERVICE_NAME%"
+    call ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker compose -f docker-compose.yml logs -f %SERVICE_NAME%"
     if errorlevel 1 (
         echo.
         echo [INFO] Trying docker-compose (V1)...
         echo.
-        call ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker-compose -f docker-compose.yml logs -f %SERVICE_NAME%"
+        call ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && docker-compose -f docker-compose.yml logs -f %SERVICE_NAME%"
     )
     if errorlevel 1 (
         echo.

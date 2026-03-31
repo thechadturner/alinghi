@@ -40,9 +40,11 @@ docker\stop-services.sh
 
 ### Deploy to Production
 ```cmd
-docker\DEPLOY_SERVERS.bat
-docker\DEPLOY_FRONTEND.bat
+docker\DEPLOY_VM_SERVERS.bat
+docker\DEPLOY_VM_FRONTEND.bat
 ```
+
+On a **new VM without Docker**, copy the installer then SSH in once: run `docker\PUSH_INSTALL_DOCKER_TO_VM.bat`, then `sudo bash /tmp/racesight-install-docker.sh` on the server. See [installation-guide](../docs/distribution/installation-guide.md).
 
 ## Service Configuration
 

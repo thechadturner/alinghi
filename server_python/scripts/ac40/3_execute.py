@@ -10,7 +10,7 @@ from pathlib import Path
 # Determine environment mode
 is_production = os.getenv("NODE_ENV") == "production"
 
-# Get project root (three levels up from server_python/scripts/gp50/)
+# Get project root (three levels up from server_python/scripts/ac40/)
 project_root = Path(__file__).parent.parent.parent.parent
 
 # Load environment files based on mode
@@ -63,7 +63,7 @@ if __name__ == "__main__":
         # # MANUAL INPUT
         # project_id = 2
         # dataset_id = 4
-        # class_name = "GP50"
+        # class_name = "AC40"
         # date = "20251130"
         # source_name = "ITA"
         # start_time = "20251130T04:41:00.000Z"

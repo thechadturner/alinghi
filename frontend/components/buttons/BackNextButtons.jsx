@@ -19,7 +19,7 @@ export default function BackNextButtons(props) {
       setProceed(false);
 
       if (step() == 6) {
-        const className = selectedClassName() || 'gp50';
+        const className = selectedClassName() || 'ac40';
         navigate(`/dataset-info/${className}`, { state: { state: "Save" } });
       }
     }

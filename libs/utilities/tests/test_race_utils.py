@@ -53,7 +53,7 @@ class TestRaceUtils(unittest.TestCase):
         """Test metadata extraction"""
         df = self.df.copy()
         dt = df['Datetime'].iloc[50]
-        metadata = u.getMetadata(df, dt, 'gp50')
+        metadata = u.getMetadata(df, dt, 'ac40')
         self.assertIsInstance(metadata, dict)
         self.assertIn('RACES', metadata)
         self.assertIn('SAILS', metadata)

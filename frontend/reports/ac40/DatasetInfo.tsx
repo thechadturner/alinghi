@@ -85,7 +85,7 @@ export default function DatasetInfo() {
         setState(state_str)
     }
 
-    // GP50 Configuration state
+    // AC40 Configuration state
     const [configurations, setConfigurations] = createSignal<ConfigurationEntry[]>([]);
     const [headsailEvents, setHeadsailEvents] = createSignal<any[]>([]);
     const [crewCountEvents, setCrewCountEvents] = createSignal<any[]>([]);
@@ -637,13 +637,13 @@ export default function DatasetInfo() {
                         if (!configSaved) logError('[DatasetInfo] Failed to save target configurations');
                     }
 
-                    // Save GP50 configurations if we have them (before logPageLoad)
+                    // Save AC40 configurations if we have them (before logPageLoad)
                     if (fromEvents() && configurations().length > 0) {
                         const configSaveStatus = await saveConfigurationObject();
                         if (!configSaveStatus) {
                             logError('Failed to save configuration object');
                         } else {
-                            debug('[DatasetInfo] GP50 configurations saved successfully');
+                            debug('[DatasetInfo] AC40 configurations saved successfully');
                         }
                     }
 
@@ -737,7 +737,7 @@ export default function DatasetInfo() {
     };
 
     const handleReviewEvents = async () => {
-        const className = selectedClassName() || 'gp50';
+        const className = selectedClassName() || 'ac40';
         const pid = selectedProjectId();
         const datasetId = selectedDatasetId();
         navigate(`/events/${className}?pid=${pid}&dataset_id=${datasetId}`);
@@ -1524,7 +1524,7 @@ export default function DatasetInfo() {
                     <Show when={fromEvents() && configurations().length > 0}>
                         <div class="info-container">
                             <div class="info-item">
-                                <label class="label_bold">GP50 Configurations</label>
+                                <label class="label_bold">AC40 Configurations</label>
                                 <label class="label_italic">Enter wing, daggerboard, and rudder for each unique headsail+crew combination</label>
                                 <div style="margin-top: 10px;">
                                     <table style="width: 100%; border-collapse: collapse;">

@@ -7,7 +7,7 @@ info:
     
     ## Database Schema
     For complete database schema documentation, see `docs/database/database-schema.md`.
-    The database uses PostgreSQL with three main schemas: `admin`, `ac75`, and `gp50`.
+    The database uses PostgreSQL with three main schemas: `admin`, `ac75`, and `ac40`.
     Schema definition: `database/hunico_database_emptry.sql`
     
     ## Key Features

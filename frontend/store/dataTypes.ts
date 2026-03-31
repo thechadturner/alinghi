@@ -63,7 +63,7 @@ export const DATA_CLASS_CONFIGS: Record<DataClass, DataClassConfig> = {
     indexing: 'categorical',
     chunkSize: 2000,
     persistence: 'localStorage',
-    // Note: Channel names are class-specific (e.g., GP50 uses Bsp_kph)
+    // Note: Channel names are class-specific (e.g., AC40 uses Bsp_kph)
     // Use defaultChannelsStore to get class-specific channel names dynamically
     queryOptimization: ['event_id', 'Datetime'], // Generic fields only - channel names come from defaultChannelsStore
     maxMemoryMB: 30,
@@ -74,7 +74,7 @@ export const DATA_CLASS_CONFIGS: Record<DataClass, DataClassConfig> = {
     indexing: 'time',
     chunkSize: 5000,
     persistence: 'indexedDB',
-    // Note: Channel names are class-specific (e.g., GP50 uses Tws_kph)
+    // Note: Channel names are class-specific (e.g., AC40 uses Tws_kph)
     // Use defaultChannelsStore to get class-specific channel names dynamically
     queryOptimization: ['event_id', 'Datetime'], // Generic fields only - channel names come from defaultChannelsStore
     maxMemoryMB: 50,

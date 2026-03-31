@@ -4,6 +4,7 @@ setlocal enabledelayedexpansion
 REM ============================================
 REM Frontend Deployment Script
 REM Builds and deploys frontend to production VM
+REM SSH: docker\deploy.config.local + SSH_KEY for key-based login ^(set-deploy-ssh-opts.bat^).
 REM ============================================
 
 echo.
@@ -50,11 +51,6 @@ if "%SSH_USER%"=="" (
     pause
     exit /b 1
 )
-if "%SSH_KEY%"=="" (
-    echo [ERROR] SSH_KEY not configured in %CONFIG_FILE%
-    pause
-    exit /b 1
-)
 if "%VM_FRONTEND_PATH%"=="" (
     echo [ERROR] VM_FRONTEND_PATH not configured in %CONFIG_FILE%
     pause
@@ -66,9 +62,13 @@ if "%VM_BASE_PATH%"=="" (
     exit /b 1
 )
 
-REM Validate SSH key exists
-if not exist "%SSH_KEY%" (
-    echo [ERROR] SSH key not found: %SSH_KEY%
+call "%SCRIPT_DIR%set-deploy-ssh-opts.bat"
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
+call "%SCRIPT_DIR%establish-ssh-mux.bat"
+if errorlevel 1 (
     pause
     exit /b 1
 )
@@ -159,96 +159,54 @@ if exist "cursor_files\verify-worker-build.js" (
     echo.
 )
 
-REM Step 4: Create compressed archive
-echo [INFO] Step 3: Creating compressed archive...
-set "ARCHIVE_FILE=%TEMP%\hunico-frontend-%RANDOM%.tar.gz"
+REM Step 4 / 5: Deploy via SSH (tar over stdin = one password; nginx conf uses a second SSH)
+set "NGX_LOCAL=%SCRIPT_DIR%..\nginx\nginx-prod.conf"
 
-REM Use tar to create compressed archive (Windows 10+ has tar built-in)
-cd /d "%PROJECT_ROOT%"
-tar -czf "%ARCHIVE_FILE%" -C dist .
-if errorlevel 1 (
-    echo [ERROR] Failed to create compressed archive
-    pause
-    exit /b 1
-)
-echo [SUCCESS] Archive created: %ARCHIVE_FILE%
-echo [INFO] Archive size:
-for %%A in ("%ARCHIVE_FILE%") do echo   %%~zA bytes
-echo.
-
-REM Step 5: Deploy via SSH
 if "%DEPLOY_DRY_RUN%"=="true" (
+    echo [INFO] Step 3: DRY RUN — skipping archive build
     echo [DRY RUN] Would deploy to: %SSH_USER%@%SSH_HOST%:%VM_FRONTEND_PATH%
-    echo [DRY RUN] Would use SSH key: %SSH_KEY%
-    echo [DRY RUN] Would upload archive: %ARCHIVE_FILE%
+    if "%SSH_KEY%"=="" (echo [DRY RUN] Would use password or ssh-agent auth) else (echo [DRY RUN] Would use SSH key: %SSH_KEY%)
+    echo [DRY RUN] Would stream dist\ via tar ^| ssh ^(single connection for files^)
+    if exist "%NGX_LOCAL%" (echo [DRY RUN] Would push nginx-prod.conf and reload nginx ^(second connection^)) else (echo [DRY RUN] Would reload nginx after deploy ^(same connection as stream^))
 ) else (
     echo [INFO] Step 4: Deploying to VM...
     echo [INFO] Target: %SSH_USER%@%SSH_HOST%:%VM_FRONTEND_PATH%
     echo.
-    
-    REM Create remote directory and backup old files
-    echo [INFO] Preparing deployment directory...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_FRONTEND_PATH% && rm -rf %VM_FRONTEND_PATH%/*" 2>nul
-    
-    REM Upload compressed archive
-    echo [INFO] Uploading compressed archive...
-    scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o Compression=yes "%ARCHIVE_FILE%" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/frontend.tar.gz
-    if errorlevel 1 (
-        echo [ERROR] Failed to upload archive via SCP
-        del "%ARCHIVE_FILE%" 2>nul
-        pause
-        exit /b 1
-    )
-    echo [SUCCESS] Archive uploaded
-    
-    REM Extract archive on VM
-    echo [INFO] Extracting archive on VM...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_FRONTEND_PATH% && tar -xzf %VM_BASE_PATH%/frontend.tar.gz && rm -f %VM_BASE_PATH%/frontend.tar.gz"
-    if errorlevel 1 (
-        echo [ERROR] Failed to extract archive on VM
-        pause
-        exit /b 1
-    )
-    echo [SUCCESS] Archive extracted
-    
-    REM Deploy nginx config if it exists locally
-    if exist "%SCRIPT_DIR%..\nginx\nginx-prod.conf" (
-        echo [INFO] Deploying nginx configuration...
-        REM Create directory on server if it doesn't exist
-        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "mkdir -p %VM_BASE_PATH%/servers/docker/nginx" 2>nul
-        REM Copy nginx config to server
-        scp -i "%SSH_KEY%" -o StrictHostKeyChecking=no "%SCRIPT_DIR%..\nginx\nginx-prod.conf" %SSH_USER%@%SSH_HOST%:%VM_BASE_PATH%/servers/docker/nginx/nginx-prod.conf
+    cd /d "%PROJECT_ROOT%"
+
+    if exist "%NGX_LOCAL%" (
+        echo [INFO] Streaming dist to VM ^(SSH 1 — one password for frontend files^)...
+        tar -czf - -C dist . 2>nul | ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'mkdir -p %VM_FRONTEND_PATH% && rm -rf %VM_FRONTEND_PATH%/* && tar -xzf - -C %VM_FRONTEND_PATH% && chmod -R 755 %VM_FRONTEND_PATH%'"
         if errorlevel 1 (
-            echo [WARNING] Failed to deploy nginx config, but continuing...
+            echo [ERROR] Frontend stream or extract failed
+            pause
+            exit /b 1
+        )
+        echo [SUCCESS] Frontend files deployed
+        echo [INFO] Pushing nginx config and reloading ^(SSH 2 — one password^)...
+        type "%NGX_LOCAL%" | ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'mkdir -p %VM_BASE_PATH%/servers/docker/nginx && cat > %VM_BASE_PATH%/servers/docker/nginx/nginx-prod.conf && cd %VM_BASE_PATH% && (docker compose -f servers/docker/compose/production.yml restart nginx 2>/dev/null || docker-compose -f servers/docker/compose/production.yml restart nginx 2>/dev/null || docker-compose restart nginx 2>/dev/null || echo [WARNING] Could not restart nginx)'"
+        if errorlevel 1 (
+            echo [WARNING] Nginx config or restart had issues; frontend files are still updated
         ) else (
-            echo [SUCCESS] Nginx config deployed
+            echo [SUCCESS] Nginx config deployed and reload attempted
         )
     ) else (
-        echo [INFO] Nginx config not found locally, skipping nginx config deployment
+        echo [INFO] Streaming dist to VM and reloading nginx ^(single SSH — one password^)...
+        tar -czf - -C dist . 2>nul | ssh %SSH_REMOTE_OPTS% -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "bash -lc 'mkdir -p %VM_FRONTEND_PATH% && rm -rf %VM_FRONTEND_PATH%/* && tar -xzf - -C %VM_FRONTEND_PATH% && chmod -R 755 %VM_FRONTEND_PATH% && cd %VM_BASE_PATH% && (docker compose -f servers/docker/compose/production.yml restart nginx 2>/dev/null || docker-compose -f servers/docker/compose/production.yml restart nginx 2>/dev/null || docker-compose restart nginx 2>/dev/null || echo [WARNING] Could not restart nginx)'"
+        if errorlevel 1 (
+            echo [ERROR] Deploy or nginx restart failed
+            pause
+            exit /b 1
+        )
+        echo [INFO] Nginx config not found locally — skipped nginx file deploy
     )
-    
-    REM Set permissions
-    echo [INFO] Setting permissions...
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "chmod -R 755 %VM_FRONTEND_PATH%" 2>nul
-    
-    REM Restart nginx to pick up any config changes and ensure fresh worker file serving
-    echo [INFO] Restarting nginx to apply changes...
-    REM Try production compose file first, then fallback to root docker-compose.yml
-    ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no %SSH_USER%@%SSH_HOST% "cd %VM_BASE_PATH% && (docker-compose -f servers/docker/compose/production.yml restart nginx 2>/dev/null || docker-compose restart nginx 2>/dev/null || echo [WARNING] Could not restart nginx - may need manual restart)" 2>nul
-    if errorlevel 1 (
-        echo [WARNING] Nginx restart had issues, but deployment succeeded
-        echo [INFO] You may need to manually restart nginx: docker-compose restart nginx
-    ) else (
-        echo [SUCCESS] Nginx restarted
-    )
-    
+
     echo [SUCCESS] Frontend deployed successfully!
     echo.
 )
 
-REM Step 6: Cleanup
+REM Step 6: Cleanup (no local archive in non-dry path)
 echo [INFO] Cleaning up temporary files...
-del "%ARCHIVE_FILE%" 2>nul
 echo [SUCCESS] Cleanup completed
 echo.
 

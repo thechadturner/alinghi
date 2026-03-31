@@ -90,20 +90,19 @@ class UserManager {
    * @returns {Promise<Object|null>} User data
    */
   async getUserByEmail(email) {
+    const sql = `
+      SELECT user_id, user_name, first_name, last_name, email, password_hash, 
+             is_active, is_verified, last_login_at, created_at, updated_at
+      FROM admin.users 
+      WHERE LOWER(TRIM(email)) = LOWER(TRIM($1::text)) AND deleted_at IS NULL
+    `;
+    const pool = db.getPool();
     try {
-      const sql = `
-        SELECT user_id, user_name, first_name, last_name, email, password_hash, 
-               is_active, is_verified, last_login_at, created_at, updated_at
-        FROM admin.users 
-        WHERE email = $1 AND deleted_at IS NULL
-      `;
-      const params = [email];
-
-      const result = await db.getRows(sql, params);
-      return result ? result[0] : null;
+      const result = await pool.query(sql, [email]);
+      return result.rows[0] || null;
     } catch (error) {
       logMessage(null, 'shared/auth/user.js', 'error', 'getUserByEmail', error.message);
-      return null;
+      throw error;
     }
   }
 

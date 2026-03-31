@@ -13,7 +13,7 @@ All indexes marked as CRITICAL and HIGH in this document are **already implement
 
 - **admin schema**: 33 indexes
 - **ac75 schema**: 27 indexes
-- **gp50 schema**: 27 indexes
+- **ac40 schema**: 27 indexes
 
 Databases created from the schema file will have all these indexes pre-created. For existing databases, run the audit script to verify index presence.
 

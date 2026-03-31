@@ -111,7 +111,7 @@ Use the existing variables (`race`, `leg`, `grade`, `state`, `config`, `year`, `
 
 ### 4.4 Default fallback (approx. 419–426)
 
-- When no options are found, return context-appropriate defaults using **filter-object style** names, e.g. `['TACK', 'Grade']` for dataset/source and `['Grade']` for day/fleet (or match whatever your filter_channels actually use for GP50).
+- When no options are found, return context-appropriate defaults using **filter-object style** names, e.g. `['TACK', 'Grade']` for dataset/source and `['Grade']` for day/fleet (or match whatever your filter_channels actually use for AC40).
 
 ### 4.5 JSDoc
 
@@ -150,7 +150,7 @@ Performance pages build `groups` from the selected color option and pass `color(
 
 **New contract**: `color()` is now a filter-object name (e.g. `Race_number`). Processed data has that key. So we can use the color option directly for grouping, with a fallback for legacy data.
 
-### 6.1 Dataset Performance – `frontend/reports/gp50/dataset/reports/Performance.tsx`
+### 6.1 Dataset Performance – `frontend/reports/ac40/dataset/reports/Performance.tsx`
 
 - **handleColorChange** (approx. 941–1065):
   - Keep `getFieldName(value)` but **update the map** so that filter-object names are passed through: for keys `Race_number`, `Leg_number`, `Grade`, `State`, `Config`, `source_name`, `Event`, `Year`, `TACK` return the **same** value (so `groupBy(data, value)` uses the new key). For backward compatibility, also map the old UPPERCASE names to lowercase so that if something still passes `RACE`, we still use `race_number` for grouping:
@@ -160,7 +160,7 @@ Performance pages build `groups` from the selected color option and pass `color(
 - **Default color**: When setting initial color (e.g. from persistent settings or first load), use a value that exists in `colors()` (e.g. first option or `TACK` if present). `colors()` now returns filter names, so default might be `'TACK'` or `'Grade'` depending on config.
 - **Persistent settings**: Stored value may be old (e.g. `'RACE'`). On load, if the stored value is not in the new `colors()` list, map it once: e.g. `'RACE'` → `'Race_number'`, `'LEG'` → `'Leg_number'`, etc., then set color to that and save the new value on next save (optional). Or simply treat unknown as “use first available option”.
 
-### 6.2 FleetPerformance – `frontend/reports/gp50/day/reports/FleetPerformance.tsx`
+### 6.2 FleetPerformance – `frontend/reports/ac40/day/reports/FleetPerformance.tsx`
 
 - **handleColorChange** (approx. 753–912): Same idea as Performance. Update `getFieldName` to:
   - Return the value as-is when it is a filter-object name (`Race_number`, `Leg_number`, `Grade`, `State`, `Config`, `source_name`, `Event`, `Year`, `TACK`).
@@ -168,12 +168,12 @@ Performance pages build `groups` from the selected color option and pass `color(
 - **SOURCE_NAME**: Already handled specially (source groups from sourcesStore). Keep that; the option value can be `source_name` or `Source_name` from config – use the same key for grouping (`source_name` or as returned by config) and ensure processed points have `source_name` (and optionally the same in filter name form). Display mapping (SOURCE_NAME → “Source” or “Source name”) can stay in `displayColorOptions` / `getInternalColorValue`; if getColorOptions now returns `source_name`, adjust those only if the UI previously expected `SOURCE_NAME`.
 - Default color and persistent settings: same as 6.1 (prefer first option or a known default; map old UPPERCASE to filter name if needed).
 
-### 6.3 FleetPerformanceHistory – `frontend/reports/gp50/project/all/reports/FleetPerformanceHistory.tsx`
+### 6.3 FleetPerformanceHistory – `frontend/reports/ac40/project/all/reports/FleetPerformanceHistory.tsx`
 
 - **handleColorChange** (approx. 1144–1300): Same `getFieldName` behavior as 6.1 and 6.2 (identity for filter names, UPPERCASE → lowercase fallback).
 - **getFieldName** used when rebuilding groups (e.g. after data load): use the same mapping so `actualFieldName` is either the filter name or the lowercase key.
 
-### 6.4 PerformanceHistory – `frontend/reports/gp50/project/source/reports/PerformanceHistory.tsx`
+### 6.4 PerformanceHistory – `frontend/reports/ac40/project/source/reports/PerformanceHistory.tsx`
 
 - Same as 6.1: update `getFieldName` in the color-change path and any place that derives the group key from the selected color. Default and persistent color handling: use filter names; map old UPPERCASE when loading saved value if necessary.
 

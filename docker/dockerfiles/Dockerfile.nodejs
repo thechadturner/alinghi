@@ -8,7 +8,7 @@ WORKDIR /app
 # DuckDB requires build tools for native compilation
 # ffmpeg (and ffprobe) required by server_admin for video upload: metadata (duration, start/end) even when SKIP_VIDEO_FFMPEG=true at runtime; full encoding when false
 RUN apt-get update && \
-    apt-get install -y python3 make g++ cmake ffmpeg && \
+    apt-get install -y python3 make g++ cmake ffmpeg netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy package files FIRST for better Docker layer caching
@@ -101,7 +101,7 @@ EXPOSE 8069 8059 8079 8089 8099
 
 # Health check (check all servers)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD node -e "const http=require('http');let checks=0;const ports=[8069,8059,8079,8089,8099];ports.forEach(p=>{http.get('http://localhost:'+p+'/api/health',(r)=>{if(r.statusCode===200)checks++;if(checks===ports.length)process.exit(0)}).on('error',()=>process.exit(1))});setTimeout(()=>process.exit(checks===ports.length?0:1),2000)" || exit 1
+    CMD node -e "const h=require('http');const q=h.get({hostname:'127.0.0.1',port:8069,path:'/api/health',family:4,timeout:5000},r=>{r.resume();r.on('end',()=>process.exit(r.statusCode===200?0:1))});q.on('error',()=>process.exit(1));" || exit 1
 
 # Run the startup script with bash for proper signal handling
 CMD ["/bin/bash", "/app/start-servers.sh"]

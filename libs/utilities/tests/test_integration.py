@@ -49,7 +49,7 @@ class TestIntegration(unittest.TestCase):
         
         # Step 4: Test metadata extraction
         dt = df['Datetime'].iloc[100]
-        metadata = u.getMetadata(df, dt, 'gp50')
+        metadata = u.getMetadata(df, dt, 'ac40')
         self.assertIsInstance(metadata, dict)
     
     def test_geo_and_datetime_integration(self):

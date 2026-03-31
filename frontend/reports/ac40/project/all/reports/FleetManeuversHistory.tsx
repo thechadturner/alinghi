@@ -517,7 +517,7 @@ export default function FleetManeuversHistoryPage() {
 
     let filteredData_tws: any[] = []
 
-    // For gp50 FleetManeuversHistory, no 'ALL' option - always filter by TWS
+    // For ac40 FleetManeuversHistory, no 'ALL' option - always filter by TWS
     const selectedTws = Number(tws());
     if (!isNaN(selectedTws)) {
       // Filter data where TWS value is within ±2.5 of the selected bin (intervals of 5)

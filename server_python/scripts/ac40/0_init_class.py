@@ -33,7 +33,7 @@ if not api_token:
 
 if __name__ == "__main__":
     try:
-        class_name = 'GP50'
+        class_name = 'AC40'
         project_id = '2'
 
         # SAVING MENUS

@@ -10,7 +10,7 @@ The database uses a multi-schema architecture with three main schemas:
 
 - **`admin`**: System administration, users, authentication, and project management
 - **`ac75`**: AC75 class-specific tables (datasets, events, media, targets, etc.)
-- **`gp50`**: GP50 class-specific tables (mirrors ac75 structure)
+- **`ac40`**: AC40 class-specific tables (mirrors ac75 structure)
 
 **Total**: 57 tables, 87 indexes, 5 functions, 6 views
 
@@ -84,7 +84,7 @@ User-project access permissions (many-to-many).
 - `permissions` (text): Permission level
 
 #### `admin.classes`
-Class definitions (AC75, GP50, etc.).
+Class definitions (AC75, AC40, etc.).
 - `class_id` (integer, PK): Class identifier
 - `class_name` (text): Class name
 
@@ -184,7 +184,7 @@ Key indexes in admin schema:
 - Token authentication: `idx_personal_api_tokens_hash`, `idx_personal_api_tokens_user`
 - Subscription queries: `idx_user_subscriptions_user_id`, `idx_user_subscriptions_active`
 
-## Schema: `ac75` and `gp50`
+## Schema: `ac75` and `ac40`
 
 These schemas have identical structure but separate data. Each contains class-specific tables for datasets, events, media, targets, and user objects.
 
@@ -424,7 +424,7 @@ Key indexes for performance:
 
 - **admin**: 33 indexes
 - **ac75**: 27 indexes  
-- **gp50**: 27 indexes
+- **ac40**: 27 indexes
 - **Total**: 87 indexes
 
 ### Index Status
@@ -464,7 +464,7 @@ See `docs/database/database-index-recommendations.md` for detailed index recomme
 - `projects.class_id` → `classes.class_id`
 - `personal_api_tokens.user_id` → `users.user_id`
 
-**ac75/gp50 schemas:**
+**ac75/ac40 schemas:**
 - `datasets.source_id` → `sources.source_id`
 - `sources.project_id` → `admin.projects.project_id`
 - `dataset_events.dataset_id` → `datasets.dataset_id`

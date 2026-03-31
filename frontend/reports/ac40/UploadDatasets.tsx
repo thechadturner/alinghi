@@ -1515,7 +1515,7 @@ export default function UploadDatasetsPage() {
 
         // Run 5_markwind.py for each unique date (training day path) so markwind is available for prestart/map
         processStore.enableBatchSuppressMode();
-        if (selectedClassName() === 'gp50' && allCreatedDatasetIds.length > 0) {
+        if (selectedClassName() === 'ac40' && allCreatedDatasetIds.length > 0) {
           const uniqueDatesTraining = [...new Set(
             [...datasetInfoMap.values()].map((d: { date: string }) => (d.date || '').replace(/[-/]/g, '').slice(0, 8))
           )].filter(Boolean);
@@ -2192,7 +2192,7 @@ export default function UploadDatasetsPage() {
           });
           
           // Run 5_markwind.py for each unique date (before process/execute) so markwind is available for prestart/map
-          if (selectedClassName() === 'gp50' && allCreatedDatasetIds.length > 0) {
+          if (selectedClassName() === 'ac40' && allCreatedDatasetIds.length > 0) {
             const uniqueDates = [...new Set(
               [...combinedDatasetInfoMap.values()].map((d: { date: string }) => (d.date || '').replace(/[-/]/g, '').slice(0, 8))
             )].filter(Boolean);
@@ -2337,7 +2337,7 @@ export default function UploadDatasetsPage() {
           await new Promise(resolve => setTimeout(resolve, 2000));
           
           // Step 4: Wrapping up - run 4_cleanup.py for each unique date (day-level VMG + race position)
-          if (selectedClassName() === 'gp50' && allCreatedDatasetIds.length > 0) {
+          if (selectedClassName() === 'ac40' && allCreatedDatasetIds.length > 0) {
             const uniqueDates = [...new Set(
               [...combinedDatasetInfoMap.values()].map((d: { date: string }) => (d.date || '').replace(/[-/]/g, '').slice(0, 8))
             )].filter(Boolean);
@@ -2383,9 +2383,9 @@ export default function UploadDatasetsPage() {
         setCurrentStatus("Verifying datasets...");
         const visibleDatasets = await verifyDatasetsVisible(allCreatedDatasetIds);
         
-        // Populate channels for unique dates after upload completes (only for gp50)
+        // Populate channels for unique dates after upload completes (only for ac40)
         // Uses actual uploaded sources and dates from datasetDateSourceMap (not hardcoded values)
-        if (selectedClassName() === 'gp50' && allCreatedDatasetIds.length > 0 && datasetDateSourceMap.size > 0) {
+        if (selectedClassName() === 'ac40' && allCreatedDatasetIds.length > 0 && datasetDateSourceMap.size > 0) {
           try {
             setCurrentStatus("Populating channels...");
             debug('[UploadDatasets] Starting channel population for uploaded datasets');

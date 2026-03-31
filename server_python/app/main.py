@@ -1137,7 +1137,7 @@ async def execute_script(
     ### Request Body
     ```json
     {
-      "class_name": "gp50",
+      "class_name": "ac40",
       "script_name": "0_map.py",
       "parameters": {
         "param1": "value1",
@@ -1147,7 +1147,7 @@ async def execute_script(
     ```
     
     ### Parameters
-    - **class_name** (string): Script category/class (e.g., "gp50")
+    - **class_name** (string): Script category/class (e.g., "ac40")
     - **script_name** (string): Script filename (e.g., "0_map.py" or "0_map")
     - **parameters** (object): Parameters to pass to the script
     
@@ -1737,7 +1737,7 @@ async def get_running_processes(
     
     ### Query Parameters
     - **script_name** (optional): Filter by specific script name (e.g., "2_process_and_execute.py")
-    - **class_name** (optional): Filter by class name (e.g., "gp50")
+    - **class_name** (optional): Filter by class name (e.g., "ac40")
     
     ### Authentication
     Requires valid JWT or PAT token in Authorization header.
@@ -1754,7 +1754,7 @@ async def get_running_processes(
           {
             "process_id": "uuid",
             "script_name": "2_process_and_execute.py",
-            "class_name": "gp50",
+            "class_name": "ac40",
             "pid": 12345,
             "started_at": "2024-01-01T12:00:00Z"
           }
@@ -2003,7 +2003,7 @@ async def execute_script_background(
     Same as `/api/execute_script/`:
     ```json
     {
-      "class_name": "gp50",
+      "class_name": "ac40",
       "script_name": "long_running_script.py",
       "parameters": {
         "param1": "value1"
@@ -2021,7 +2021,7 @@ async def execute_script_background(
       "message": "Script started in background",
       "data": {
         "user_id": "user-123",
-        "script": "gp50/long_running_script.py"
+        "script": "ac40/long_running_script.py"
       }
     }
     ```
