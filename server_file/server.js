@@ -11,7 +11,7 @@ const { installConsoleGate, logAlways, log, error, warn, debug } = require('../s
 const config = require('./middleware/config');
 const { resolveAllowedOrigins } = require('../shared/utils/allowedOrigins');
 const fileRoutes = require('./routes/files');
-const { checkInfluxDBHealth } = require('./middleware/influxdb_utils');
+const { checkInfluxDBHealth } = require('./middleware/influxdb_utils_v2');
 
 // Install console gate early to wrap all console.* calls
 installConsoleGate();

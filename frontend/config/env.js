@@ -75,6 +75,7 @@ export const apiEndpoints = {
     datasets: `${config.API_BASE_URL}/datasets`,
     channels: `${config.API_BASE_URL}/datasets/channels`,
     comments: `${config.API_BASE_URL}/comments`,
+    userEvents: `${config.API_BASE_URL}/user-events`,
     events: `${config.API_BASE_URL}/events`,
     targets: `${config.API_BASE_URL}/targets`,
     sources: `${config.API_BASE_URL}/sources`,

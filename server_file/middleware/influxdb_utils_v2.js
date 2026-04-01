@@ -25,10 +25,10 @@ function getInfluxDBClient() {
   const influxBucket = env.INFLUX_BUCKET;
 
   // Diagnostic logging (without exposing token value)
-  debug(`[influxdb_utils] Environment check: INFLUX_HOST=${influxHost ? 'SET' : 'NOT SET'}, INFLUX_TOKEN=${influxToken ? 'SET' : 'NOT SET'}, INFLUX_DATABASE=${influxDatabase ? 'SET' : 'NOT SET'}, INFLUX_BUCKET=${influxBucket ? 'SET' : 'NOT SET'}`);
+  debug(`[influxdb_utils_v2] Environment check: INFLUX_HOST=${influxHost ? 'SET' : 'NOT SET'}, INFLUX_TOKEN=${influxToken ? 'SET' : 'NOT SET'}, INFLUX_DATABASE=${influxDatabase ? 'SET' : 'NOT SET'}, INFLUX_BUCKET=${influxBucket ? 'SET' : 'NOT SET'}`);
   if (!influxToken || !influxHost || !influxDatabase || !influxBucket) {
-    warn(`[influxdb_utils] Missing InfluxDB config: Check .env.production.local file and ensure docker-compose env_file is loading it correctly`);
-    warn(`[influxdb_utils] NODE_ENV=${process.env.NODE_ENV}, process.env.INFLUX_TOKEN=${process.env.INFLUX_TOKEN ? 'SET' : 'NOT SET'}`);
+    warn(`[influxdb_utils_v2] Missing InfluxDB config: Check .env.production.local file and ensure docker-compose env_file is loading it correctly`);
+    warn(`[influxdb_utils_v2] NODE_ENV=${process.env.NODE_ENV}, process.env.INFLUX_TOKEN=${process.env.INFLUX_TOKEN ? 'SET' : 'NOT SET'}`);
   }
 
   // Validate required environment variables
@@ -54,7 +54,7 @@ function getInfluxDBClient() {
   // Get timeout from environment variable (default: 120 seconds, same as Python)
   clientTimeoutMs = parseInt(env.INFLUX_TIMEOUT_MS || '120000', 10);
 
-  log(`[influxdb_utils] Initializing InfluxDB client: host=${influxUrl}, org=${influxDatabase}, bucket=${influxBucket}, timeout=${clientTimeoutMs}ms`);
+  log(`[influxdb_utils_v2] Initializing InfluxDB client: host=${influxUrl}, org=${influxDatabase}, bucket=${influxBucket}, timeout=${clientTimeoutMs}ms`);
 
   try {
     influxClient = new InfluxDB({
@@ -66,7 +66,7 @@ function getInfluxDBClient() {
     
     return { client: influxClient, queryApi, timeoutMs: clientTimeoutMs };
   } catch (err) {
-    error('[influxdb_utils] Failed to initialize InfluxDB client:', err);
+    error('[influxdb_utils_v2] Failed to initialize InfluxDB client:', err);
     throw err;
   }
 }
@@ -236,7 +236,7 @@ async function queryInfluxDB(fluxQuery) {
     const timeout = setTimeout(() => {
       if (!isComplete && !isError) {
         isError = true;
-        error(`[influxdb_utils] InfluxDB query timeout after ${timeoutMs}ms`);
+        error(`[influxdb_utils_v2] InfluxDB query timeout after ${timeoutMs}ms`);
         reject(new Error(`InfluxDB query timeout after ${timeoutMs}ms`));
       }
     }, timeoutMs);
@@ -247,17 +247,17 @@ async function queryInfluxDB(fluxQuery) {
           rowCount++;
           // Debug: Log raw row and converted record only when verbose is enabled (avoids hot-path cost in production)
           if (isVerboseEnabled() && rowCount <= 3) {
-            debug(`[influxdb_utils] Raw row type: ${typeof row}, isArray: ${Array.isArray(row)}, constructor: ${row?.constructor?.name}`);
+            debug(`[influxdb_utils_v2] Raw row type: ${typeof row}, isArray: ${Array.isArray(row)}, constructor: ${row?.constructor?.name}`);
             if (row && typeof row === 'object') {
-              debug(`[influxdb_utils] Raw row keys: ${Object.keys(row).join(', ')}`);
+              debug(`[influxdb_utils_v2] Raw row keys: ${Object.keys(row).join(', ')}`);
               Object.keys(row).forEach(key => {
                 const value = row[key];
                 if (Buffer.isBuffer(value)) {
-                  debug(`[influxdb_utils] Row[${key}] is a Buffer, length: ${value.length}, first 20 bytes: ${value.slice(0, 20).toString('hex')}`);
+                  debug(`[influxdb_utils_v2] Row[${key}] is a Buffer, length: ${value.length}, first 20 bytes: ${value.slice(0, 20).toString('hex')}`);
                 } else if (value instanceof Uint8Array) {
-                  debug(`[influxdb_utils] Row[${key}] is a Uint8Array, length: ${value.length}`);
+                  debug(`[influxdb_utils_v2] Row[${key}] is a Uint8Array, length: ${value.length}`);
                 } else {
-                  debug(`[influxdb_utils] Row[${key}] type: ${typeof value}, value: ${JSON.stringify(value).substring(0, 100)}`);
+                  debug(`[influxdb_utils_v2] Row[${key}] type: ${typeof value}, value: ${JSON.stringify(value).substring(0, 100)}`);
                 }
               });
             }
@@ -267,24 +267,24 @@ async function queryInfluxDB(fluxQuery) {
           const record = tableMeta.toObject(row);
 
           if (isVerboseEnabled() && rowCount <= 3) {
-            debug(`[influxdb_utils] Converted record keys: ${Object.keys(record).join(', ')}`);
+            debug(`[influxdb_utils_v2] Converted record keys: ${Object.keys(record).join(', ')}`);
             Object.keys(record).forEach(key => {
               const value = record[key];
               const valueType = typeof value;
               let valueInfo = `${valueType}`;
               if (Buffer.isBuffer(value)) {
                 valueInfo = `Buffer(length=${value.length})`;
-                debug(`[influxdb_utils] Record[${key}] is a Buffer, length: ${value.length}, first 20 bytes: ${value.slice(0, 20).toString('hex')}`);
+                debug(`[influxdb_utils_v2] Record[${key}] is a Buffer, length: ${value.length}, first 20 bytes: ${value.slice(0, 20).toString('hex')}`);
               } else if (value instanceof Uint8Array) {
                 valueInfo = `Uint8Array(length=${value.length})`;
-                debug(`[influxdb_utils] Record[${key}] is a Uint8Array, length: ${value.length}`);
+                debug(`[influxdb_utils_v2] Record[${key}] is a Uint8Array, length: ${value.length}`);
               } else if (value !== null && value !== undefined) {
                 const strValue = String(value);
                 valueInfo = `${valueType}(${strValue.length > 50 ? strValue.substring(0, 50) + '...' : strValue})`;
               } else {
                 valueInfo = `${valueType}(${value})`;
               }
-              debug(`[influxdb_utils] Record[${key}]: ${valueInfo}`);
+              debug(`[influxdb_utils_v2] Record[${key}]: ${valueInfo}`);
             });
           }
 
@@ -296,8 +296,8 @@ async function queryInfluxDB(fluxQuery) {
           }
           tableMap.get(tableId).push(record);
         } catch (err) {
-          error('[influxdb_utils] Error converting row to object:', err);
-          error('[influxdb_utils] Error details:', {
+          error('[influxdb_utils_v2] Error converting row to object:', err);
+          error('[influxdb_utils_v2] Error details:', {
             message: err.message,
             stack: err.stack,
             rowType: typeof row,
@@ -310,7 +310,7 @@ async function queryInfluxDB(fluxQuery) {
         if (!isError) {
           isError = true;
           clearTimeout(timeout);
-          error('[influxdb_utils] InfluxDB query error:', err);
+          error('[influxdb_utils_v2] InfluxDB query error:', err);
           reject(err);
         }
       },
@@ -324,11 +324,11 @@ async function queryInfluxDB(fluxQuery) {
             results = results.concat(tableRecords);
           }
           
-          log(`[influxdb_utils] Query completed. Total rows: ${results.length}, Tables: ${tableMap.size}`);
+          log(`[influxdb_utils_v2] Query completed. Total rows: ${results.length}, Tables: ${tableMap.size}`);
           if (isVerboseEnabled() && results.length > 0) {
             const firstRecord = results[0];
-            debug(`[influxdb_utils] First record keys: ${Object.keys(firstRecord).join(', ')}`);
-            debug(`[influxdb_utils] First record sample: ${JSON.stringify(firstRecord, (key, value) => {
+            debug(`[influxdb_utils_v2] First record keys: ${Object.keys(firstRecord).join(', ')}`);
+            debug(`[influxdb_utils_v2] First record sample: ${JSON.stringify(firstRecord, (key, value) => {
               if (Buffer.isBuffer(value)) {
                 return `Buffer(${value.length} bytes)`;
               }
@@ -344,13 +344,13 @@ async function queryInfluxDB(fluxQuery) {
                 if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
                   binaryCount++;
                   if (binaryCount <= 3) {
-                    warn(`[influxdb_utils] Found binary data in result[${idx}][${key}]: ${Buffer.isBuffer(value) ? 'Buffer' : 'Uint8Array'}, length: ${value.length}`);
+                    warn(`[influxdb_utils_v2] Found binary data in result[${idx}][${key}]: ${Buffer.isBuffer(value) ? 'Buffer' : 'Uint8Array'}, length: ${value.length}`);
                   }
                 }
               });
             });
             if (binaryCount > 0) {
-              warn(`[influxdb_utils] WARNING: Found ${binaryCount} binary/buffer values in query results. These may need conversion.`);
+              warn(`[influxdb_utils_v2] WARNING: Found ${binaryCount} binary/buffer values in query results. These may need conversion.`);
             }
           }
 
@@ -394,7 +394,7 @@ async function getSourcesFromInfluxDB(date, level = 'strm') {
     const boats = [...new Set(results.map(r => r.boat).filter(Boolean))];
     return boats.sort();
   } catch (err) {
-    error('[influxdb_utils] Error getting sources from InfluxDB:', err);
+    error('[influxdb_utils_v2] Error getting sources from InfluxDB:', err);
     throw err;
   }
 }
@@ -421,9 +421,9 @@ async function ensureInfluxChannelsTable() {
       ON admin.meta_influx_channels(source_name, date, level, updated_at)
     `);
     
-    log('[influxdb_utils] InfluxDB channels metadata table ensured');
+    log('[influxdb_utils_v2] InfluxDB channels metadata table ensured');
   } catch (err) {
-    error('[influxdb_utils] Error ensuring metadata table:', err);
+    error('[influxdb_utils_v2] Error ensuring metadata table:', err);
     // Don't throw - allow fallback to direct query
   }
 }
@@ -460,13 +460,13 @@ async function getCachedChannels(date, sourceName, level = 'strm') {
       // Parse JSONB array back to JavaScript array
       const channelsJson = rows[0].channels;
       const cachedChannels = Array.isArray(channelsJson) ? channelsJson : JSON.parse(channelsJson);
-      debug(`[influxdb_utils] Found ${cachedChannels.length} cached channels for ${sourceName}/${dateStr}/${level}`);
+      debug(`[influxdb_utils_v2] Found ${cachedChannels.length} cached channels for ${sourceName}/${dateStr}/${level}`);
       return cachedChannels;
     }
     
     return null;
   } catch (err) {
-    error('[influxdb_utils] Error getting cached channels:', err);
+    error('[influxdb_utils_v2] Error getting cached channels:', err);
     return null; // Fallback to direct query
   }
 }
@@ -493,9 +493,9 @@ async function cacheChannels(date, sourceName, level, channels) {
     `;
     
     await db.executeCommand(sql, [sourceName, dateStr, level, JSON.stringify(channels)]);
-    log(`[influxdb_utils] Cached ${channels.length} channels for ${sourceName}/${dateStr}/${level}`);
+    log(`[influxdb_utils_v2] Cached ${channels.length} channels for ${sourceName}/${dateStr}/${level}`);
   } catch (err) {
-    error('[influxdb_utils] Error caching channels:', err);
+    error('[influxdb_utils_v2] Error caching channels:', err);
     // Don't throw - caching failure shouldn't break the query
   }
 }
@@ -517,10 +517,10 @@ async function getChannelsFromInfluxDB(date, sourceName, level = 'strm', checkHe
       const influxHost = env.INFLUX_HOST;
       if (influxHost) {
         await checkInfluxDBHealth(influxHost);
-        debug('[influxdb_utils] Health check passed before querying channels');
+        debug('[influxdb_utils_v2] Health check passed before querying channels');
       }
     } catch (err) {
-      error('[influxdb_utils] Health check failed before querying channels:', err.message);
+      error('[influxdb_utils_v2] Health check failed before querying channels:', err.message);
       throw new Error(`InfluxDB health check failed: ${err.message}`);
     }
   }
@@ -535,7 +535,7 @@ async function getChannelsFromInfluxDB(date, sourceName, level = 'strm', checkHe
     // Try cache first - check for fresh cached channels (within 24 hours)
     const cachedChannels = await getCachedChannels(date, sourceName, level);
     if (cachedChannels && cachedChannels.length > 0) {
-      log(`[influxdb_utils] Using cached channels (${cachedChannels.length} channels) for ${sourceName}/${dateStr}/${level}`);
+      log(`[influxdb_utils_v2] Using cached channels (${cachedChannels.length} channels) for ${sourceName}/${dateStr}/${level}`);
       return cachedChannels;
     }
 
@@ -556,15 +556,15 @@ async function getChannelsFromInfluxDB(date, sourceName, level = 'strm', checkHe
         const channelsJson = rows[0].channels;
         staleChannels = Array.isArray(channelsJson) ? channelsJson : JSON.parse(channelsJson);
         if (staleChannels && staleChannels.length > 0) {
-          log(`[influxdb_utils] Using stale cached channels (${staleChannels.length} channels) for ${sourceName}/${dateStr}/${level} - skipping InfluxDB query since channels don't change`);
+          log(`[influxdb_utils_v2] Using stale cached channels (${staleChannels.length} channels) for ${sourceName}/${dateStr}/${level} - skipping InfluxDB query since channels don't change`);
           return staleChannels;
         }
       }
     } catch (cacheErr) {
-      debug('[influxdb_utils] Could not check for stale cache:', cacheErr.message);
+      debug('[influxdb_utils_v2] Could not check for stale cache:', cacheErr.message);
     }
   } else {
-    log(`[influxdb_utils] skipCache=true: bypassing cache and querying InfluxDB for fresh channel list`);
+    log(`[influxdb_utils_v2] skipCache=true: bypassing cache and querying InfluxDB for fresh channel list`);
   }
 
   // Load stale cache for fallback on error (used in catch block)
@@ -584,7 +584,7 @@ async function getChannelsFromInfluxDB(date, sourceName, level = 'strm', checkHe
       staleChannels = Array.isArray(channelsJson) ? channelsJson : JSON.parse(channelsJson);
     }
   } catch (cacheErr) {
-    debug('[influxdb_utils] Could not load stale cache for error fallback:', cacheErr.message);
+    debug('[influxdb_utils_v2] Could not load stale cache for error fallback:', cacheErr.message);
   }
 
   // No cache (or skipCache) - query InfluxDB to get channels
@@ -598,7 +598,7 @@ async function getChannelsFromInfluxDB(date, sourceName, level = 'strm', checkHe
   try {
     // Query full day for all measurements: ensures we see every channel that has data anytime that day.
     // (A 1-minute window around one sample time could miss channels that only have data at other times.)
-    log(`[influxdb_utils] Querying InfluxDB for channels (full day): source=${sourceName}, date=${dateStr}, level=${level}`);
+    log(`[influxdb_utils_v2] Querying InfluxDB for channels (full day): source=${sourceName}, date=${dateStr}, level=${level}`);
     // Tag filters (boat, level) first after range for tag index use
     const fullDayQuery = `from(bucket: "${influxBucket}")
   |> range(start: time(v: "${fullDayStart}"), stop: time(v: "${fullDayStop}"))
@@ -611,23 +611,23 @@ async function getChannelsFromInfluxDB(date, sourceName, level = 'strm', checkHe
   |> keep(columns: ["_measurement"])`;
 
     const queryStartTime = Date.now();
-    debug(`[influxdb_utils] Flux query: ${fullDayQuery}`);
+    debug(`[influxdb_utils_v2] Flux query: ${fullDayQuery}`);
     const results = await queryInfluxDB(fullDayQuery);
     const queryDuration = Date.now() - queryStartTime;
-    log(`[influxdb_utils] Query completed in ${queryDuration}ms, returned ${results.length} rows`);
+    log(`[influxdb_utils_v2] Query completed in ${queryDuration}ms, returned ${results.length} rows`);
 
     let measurements = [...new Set(results.map(r => r._measurement).filter(Boolean))];
     if (measurements.length === 0) {
-      warn(`[influxdb_utils] No channels found for ${sourceName}/${dateStr}/${level}. Possible reasons: no data in InfluxDB, wrong boat name, or wrong level.`);
+      warn(`[influxdb_utils_v2] No channels found for ${sourceName}/${dateStr}/${level}. Possible reasons: no data in InfluxDB, wrong boat name, or wrong level.`);
     }
 
     const sortedChannels = measurements.sort();
     
-    log(`[influxdb_utils] Extracted ${sortedChannels.length} unique channels: ${sortedChannels.slice(0, 10).join(', ')}${sortedChannels.length > 10 ? '...' : ''}`);
+    log(`[influxdb_utils_v2] Extracted ${sortedChannels.length} unique channels: ${sortedChannels.slice(0, 10).join(', ')}${sortedChannels.length > 10 ? '...' : ''}`);
     
     // Cache the results for future use (channels don't change, so cache indefinitely)
     await cacheChannels(date, sourceName, level, sortedChannels);
-    log(`[influxdb_utils] Successfully cached ${sortedChannels.length} channels for ${sourceName}/${dateStr}/${level}`);
+    log(`[influxdb_utils_v2] Successfully cached ${sortedChannels.length} channels for ${sourceName}/${dateStr}/${level}`);
     
     return sortedChannels;
   } catch (err) {
@@ -655,32 +655,32 @@ async function getChannelsFromInfluxDB(date, sourceName, level = 'strm', checkHe
           const foundStaleChannels = Array.isArray(channelsJson) ? channelsJson : JSON.parse(channelsJson);
           if (foundStaleChannels && foundStaleChannels.length > 0) {
             staleChannels = foundStaleChannels;
-            log(`[influxdb_utils] Fallback: Retrieved stale cache from database (${staleChannels.length} channels) for ${sourceName}/${dateStr}/${level}`);
+            log(`[influxdb_utils_v2] Fallback: Retrieved stale cache from database (${staleChannels.length} channels) for ${sourceName}/${dateStr}/${level}`);
           }
         }
       } catch (cacheErr) {
-        debug('[influxdb_utils] Could not retrieve stale cache on error:', cacheErr.message);
+        debug('[influxdb_utils_v2] Could not retrieve stale cache on error:', cacheErr.message);
       }
     }
     
     // If we have stale cache, return it (for any error, not just timeout)
     if (staleChannels && staleChannels.length > 0) {
       if (isTimeout) {
-        log(`[influxdb_utils] InfluxDB gateway timeout (504) - returning stale cached channels (${staleChannels.length} channels) for ${sourceName}/${dateStr}/${level}`);
+        log(`[influxdb_utils_v2] InfluxDB gateway timeout (504) - returning stale cached channels (${staleChannels.length} channels) for ${sourceName}/${dateStr}/${level}`);
       } else {
-        warn(`[influxdb_utils] InfluxDB query failed - returning stale cached channels (${staleChannels.length} channels) for ${sourceName}/${dateStr}/${level}`);
+        warn(`[influxdb_utils_v2] InfluxDB query failed - returning stale cached channels (${staleChannels.length} channels) for ${sourceName}/${dateStr}/${level}`);
       }
       return staleChannels;
     }
     
     // No cache available and InfluxDB failed
     if (isTimeout) {
-      warn(`[influxdb_utils] InfluxDB gateway timeout (504) and no cache available for ${sourceName}/${dateStr}/${level}`);
-      warn(`[influxdb_utils] Cache needs to be populated when InfluxDB is available. This is expected on first query.`);
+      warn(`[influxdb_utils_v2] InfluxDB gateway timeout (504) and no cache available for ${sourceName}/${dateStr}/${level}`);
+      warn(`[influxdb_utils_v2] Cache needs to be populated when InfluxDB is available. This is expected on first query.`);
     }
     
-    error('[influxdb_utils] Error getting channels from InfluxDB:', err);
-    error('[influxdb_utils] Error details:', {
+    error('[influxdb_utils_v2] Error getting channels from InfluxDB:', err);
+    error('[influxdb_utils_v2] Error details:', {
       message: err.message,
       statusCode: err.statusCode,
       statusMessage: err.statusMessage,
@@ -716,7 +716,7 @@ async function getChannelsFromInfluxDBBothLevels(date, sourceName, checkHealth =
     }
   }
   const sorted = Array.from(merged.values()).sort();
-  log(`[influxdb_utils] getChannelsFromInfluxDBBothLevels: strm=${(strmChannels || []).length}, log=${(logChannels || []).length}, merged=${sorted.length}`);
+  log(`[influxdb_utils_v2] getChannelsFromInfluxDBBothLevels: strm=${(strmChannels || []).length}, log=${(logChannels || []).length}, merged=${sorted.length}`);
   return sorted;
 }
 
@@ -851,10 +851,10 @@ async function getChannelValuesFromInfluxDB(
       const influxHost = env.INFLUX_HOST;
       if (influxHost) {
         await checkInfluxDBHealth(influxHost);
-        debug('[influxdb_utils] Health check passed before querying channel values');
+        debug('[influxdb_utils_v2] Health check passed before querying channel values');
       }
     } catch (err) {
-      error('[influxdb_utils] Health check failed before querying channel values:', err.message);
+      error('[influxdb_utils_v2] Health check failed before querying channel values:', err.message);
       throw new Error(`InfluxDB health check failed: ${err.message}`);
     }
   }
@@ -885,7 +885,7 @@ async function getChannelValuesFromInfluxDB(
     .filter(name => name && name !== 'ts' && name !== 'Datetime');
 
   if (measurements.length === 0) {
-    warn('[influxdb_utils] No data measurements to query (only ts/Datetime in channel_list) - returning empty; Influx tier parquet will NOT be written', {
+    warn('[influxdb_utils_v2] No data measurements to query (only ts/Datetime in channel_list) - returning empty; Influx tier parquet will NOT be written', {
       channel_list_names: channelList.map(ch => typeof ch === 'string' ? ch : (ch && (ch.name || ch.channel))),
       channel_count: channelList.length
     });
@@ -914,7 +914,7 @@ async function getChannelValuesFromInfluxDB(
   // Check if we should chunk by measurements
   if (measurements.length > MEASUREMENT_CHUNK_THRESHOLD) {
     useMeasurementChunking = true;
-    log(`[influxdb_utils] Large number of measurements (${measurements.length}) exceeds threshold (${MEASUREMENT_CHUNK_THRESHOLD}). Will chunk by measurements.`);
+    log(`[influxdb_utils_v2] Large number of measurements (${measurements.length}) exceeds threshold (${MEASUREMENT_CHUNK_THRESHOLD}). Will chunk by measurements.`);
   }
   
   // Determine time range and whether to chunk by time
@@ -931,13 +931,13 @@ async function getChannelValuesFromInfluxDB(
       useChunking = true;
       chunkStartTs = startTsNum;
       chunkEndTs = endTsNum;
-      log(`[influxdb_utils] Time range ${timeRange}s (${(timeRange/60).toFixed(1)} minutes) exceeds ${CHUNK_THRESHOLD_SECONDS}s threshold. Splitting into 1-hour chunks aligned to hour boundaries.`);
+      log(`[influxdb_utils_v2] Time range ${timeRange}s (${(timeRange/60).toFixed(1)} minutes) exceeds ${CHUNK_THRESHOLD_SECONDS}s threshold. Splitting into 1-hour chunks aligned to hour boundaries.`);
     }
   } else {
     // Full day query - always chunk to avoid timeouts
     useChunking = true;
     // Will set chunkStartTs and chunkEndTs below when we have the date
-    log(`[influxdb_utils] Full day query detected. Will chunk into 1-hour segments to avoid timeouts.`);
+    log(`[influxdb_utils_v2] Full day query detected. Will chunk into 1-hour segments to avoid timeouts.`);
   }
   
   let rawResults = [];
@@ -960,9 +960,9 @@ async function getChannelValuesFromInfluxDB(
         const offsetNextSeconds = (tzHn * 3600) + (tzMinn * 60) + (tzSecn || 0);
         const nextDayMidnightUtc = (utcNextMidnight - offsetNextSeconds * 1000) / 1000;
         chunkEndTs = Math.floor(nextDayMidnightUtc) - 1;
-        log(`[influxdb_utils] Using local date range: ${formattedDate} in ${timezone} -> UTC timestamps ${chunkStartTs} to ${chunkEndTs}`);
+        log(`[influxdb_utils_v2] Using local date range: ${formattedDate} in ${timezone} -> UTC timestamps ${chunkStartTs} to ${chunkEndTs}`);
       } catch (tzErr) {
-        warn(`[influxdb_utils] Could not parse timezone '${timezone}' for local date range, using UTC date:`, tzErr.message);
+        warn(`[influxdb_utils_v2] Could not parse timezone '${timezone}' for local date range, using UTC date:`, tzErr.message);
         const startDate = new Date(`${formattedDate}T00:00:00Z`);
         const endDate = new Date(`${formattedDate}T23:59:59Z`);
         chunkStartTs = Math.floor(startDate.getTime() / 1000);
@@ -984,7 +984,7 @@ async function getChannelValuesFromInfluxDB(
       for (let i = 0; i < measurements.length; i += BATCH_SIZE) {
         measurementBatches.push(measurements.slice(i, i + BATCH_SIZE));
       }
-      log(`[influxdb_utils] Split ${measurements.length} measurements into ${measurementBatches.length} batches of ~${BATCH_SIZE} each`);
+      log(`[influxdb_utils_v2] Split ${measurements.length} measurements into ${measurementBatches.length} batches of ~${BATCH_SIZE} each`);
     } else {
       // Single batch with all measurements
       measurementBatches = [measurements];
@@ -1038,7 +1038,7 @@ async function getChannelValuesFromInfluxDB(
         chunkJobs.push({ timeRange, measurementBatch });
       }
     }
-    log(`[influxdb_utils] Executing ${chunkJobs.length} chunk queries with concurrency ${chunkConcurrency}`);
+    log(`[influxdb_utils_v2] Executing ${chunkJobs.length} chunk queries with concurrency ${chunkConcurrency}`);
 
     async function runOneChunkJob(job) {
       const { timeRange, measurementBatch } = job;
@@ -1057,7 +1057,7 @@ async function getChannelValuesFromInfluxDB(
   |> drop(columns: ["_start", "_stop", "_field", "level", "result", "table"])
   |> sort(columns: ["_time"])
   |> limit(n: ${queryLimit})`;
-      debug(`[influxdb_utils] Chunk Flux query: ${chunkStartTime} to ${chunkStopTime}, measurements=${measurementBatch.length}`);
+      debug(`[influxdb_utils_v2] Chunk Flux query: ${chunkStartTime} to ${chunkStopTime}, measurements=${measurementBatch.length}`);
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const rows = await queryInfluxDB(chunkFluxQuery);
@@ -1066,14 +1066,14 @@ async function getChannelValuesFromInfluxDB(
           const is504 = err.statusCode === 504 ||
               (err.message && (err.message.includes('504') || err.message.includes('Gateway Time-out')));
           if (is504 && attempt === 1) {
-            warn(`[influxdb_utils] Gateway timeout (504) for chunk ${chunkStartTime} to ${chunkStopTime}, measurements=${measurementBatch.length}; retrying once in 3s...`);
+            warn(`[influxdb_utils_v2] Gateway timeout (504) for chunk ${chunkStartTime} to ${chunkStopTime}, measurements=${measurementBatch.length}; retrying once in 3s...`);
             await new Promise(r => setTimeout(r, 3000));
             continue;
           }
           if (is504) {
-            warn(`[influxdb_utils] Gateway timeout (504) for chunk ${chunkStartTime} to ${chunkStopTime} after retry. Reduce INFLUX_CHUNK_CONCURRENCY or time range if this persists.`);
+            warn(`[influxdb_utils_v2] Gateway timeout (504) for chunk ${chunkStartTime} to ${chunkStopTime} after retry. Reduce INFLUX_CHUNK_CONCURRENCY or time range if this persists.`);
           }
-          error(`[influxdb_utils] Chunk query failed for ${chunkStartTime} to ${chunkStopTime}, measurements=${measurementBatch.length}:`, err);
+          error(`[influxdb_utils_v2] Chunk query failed for ${chunkStartTime} to ${chunkStopTime}, measurements=${measurementBatch.length}:`, err);
           return [];
         }
       }
@@ -1102,7 +1102,7 @@ async function getChannelValuesFromInfluxDB(
     // Warn if any chunk hit the row limit (result may be truncated)
     const truncatedChunks = chunkResults.filter(r => r && r.length >= queryLimit);
     if (truncatedChunks.length > 0) {
-      warn(`[influxdb_utils] ${truncatedChunks.length} chunk(s) hit row limit (${queryLimit}); result may be truncated. Narrow time range or reduce channels.`);
+      warn(`[influxdb_utils_v2] ${truncatedChunks.length} chunk(s) hit row limit (${queryLimit}); result may be truncated. Narrow time range or reduce channels.`);
     }
     // Warn when some chunks returned no data (empty series vs errors: failures also log in runOneChunkJob)
     const emptyChunkCount = chunkResults.filter(r => !r || r.length === 0).length;
@@ -1118,14 +1118,14 @@ async function getChannelValuesFromInfluxDB(
       };
       if (allEmpty) {
         warn(
-          `[influxdb_utils] All ${chunkResults.length} Influx chunk(s) returned no rows (boat=${boat}, date=${formattedDate}, level=${level}, bucket=${influxBucket}). ` +
+          `[influxdb_utils_v2] All ${chunkResults.length} Influx chunk(s) returned no rows (boat=${boat}, date=${formattedDate}, level=${level}, bucket=${influxBucket}). ` +
             'Common causes: no data in Influx for this boat/day/level, boat tag mismatch vs normalization (1_normalization_influx), wrong bucket, or retention dropped the range. ' +
-            'If chunk queries failed, see earlier [influxdb_utils] error lines (504/timeouts).',
+            'If chunk queries failed, see earlier [influxdb_utils_v2] error lines (504/timeouts).',
           ctx
         );
       } else {
         warn(
-          `[influxdb_utils] ${emptyChunkCount} of ${chunkResults.length} chunk(s) returned no data; merged result may be partial. Check timeouts/Influx errors above or sparse data in some hours.`,
+          `[influxdb_utils_v2] ${emptyChunkCount} of ${chunkResults.length} chunk(s) returned no data; merged result may be partial. Check timeouts/Influx errors above or sparse data in some hours.`,
           ctx
         );
       }
@@ -1148,7 +1148,7 @@ async function getChannelValuesFromInfluxDB(
       return true;
     });
     
-    log(`[influxdb_utils] Merged ${chunkResults.length} chunks into ${rawResults.length} total rows`);
+    log(`[influxdb_utils_v2] Merged ${chunkResults.length} chunks into ${rawResults.length} total rows`);
   } else {
     // Original single query logic (for small queries)
     // Determine time range
@@ -1168,12 +1168,12 @@ async function getChannelValuesFromInfluxDB(
       startTime = startDate.toISOString();
       stopTime = endDate.toISOString();
       
-      log(`[influxdb_utils] Using timestamp range: ${startTsNum} to ${endTsNum} (${startTime} to ${stopTime})`);
+      log(`[influxdb_utils_v2] Using timestamp range: ${startTsNum} to ${endTsNum} (${startTime} to ${stopTime})`);
     } else {
       // Use full day based on date
       startTime = `${formattedDate}T00:00:00Z`;
       stopTime = `${formattedDate}T23:59:59Z`;
-      log(`[influxdb_utils] Using full day range: ${startTime} to ${stopTime}`);
+      log(`[influxdb_utils_v2] Using full day range: ${startTime} to ${stopTime}`);
     }
     
     // Tag filters (boat, level) first after range for tag index use; _measurement regex last. limit() caps rows to avoid timeouts/OOM.
@@ -1188,8 +1188,8 @@ async function getChannelValuesFromInfluxDB(
   |> sort(columns: ["_time"])
   |> limit(n: ${queryLimit})`;
     
-    log(`[influxdb_utils] Executing query: bucket=${influxBucket}, org=${influxDatabase}, boat=${boat}, date=${formattedDate}, level=${level}, measurements=${measurements.length}, time_range=${startTime} to ${stopTime}`);
-    debug(`[influxdb_utils] Flux query: ${fluxQuery}`);
+    log(`[influxdb_utils_v2] Executing query: bucket=${influxBucket}, org=${influxDatabase}, boat=${boat}, date=${formattedDate}, level=${level}, measurements=${measurements.length}, time_range=${startTime} to ${stopTime}`);
+    debug(`[influxdb_utils_v2] Flux query: ${fluxQuery}`);
     
     try {
       // Execute query
@@ -1202,24 +1202,24 @@ async function getChannelValuesFromInfluxDB(
                       (err.message && err.message.includes('timeout'));
       
       if (isTimeout) {
-        warn(`[influxdb_utils] Gateway timeout (504) detected. Query may be too large. Consider using smaller time ranges or fewer measurements.`);
-        warn(`[influxdb_utils] Query parameters: measurements=${measurements.length}, time_range=${startTime} to ${stopTime}`);
+        warn(`[influxdb_utils_v2] Gateway timeout (504) detected. Query may be too large. Consider using smaller time ranges or fewer measurements.`);
+        warn(`[influxdb_utils_v2] Query parameters: measurements=${measurements.length}, time_range=${startTime} to ${stopTime}`);
       }
-      error('[influxdb_utils] InfluxDB query error:', err);
+      error('[influxdb_utils_v2] InfluxDB query error:', err);
       throw err;
     }
     if (rawResults && rawResults.length >= queryLimit) {
-      warn(`[influxdb_utils] Single query hit row limit (${queryLimit}); result may be truncated. Narrow time range or reduce channels.`);
+      warn(`[influxdb_utils_v2] Single query hit row limit (${queryLimit}); result may be truncated. Narrow time range or reduce channels.`);
     }
   }
   
   try {
     if (!rawResults || rawResults.length === 0) {
-      log(`[influxdb_utils] No data returned from InfluxDB query for boat=${boat}, level=${level}, date=${formattedDate}, measurements=${measurements.join(', ')}`);
+      log(`[influxdb_utils_v2] No data returned from InfluxDB query for boat=${boat}, level=${level}, date=${formattedDate}, measurements=${measurements.join(', ')}`);
       return [];
     }
     
-    log(`[influxdb_utils] Retrieved ${rawResults.length} raw rows from InfluxDB`);
+    log(`[influxdb_utils_v2] Retrieved ${rawResults.length} raw rows from InfluxDB`);
     
     // Debug: Check for binary data before processing
     let binaryFieldsFound = new Set();
@@ -1229,13 +1229,13 @@ async function getChannelValuesFromInfluxDB(
         if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
           binaryFieldsFound.add(key);
           if (idx < 3) {
-            warn(`[influxdb_utils] Raw result[${idx}][${key}] is binary: ${Buffer.isBuffer(value) ? 'Buffer' : 'Uint8Array'}, length: ${value.length}`);
+            warn(`[influxdb_utils_v2] Raw result[${idx}][${key}] is binary: ${Buffer.isBuffer(value) ? 'Buffer' : 'Uint8Array'}, length: ${value.length}`);
           }
         }
       });
     });
     if (binaryFieldsFound.size > 0) {
-      warn(`[influxdb_utils] WARNING: Found binary data in fields: ${Array.from(binaryFieldsFound).join(', ')}. Attempting conversion...`);
+      warn(`[influxdb_utils_v2] WARNING: Found binary data in fields: ${Array.from(binaryFieldsFound).join(', ')}. Attempting conversion...`);
     }
     
     // Convert _time to ts (Unix timestamp in seconds)
@@ -1244,7 +1244,7 @@ async function getChannelValuesFromInfluxDB(
       
       // Debug first few records
       if (idx < 3) {
-        debug(`[influxdb_utils] Processing raw result[${idx}]: keys=${Object.keys(result).join(', ')}`);
+        debug(`[influxdb_utils_v2] Processing raw result[${idx}]: keys=${Object.keys(result).join(', ')}`);
       }
       
       // Convert any binary/buffer values to strings or numbers if possible
@@ -1254,16 +1254,16 @@ async function getChannelValuesFromInfluxDB(
           // Try to convert buffer to string
           try {
             const strValue = value.toString('utf8');
-            debug(`[influxdb_utils] Converted Buffer[${key}] to string: "${strValue.substring(0, 50)}"`);
+            debug(`[influxdb_utils_v2] Converted Buffer[${key}] to string: "${strValue.substring(0, 50)}"`);
             result[key] = strValue;
           } catch (err) {
-            warn(`[influxdb_utils] Failed to convert Buffer[${key}] to string: ${err.message}`);
+            warn(`[influxdb_utils_v2] Failed to convert Buffer[${key}] to string: ${err.message}`);
             // Try to convert to number if it's a numeric buffer
             try {
               const numValue = parseFloat(value.toString('utf8'));
               if (!isNaN(numValue)) {
                 result[key] = numValue;
-                debug(`[influxdb_utils] Converted Buffer[${key}] to number: ${numValue}`);
+                debug(`[influxdb_utils_v2] Converted Buffer[${key}] to number: ${numValue}`);
               } else {
                 result[key] = null;
               }
@@ -1276,10 +1276,10 @@ async function getChannelValuesFromInfluxDB(
           try {
             const buffer = Buffer.from(value);
             const strValue = buffer.toString('utf8');
-            debug(`[influxdb_utils] Converted Uint8Array[${key}] to string: "${strValue.substring(0, 50)}"`);
+            debug(`[influxdb_utils_v2] Converted Uint8Array[${key}] to string: "${strValue.substring(0, 50)}"`);
             result[key] = strValue;
           } catch (err) {
-            warn(`[influxdb_utils] Failed to convert Uint8Array[${key}]: ${err.message}`);
+            warn(`[influxdb_utils_v2] Failed to convert Uint8Array[${key}]: ${err.message}`);
             result[key] = null;
           }
         }
@@ -1301,7 +1301,7 @@ async function getChannelValuesFromInfluxDB(
         if (shouldConvert && typeof value === 'number' && value !== null && !isNaN(value)) {
           const convertedValue = value / 10000000; // Move decimal 7 places to the left
           if (idx < 3) {
-            debug(`[influxdb_utils] Converting GPS coordinate ${key}: ${value} -> ${convertedValue} (divided by 10^7)`);
+            debug(`[influxdb_utils_v2] Converting GPS coordinate ${key}: ${value} -> ${convertedValue} (divided by 10^7)`);
           }
           result[key] = convertedValue;
         }
@@ -1315,7 +1315,7 @@ async function getChannelValuesFromInfluxDB(
       }
       
       if (idx < 3) {
-        debug(`[influxdb_utils] Processed result[${idx}]: keys=${Object.keys(result).join(', ')}, sample values: ${JSON.stringify(Object.fromEntries(Object.entries(result).slice(0, 3)))}`);
+        debug(`[influxdb_utils_v2] Processed result[${idx}]: keys=${Object.keys(result).join(', ')}, sample values: ${JSON.stringify(Object.fromEntries(Object.entries(result).slice(0, 3)))}`);
       }
       
       return result;
@@ -1323,7 +1323,7 @@ async function getChannelValuesFromInfluxDB(
     
     // Dataset size check
     if (results.length > 10000000) {
-      error(`[influxdb_utils] Large dataset detected: ${results.length} rows. May cause memory issues.`);
+      error(`[influxdb_utils_v2] Large dataset detected: ${results.length} rows. May cause memory issues.`);
       return [];
     }
     
@@ -1523,7 +1523,7 @@ async function getChannelValuesFromInfluxDB(
     
     return merged;
   } catch (err) {
-    error('[influxdb_utils] Error getting channel values from InfluxDB:', err);
+    error('[influxdb_utils_v2] Error getting channel values from InfluxDB:', err);
     throw err;
   }
 }
@@ -1576,10 +1576,10 @@ async function getChannelValuesFromInfluxDBWithFallback(
         }
       }
     }
-    log(`[influxdb_utils] getChannelValuesFromInfluxDBWithFallback: all ${measurementNames.length} channels had data in strm`);
+    log(`[influxdb_utils_v2] getChannelValuesFromInfluxDBWithFallback: all ${measurementNames.length} channels had data in strm`);
     return strmResult;
   }
-  log(`[influxdb_utils] getChannelValuesFromInfluxDBWithFallback: ${channelsWithNoDataInStrm.length} channels had no data in strm, querying log: ${channelsWithNoDataInStrm.slice(0, 5).join(', ')}${channelsWithNoDataInStrm.length > 5 ? '...' : ''}`);
+  log(`[influxdb_utils_v2] getChannelValuesFromInfluxDBWithFallback: ${channelsWithNoDataInStrm.length} channels had no data in strm, querying log: ${channelsWithNoDataInStrm.slice(0, 5).join(', ')}${channelsWithNoDataInStrm.length > 5 ? '...' : ''}`);
   const logChannelList = channelsWithNoDataInStrm.map(name => {
     const ch = channelList.find(c => (c && (c.name || c.channel)) === name);
     return ch ? (typeof ch === 'string' ? { name: ch, type: 'float' } : { name: ch.name || ch.channel, type: ch.type || 'float' }) : { name, type: 'float' };

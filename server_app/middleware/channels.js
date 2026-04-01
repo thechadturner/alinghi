@@ -7,7 +7,7 @@ let extractChannelsFromParquetFiles = null;
 let getChannelsFromInfluxDB = null;
 try {
   const duckdbUtils = require('../../server_file/middleware/duckdb_utils');
-  const influxdbUtils = require('../../server_file/middleware/influxdb_utils');
+  const influxdbUtils = require('../../server_file/middleware/influxdb_utils_v2');
   extractChannelsFromParquetFiles = duckdbUtils.extractChannelsFromParquetFiles;
   getChannelsFromInfluxDB = influxdbUtils.getChannelsFromInfluxDB;
   log('[channels] Successfully imported file server channel discovery functions');

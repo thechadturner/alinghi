@@ -28,7 +28,7 @@ const {
   saveInfluxDataToParquet,
   influxParquetBasenameFromApiResolution,
   isInfluxTierParquetBasename,
-} = require('../middleware/influxdb_utils');
+} = require('../middleware/influxdb_utils_v2');
 
 // Utility to safely join paths
 const safeJoin = (...paths) => path.join(...paths);

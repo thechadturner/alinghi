@@ -7,7 +7,7 @@
     "libs/*"
   ],
   "scripts": {
-    "predev": "node scripts/build-syncstore.js",
+    "predev": "node scripts/build-syncstore.js && node scripts/copy-sqlite-workers.js",
     "dev": "vite",
     "prebuild": "npm run build:hunidb && node scripts/copy-sqlite-workers.js",
     "build": "vite build",

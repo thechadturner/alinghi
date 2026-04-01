@@ -21,7 +21,8 @@
             "@store/*": ["frontend/store/*"],
             "@utils/*": ["frontend/utils/*"],
             "@styles/*": ["frontend/styles/*"],
-            "@config/*": ["frontend/config/*"]
+            "@config/*": ["frontend/config/*"],
+            "@services/*": ["frontend/services/*"]
         },
         "strictNullChecks": true,
         "strictFunctionTypes": true,

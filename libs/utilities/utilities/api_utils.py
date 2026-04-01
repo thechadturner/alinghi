@@ -1,6 +1,6 @@
 from datetime import time, datetime, timedelta
 from tracemalloc import start
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal, Tuple
 import requests
 import pandas as pd
 import numpy as np
@@ -8,6 +8,9 @@ import numpy as np
 import requests
 import json
 import threading
+import time as time_module
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pathlib import Path
@@ -849,6 +852,542 @@ def _execute_influx_query_chunk(query_api, influx_bucket: str, influx_database: 
     return df if df is not None else pd.DataFrame()
 
 
+IOX_TABLE = '"iox"."universalized_logs"'
+
+
+def _resolve_influx_query_version(explicit: Optional[str]) -> Literal["2", "3"]:
+    if explicit is not None:
+        v = str(explicit).strip().lower()
+        if v not in ("2", "3"):
+            raise ValueError(f"influx_version must be '2' or '3', got {explicit!r}")
+        return v  # type: ignore[return-value]
+    env_v = (os.getenv("INFLUX_QUERY_VERSION") or "3").strip().lower()
+    if env_v not in ("2", "3"):
+        log_error(f"INFLUX_QUERY_VERSION must be 2 or 3, got {env_v!r}; defaulting to 3")
+        return "3"
+    return env_v  # type: ignore[return-value]
+
+
+def _normalize_influx_token(raw: Optional[str]) -> str:
+    if raw is None or raw == "":
+        return ""
+    t = str(raw).strip()
+    if (t.startswith("'") and t.endswith("'")) or (t.startswith('"') and t.endswith('"')):
+        t = t[1:-1].strip()
+    return t
+
+
+def _influx_v3_origin_from_host(influx_host: str) -> str:
+    raw = str(influx_host or "").strip()
+    if not raw.startswith(("http://", "https://")):
+        raw = f"http://{raw}"
+    parsed = urlparse(raw)
+    port_env = (os.getenv("INFLUX_PORT") or "").strip()
+    host = parsed.hostname or ""
+    scheme = parsed.scheme or "http"
+    if parsed.port:
+        netloc = f"{host}:{parsed.port}"
+    elif port_env:
+        netloc = f"{host}:{port_env}"
+    else:
+        netloc = host
+    return f"{scheme}://{netloc}".rstrip("/")
+
+
+def _influx_v3_sql_string_literal(s: str) -> str:
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def _influx_v3_sql_quote_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _influx_v3_sql_time_chunk_predicate(start_sec: float, end_sec: float, overall_end_sec: float) -> str:
+    start_iso = datetime.fromtimestamp(start_sec, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    end_iso = datetime.fromtimestamp(end_sec, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    end_date = datetime.fromtimestamp(end_sec, tz=tz.tzutc())
+    on_utc_hour_boundary = (
+        end_date.minute == 0
+        and end_date.second == 0
+        and end_date.microsecond == 0
+    )
+    use_exclusive = on_utc_hour_boundary and end_sec < overall_end_sec
+    if use_exclusive:
+        return f"time >= {_influx_v3_sql_string_literal(start_iso)} AND time < {_influx_v3_sql_string_literal(end_iso)}"
+    return f"time >= {_influx_v3_sql_string_literal(start_iso)} AND time <= {_influx_v3_sql_string_literal(end_iso)}"
+
+
+def _influx_v3_parse_jsonl(body: str) -> List[Dict[str, Any]]:
+    lines = [ln for ln in str(body or "").splitlines() if ln.strip()]
+    if not lines:
+        return []
+    out: List[Dict[str, Any]] = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            if not out and line.strip().startswith("{"):
+                obj = json.loads(line)
+                msg = obj.get("error") or obj.get("message") or obj.get("detail") or line
+                raise ValueError(msg if isinstance(msg, str) else json.dumps(msg)) from None
+            raise
+    return out
+
+
+def _influx_v3_query_sql(origin: str, token: str, database: str, sql: str, timeout_sec: float) -> List[Dict[str, Any]]:
+    url = f"{origin.rstrip('/')}/api/v3/query_sql"
+    payload = json.dumps({"db": database, "q": sql, "format": "jsonl"})
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+    last_err: Optional[Exception] = None
+    for attempt in (1, 2):
+        try:
+            r = requests.post(url, data=payload.encode("utf-8"), headers=headers, timeout=timeout_sec)
+            if r.status_code == 504 and attempt == 1:
+                log_warning(
+                    "[InfluxDB v3] Gateway timeout (504); retrying once in 3s..."
+                )
+                time_module.sleep(3)
+                continue
+            if r.status_code >= 400:
+                raise RuntimeError(
+                    f"InfluxDB v3 query_sql HTTP {r.status_code}: {r.text[:800]}"
+                )
+            return _influx_v3_parse_jsonl(r.text)
+        except requests.Timeout as e:
+            last_err = e
+            if attempt == 1:
+                log_warning("[InfluxDB v3] Request timeout; retrying once in 3s...")
+                time_module.sleep(3)
+                continue
+            raise
+    if last_err:
+        raise last_err
+    return []
+
+
+def _influx_v3_normalize_row(record: Dict[str, Any], _idx: int) -> Dict[str, Any]:
+    result = dict(record)
+    meta_keys = {"_time", "time", "ts", "result", "table", "boat", "level"}
+    for key in list(result.keys()):
+        if key in meta_keys:
+            continue
+        if key in ("LATITUDE_GPS_unk", "LONGITUDE_GPS_unk"):
+            val = result[key]
+            if isinstance(val, (int, float)) and val is not None and not (isinstance(val, float) and (val != val)):
+                result[key] = float(val) / 10000000.0
+    time_raw = result.get("time") or result.get("_time")
+    if time_raw is not None:
+        if isinstance(time_raw, (int, float)):
+            ts = float(time_raw)
+            if ts > 1e12:
+                ts = round(ts / 1000.0, 3)
+            elif ts > 1e10:
+                ts = round(ts / 1e9, 3)
+            else:
+                ts = round(ts, 3)
+        else:
+            d = pd.to_datetime(time_raw, utc=True)
+            ts = round(d.timestamp(), 3)
+        result["ts"] = ts
+        result.pop("time", None)
+        result.pop("_time", None)
+    return result
+
+
+def _influx_v3_raw_rows_to_dataframe(raw_results: List[Dict[str, Any]], measurements: List[str]) -> pd.DataFrame:
+    if not raw_results:
+        return pd.DataFrame()
+    normalized = [_influx_v3_normalize_row(dict(r), i) for i, r in enumerate(raw_results)]
+    df = pd.DataFrame(normalized)
+    if "ts" not in df.columns:
+        log_error("[InfluxDB v3] No time/ts in query results")
+        return pd.DataFrame()
+    drop_cols = [c for c in ("boat", "level", "result", "table") if c in df.columns]
+    if drop_cols:
+        df = df.drop(columns=drop_cols, errors="ignore")
+    min_valid_ts = datetime(2020, 1, 1).timestamp()
+    max_valid_ts = datetime.now().timestamp() + (365 * 24 * 3600)
+    if len(df) > 0:
+        mn = float(df["ts"].min())
+        mx = float(df["ts"].max())
+        if mn < min_valid_ts or mx > max_valid_ts:
+            log_error(
+                f"[InfluxDB v3] Invalid timestamp range: {mn} to {mx}"
+            )
+            return pd.DataFrame()
+    df["ts"] = df["ts"].round(3).astype("float64")
+    df.sort_values(by=["ts"], inplace=True, ascending=True)
+    for m in measurements:
+        if m not in df.columns:
+            df[m] = np.nan
+    return df
+
+
+def _build_influx_v3_time_ranges_hour_aligned(chunk_start_ts: float, chunk_end_ts: float) -> List[Tuple[float, float]]:
+    ranges: List[Tuple[float, float]] = []
+    current_start = chunk_start_ts
+    while current_start < chunk_end_ts:
+        current_dt = datetime.fromtimestamp(current_start, tz=tz.tzutc())
+        if current_dt.minute != 0 or current_dt.second != 0 or current_dt.microsecond != 0:
+            next_hour = current_dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            current_end = min(next_hour.timestamp(), chunk_end_ts)
+        else:
+            next_hour = current_dt + timedelta(hours=1)
+            current_end = min(next_hour.timestamp(), chunk_end_ts)
+        ranges.append((current_start, current_end))
+        current_start = current_end
+    return ranges
+
+
+def _build_influx_v3_time_ranges_fixed_hour_slices(start_ts_num: float, end_ts_num: float) -> List[Tuple[float, float]]:
+    ranges: List[Tuple[float, float]] = []
+    current_start = start_ts_num
+    chunk_size = 3600
+    while current_start < end_ts_num:
+        current_end = min(current_start + chunk_size, end_ts_num)
+        ranges.append((current_start, current_end))
+        current_start = current_end
+    return ranges
+
+
+def _fetch_influx_v3_dataframe(
+    formatted_date: str,
+    boat: str,
+    level: str,
+    measurements: List[str],
+    eff_start: Optional[float],
+    eff_end: Optional[float],
+    had_explicit_range: bool,
+) -> Tuple[pd.DataFrame, str, str]:
+    """Returns (df, start_time_desc, stop_time_desc) for logging."""
+    token = _normalize_influx_token(os.getenv("INFLUX_TOKEN"))
+    influx_host = os.getenv("INFLUX_HOST")
+    influx_database = os.getenv("INFLUX_DATABASE")
+    if not token or not influx_host or not influx_database:
+        log_error("[InfluxDB v3] INFLUX_TOKEN, INFLUX_HOST, INFLUX_DATABASE required")
+        return pd.DataFrame(), "(n/a)", "(n/a)"
+    origin = _influx_v3_origin_from_host(influx_host)
+    try:
+        timeout_ms = int(os.getenv("INFLUX_TIMEOUT_MS") or "120000")
+    except ValueError:
+        timeout_ms = 120000
+    timeout_sec = max(1.0, timeout_ms / 1000.0)
+
+    utc_day_start = datetime.strptime(f"{formatted_date} 00:00:00", "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz.tzutc()).timestamp()
+    utc_day_end = datetime.strptime(f"{formatted_date} 23:59:59", "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz.tzutc()).timestamp()
+
+    start_ts_num: float
+    end_ts_num: float
+    if eff_start is not None and eff_end is not None:
+        start_ts_num = float(eff_start)
+        end_ts_num = float(eff_end)
+    else:
+        start_ts_num = utc_day_start
+        end_ts_num = utc_day_end
+
+    CHUNK_THRESHOLD_SECONDS = 900
+    MEASUREMENT_CHUNK_THRESHOLD = 50
+    BATCH_SIZE = 30
+    try:
+        query_limit = max(10000, int(os.getenv("INFLUX_QUERY_LIMIT") or "500000"))
+    except ValueError:
+        query_limit = 500000
+    try:
+        chunk_concurrency_raw = int(os.getenv("INFLUX_CHUNK_CONCURRENCY") or "2")
+    except ValueError:
+        chunk_concurrency_raw = 2
+    chunk_concurrency = max(1, min(5, chunk_concurrency_raw))
+
+    use_chunking = (not had_explicit_range) or (end_ts_num - start_ts_num > CHUNK_THRESHOLD_SECONDS)
+    use_measurement_chunking = len(measurements) > MEASUREMENT_CHUNK_THRESHOLD
+
+    start_time_log = "(n/a)"
+    stop_time_log = "(n/a)"
+    raw_results: List[Dict[str, Any]] = []
+
+    def build_select_cols(batch: List[str]) -> str:
+        parts = ["time"] + [_influx_v3_sql_quote_ident(m) for m in batch]
+        return ", ".join(parts)
+
+    if use_chunking or use_measurement_chunking:
+        chunk_start_ts: Optional[float] = None
+        chunk_end_ts: Optional[float] = None
+        if use_chunking:
+            chunk_start_ts = start_ts_num
+            chunk_end_ts = end_ts_num
+        measurement_batches: List[List[str]] = []
+        if use_measurement_chunking:
+            for i in range(0, len(measurements), BATCH_SIZE):
+                measurement_batches.append(measurements[i : i + BATCH_SIZE])
+            log_info(
+                f"[InfluxDB v3] Split {len(measurements)} measurements into {len(measurement_batches)} batches"
+            )
+        else:
+            measurement_batches = [measurements]
+
+        time_ranges: List[Tuple[float, float]] = []
+        if use_chunking and chunk_start_ts is not None and chunk_end_ts is not None:
+            time_ranges = _build_influx_v3_time_ranges_hour_aligned(chunk_start_ts, chunk_end_ts)
+            log_info(
+                f"[InfluxDB v3] Time chunking: {len(time_ranges)} hour-aligned segment(s)"
+            )
+        else:
+            time_ranges = _build_influx_v3_time_ranges_fixed_hour_slices(start_ts_num, end_ts_num)
+
+        chunk_jobs: List[Tuple[Tuple[float, float], List[str]]] = []
+        for tr in time_ranges:
+            for mb in measurement_batches:
+                chunk_jobs.append((tr, mb))
+
+        log_info(
+            f"[InfluxDB v3] Executing {len(chunk_jobs)} chunk query(ies) with concurrency {chunk_concurrency}"
+        )
+
+        def run_one_chunk(job: Tuple[Tuple[float, float], List[str]]) -> List[Dict[str, Any]]:
+            (t0, t1), batch = job
+            time_pred = _influx_v3_sql_time_chunk_predicate(t0, t1, end_ts_num)
+            cols = build_select_cols(batch)
+            chunk_sql = (
+                f"SELECT {cols} FROM {IOX_TABLE}\n"
+                f"WHERE {time_pred}\n"
+                f"  AND boat = {_influx_v3_sql_string_literal(boat)} AND level = {_influx_v3_sql_string_literal(level)}\n"
+                f"ORDER BY time\n"
+                f"LIMIT {query_limit}"
+            )
+            try:
+                return _influx_v3_query_sql(origin, token, influx_database, chunk_sql, timeout_sec)
+            except Exception as e:
+                log_error(f"[InfluxDB v3] Chunk query failed: {e}", e)
+                return []
+
+        chunk_results: List[List[Dict[str, Any]]] = [[] for _ in chunk_jobs]
+        with ThreadPoolExecutor(max_workers=min(chunk_concurrency, max(1, len(chunk_jobs)))) as ex:
+            futures = {ex.submit(run_one_chunk, job): idx for idx, job in enumerate(chunk_jobs)}
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    chunk_results[idx] = fut.result()
+                except Exception as e:
+                    log_error(f"[InfluxDB v3] Chunk worker error: {e}", e)
+                    chunk_results[idx] = []
+
+        truncated = sum(1 for r in chunk_results if len(r) >= query_limit)
+        if truncated:
+            log_warning(
+                f"[InfluxDB v3] {truncated} chunk(s) hit row limit ({query_limit}); result may be truncated"
+            )
+
+        for r in chunk_results:
+            raw_results.extend(r)
+
+        seen_ts = set()
+        deduped: List[Dict[str, Any]] = []
+        for rec in raw_results:
+            tr = rec.get("time") or rec.get("_time") or rec.get("ts")
+            key = str(tr) if tr is not None else None
+            if key and key in seen_ts:
+                continue
+            if key:
+                seen_ts.add(key)
+            deduped.append(rec)
+        raw_results = deduped
+        start_time_log = f"chunked({start_ts_num}..{end_ts_num})"
+        stop_time_log = "(chunked)"
+    else:
+        start_iso = datetime.fromtimestamp(start_ts_num, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        stop_iso = datetime.fromtimestamp(end_ts_num, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        start_time_log = start_iso
+        stop_time_log = stop_iso
+        cols = build_select_cols(measurements)
+        sql_query = (
+            f"SELECT {cols} FROM {IOX_TABLE}\n"
+            f"WHERE time >= {_influx_v3_sql_string_literal(start_iso)} AND time <= {_influx_v3_sql_string_literal(stop_iso)}\n"
+            f"  AND boat = {_influx_v3_sql_string_literal(boat)} AND level = {_influx_v3_sql_string_literal(level)}\n"
+            f"ORDER BY time\n"
+            f"LIMIT {query_limit}"
+        )
+        log_info(
+            f"[InfluxDB v3] SQL: db={influx_database}, boat={boat}, date={formatted_date}, level={level}, "
+            f"measurements={len(measurements)}, range={start_iso} to {stop_iso}"
+        )
+        try:
+            raw_results = _influx_v3_query_sql(origin, token, influx_database, sql_query, timeout_sec)
+        except Exception as e:
+            log_error(f"[InfluxDB v3] Query failed: {e}", e)
+            raw_results = []
+        if len(raw_results) >= query_limit:
+            log_warning(
+                f"[InfluxDB v3] Single query hit row limit ({query_limit}); result may be truncated"
+            )
+
+    df = _influx_v3_raw_rows_to_dataframe(raw_results, measurements)
+    return df, start_time_log, stop_time_log
+
+
+def _get_channel_values_influx_v2(
+    date: str,
+    source_name: str,
+    level: str,
+    eff_start: Optional[float],
+    eff_end: Optional[float],
+    formatted_date: str,
+    measurements: List[str],
+) -> Tuple[pd.DataFrame, str, str, str, str, str, str]:
+    """
+    Flux (Influx 2) fetch. Returns (df, boat, start_time_log, stop_time_log, influx_host, influx_database, influx_bucket).
+    """
+    dff = pd.DataFrame()
+    influx_token = os.getenv("INFLUX_TOKEN")
+    influx_host = os.getenv("INFLUX_HOST")
+    influx_database = os.getenv("INFLUX_DATABASE")
+    influx_bucket = os.getenv("INFLUX_BUCKET")
+
+    print(
+        f"[InfluxDB] Checking environment variables: HOST={'OK' if influx_host else 'MISSING'}, "
+        f"TOKEN={'OK' if influx_token else 'MISSING'}, DATABASE={'OK' if influx_database else 'MISSING'}, "
+        f"BUCKET={'OK' if influx_bucket else 'MISSING'}",
+        flush=True,
+    )
+
+    if not influx_token:
+        print(f"[InfluxDB] Debug: NODE_ENV={os.getenv('NODE_ENV')}, project_root={project_root}", flush=True)
+        print(f"[InfluxDB] Debug: Looking for .env files at: {base_env_path}, {local_env_path}", flush=True)
+        if local_env_path.exists():
+            print(f"[InfluxDB] Debug: .env.production.local file exists at {local_env_path}", flush=True)
+        else:
+            print(f"[InfluxDB] Debug: .env.production.local file NOT FOUND at {local_env_path}", flush=True)
+            print(
+                "[InfluxDB] Debug: In Docker, docker-compose should set env vars from .env.production.local",
+                flush=True,
+            )
+            print("[InfluxDB] Debug: Check if docker-compose is loading the file correctly", flush=True)
+
+    if not influx_token:
+        error_msg = f"INFLUX_TOKEN environment variable is not set. Query parameters: date={date}, source_name={source_name}"
+        print(f"ERROR: {error_msg}", flush=True)
+        log_error(error_msg)
+        return dff, "", "(n/a)", "(n/a)", "", "", ""
+    if not influx_host:
+        error_msg = f"INFLUX_HOST environment variable is not set. Query parameters: date={date}, source_name={source_name}"
+        print(f"ERROR: {error_msg}", flush=True)
+        log_error(error_msg)
+        return dff, "", "(n/a)", "(n/a)", "", "", ""
+    if not influx_database:
+        error_msg = f"INFLUX_DATABASE environment variable is not set. Query parameters: date={date}, source_name={source_name}"
+        print(f"ERROR: {error_msg}", flush=True)
+        log_error(error_msg)
+        return dff, "", "(n/a)", "(n/a)", "", "", ""
+    if not influx_bucket:
+        error_msg = f"INFLUX_BUCKET environment variable is not set. Query parameters: date={date}, source_name={source_name}"
+        print(f"ERROR: {error_msg}", flush=True)
+        log_error(error_msg)
+        return dff, "", "(n/a)", "(n/a)", "", "", ""
+
+    if not influx_host.startswith(("http://", "https://")):
+        influx_url = f"http://{influx_host}"
+    else:
+        influx_url = influx_host
+
+    boat = str(source_name)
+    try:
+        timeout_ms = int(os.getenv("INFLUX_TIMEOUT_MS") or "120000")
+    except ValueError:
+        timeout_ms = 120000
+    client = InfluxDBClient(
+        url=influx_url, token=influx_token, org=influx_database, timeout=timeout_ms
+    )
+    query_api = client.query_api()
+
+    CHUNK_THRESHOLD_SECONDS = 900
+    use_chunking = False
+    chunk_start_ts: Optional[float] = None
+    chunk_end_ts: Optional[float] = None
+    start_time = "(n/a)"
+    stop_time = "(n/a)"
+
+    if eff_start is not None and eff_end is not None:
+        time_range = eff_end - eff_start
+        if time_range > CHUNK_THRESHOLD_SECONDS:
+            use_chunking = True
+            chunk_start_ts = eff_start
+            chunk_end_ts = eff_end
+            print(
+                f"[InfluxDB] Time range {time_range}s ({time_range/60:.1f} minutes) exceeds "
+                f"{CHUNK_THRESHOLD_SECONDS}s threshold. Splitting into 1-hour chunks aligned to hour boundaries.",
+                flush=True,
+            )
+            log_warning(
+                f"[InfluxDB] Chunking query: {time_range}s range split into 1-hour chunks"
+            )
+
+    if use_chunking and chunk_start_ts is not None and chunk_end_ts is not None:
+        chunk_dfs: List[pd.DataFrame] = []
+        current_start = chunk_start_ts
+        while current_start < chunk_end_ts:
+            current_dt = datetime.fromtimestamp(current_start, tz=tz.tzutc())
+            if current_dt.minute != 0 or current_dt.second != 0 or current_dt.microsecond != 0:
+                next_hour = current_dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                current_end = min(next_hour.timestamp(), chunk_end_ts)
+            else:
+                next_hour = current_dt + timedelta(hours=1)
+                current_end = min(next_hour.timestamp(), chunk_end_ts)
+            chunk_start_time = datetime.fromtimestamp(current_start, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            chunk_stop_time = datetime.fromtimestamp(current_end, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            chunk_df = _execute_influx_query_chunk(
+                query_api,
+                influx_bucket,
+                influx_database,
+                boat,
+                formatted_date,
+                measurements,
+                level,
+                chunk_start_time,
+                chunk_stop_time,
+            )
+            if chunk_df is not None and not chunk_df.empty:
+                chunk_dfs.append(chunk_df)
+                print(
+                    f"[InfluxDB] Chunk {current_start} to {current_end}: retrieved {len(chunk_df)} rows",
+                    flush=True,
+                )
+            current_start = current_end
+        if len(chunk_dfs) > 0:
+            df = pd.concat(chunk_dfs, ignore_index=True)
+            df = df.drop_duplicates(subset=["ts"], keep="first")
+            df.sort_values(by=["ts"], inplace=True, ascending=True)
+            print(f"[InfluxDB] Merged {len(chunk_dfs)} chunks into {len(df)} total rows", flush=True)
+        else:
+            df = pd.DataFrame()
+    else:
+        if eff_start is not None and eff_end is not None:
+            start_time = datetime.fromtimestamp(eff_start, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            stop_time = datetime.fromtimestamp(eff_end, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        else:
+            start_time = f"{formatted_date}T00:00:00Z"
+            stop_time = f"{formatted_date}T23:59:59Z"
+        df = _execute_influx_query_chunk(
+            query_api,
+            influx_bucket,
+            influx_database,
+            boat,
+            formatted_date,
+            measurements,
+            level,
+            start_time,
+            stop_time,
+        )
+
+    if use_chunking and chunk_start_ts is not None and chunk_end_ts is not None:
+        start_time = f"chunked({chunk_start_ts}..{chunk_end_ts})"
+        stop_time = "(chunked)"
+
+    client.close()
+    return df, boat, start_time, stop_time, influx_host, influx_database, influx_bucket
+
+
 def get_dataset_timezone_for_date(
     api_token: str, class_name: str, project_id: str, date: str
 ) -> Optional[str]:
@@ -929,9 +1468,10 @@ def get_channel_values_influx(
     timezone: Optional[str] = None,
     level: str = 'strm',
     skipMissing: bool = True,
+    influx_version: Optional[Literal["2", "3"]] = None,
 ) -> pd.DataFrame:
     """
-    Retrieves channel data from InfluxDB.
+    Retrieves channel data from InfluxDB (v3 SQL API by default, or v2 Flux when requested).
 
     Args:
         date: Date in YYYYMMDD format (local calendar day when using implicit day range)
@@ -944,95 +1484,43 @@ def get_channel_values_influx(
             for Flux; None or UTC uses UTC calendar day (with warning). Also used for ``Datetime`` tz_convert.
         level: Data level filter ('strm' or 'log'). Defaults to 'strm'.
         skipMissing: If True (default), skip channels with no data. If False, include missing channels filled with np.nan.
+        influx_version: ``'2'`` (Flux + bucket) or ``'3'`` (HTTP SQL). If omitted, uses env ``INFLUX_QUERY_VERSION`` (default ``3``).
 
     Returns:
         DataFrame with channel data
     """
-    # Default to '1s' if rs is empty or None
+    try:
+        ver = _resolve_influx_query_version(influx_version)
+    except ValueError as e:
+        log_error(str(e))
+        return pd.DataFrame()
+
     if not rs or (isinstance(rs, str) and rs.strip() == ''):
         rs = '1s'
-    
+
     dff = pd.DataFrame()
-    
-    try:
-        # Get InfluxDB configuration from environment variables
-        # These should be set by docker-compose from .env.production.local
-        influx_token = os.getenv("INFLUX_TOKEN")
-        influx_host = os.getenv("INFLUX_HOST")
-        influx_database = os.getenv("INFLUX_DATABASE")
-        influx_bucket = os.getenv("INFLUX_BUCKET")
-        
-        # Debug: Log what we found (without exposing token value)
-        print(f"[InfluxDB] Checking environment variables: HOST={'OK' if influx_host else 'MISSING'}, TOKEN={'OK' if influx_token else 'MISSING'}, DATABASE={'OK' if influx_database else 'MISSING'}, BUCKET={'OK' if influx_bucket else 'MISSING'}", flush=True)
-        
-        if not influx_token:
-            # Additional debugging
-            print(f"[InfluxDB] Debug: NODE_ENV={os.getenv('NODE_ENV')}, project_root={project_root}", flush=True)
-            print(f"[InfluxDB] Debug: Looking for .env files at: {base_env_path}, {local_env_path}", flush=True)
-            if local_env_path.exists():
-                print(f"[InfluxDB] Debug: .env.production.local file exists at {local_env_path}", flush=True)
-            else:
-                print(f"[InfluxDB] Debug: .env.production.local file NOT FOUND at {local_env_path}", flush=True)
-                print(f"[InfluxDB] Debug: In Docker, docker-compose should set env vars from .env.production.local", flush=True)
-                print(f"[InfluxDB] Debug: Check if docker-compose is loading the file correctly", flush=True)
-        
-        # Validate required environment variables
-        if not influx_token:
-            error_msg = f"INFLUX_TOKEN environment variable is not set. Query parameters: date={date}, source_name={source_name}"
-            print(f"ERROR: {error_msg}", flush=True)
-            log_error(error_msg)
-            return dff
-        if not influx_host:
-            error_msg = f"INFLUX_HOST environment variable is not set. Query parameters: date={date}, source_name={source_name}"
-            print(f"ERROR: {error_msg}", flush=True)
-            log_error(error_msg)
-            return dff
-        if not influx_database:
-            error_msg = f"INFLUX_DATABASE environment variable is not set. Query parameters: date={date}, source_name={source_name}"
-            print(f"ERROR: {error_msg}", flush=True)
-            log_error(error_msg)
-            return dff
-        if not influx_bucket:
-            error_msg = f"INFLUX_BUCKET environment variable is not set. Query parameters: date={date}, source_name={source_name}"
-            print(f"ERROR: {error_msg}", flush=True)
-            log_error(error_msg)
-            return dff
-        
-        # Ensure influx_host has protocol
-        if not influx_host.startswith(('http://', 'https://')):
-            influx_url = f"http://{influx_host}"
-        else:
-            influx_url = influx_host
-        
-        # Map source_name to boat parameter
-        boat = str(source_name)
-        
-        # Convert date from YYYYMMDD to YYYY-MM-DD format
-        date_str = str(date)
-        if len(date_str) == 8 and date_str.isdigit():
-            formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-        else:
-            log_error(f"Invalid date format: {date_str}. Expected YYYYMMDD format.")
-            return dff
-        
-        # Create InfluxDB client
-        client = InfluxDBClient(url=influx_url, token=influx_token, org=influx_database, timeout=120000)
-        query_api = client.query_api()
-        
-        # Extract measurement names from channel_list (exclude time/meta columns)
-        measurements = [
-            ch["name"]
-            for ch in channel_list
-            if ch.get("name") and ch["name"] not in ("ts", "Datetime")
-        ]
 
-        if len(measurements) == 0:
-            log_warning("No measurements to query (only 'ts' / 'Datetime' in channel_list)")
-            client.close()
-            return dff
+    date_str = str(date)
+    if len(date_str) != 8 or not date_str.isdigit():
+        log_error(f"Invalid date format: {date_str}. Expected YYYYMMDD format.")
+        return dff
+    formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-        # Influx day range: interpret YYYYMMDD as local calendar day when timezone is non-UTC, else UTC day
-        if start_ts is None and end_ts is None:
+    measurements = [
+        ch["name"]
+        for ch in channel_list
+        if ch.get("name") and ch["name"] not in ("ts", "Datetime")
+    ]
+    if len(measurements) == 0:
+        log_warning("No measurements to query (only 'ts' / 'Datetime' in channel_list)")
+        return dff
+
+    had_explicit_range = start_ts is not None and end_ts is not None
+    eff_start: Optional[float] = start_ts
+    eff_end: Optional[float] = end_ts
+
+    if not had_explicit_range:
+        if eff_start is None and eff_end is None:
             influx_day_tz: Optional[str] = None
             if timezone and str(timezone).strip() and str(timezone).upper() != "UTC":
                 influx_day_tz = str(timezone).strip()
@@ -1047,8 +1535,8 @@ def get_channel_values_influx(
                         local_end = datetime.strptime(
                             f"{date_ymd} 23:59:59", "%Y-%m-%d %H:%M:%S"
                         ).replace(tzinfo=tz_info)
-                        start_ts = local_start.astimezone(tz.tzutc()).timestamp()
-                        end_ts = local_end.astimezone(tz.tzutc()).timestamp()
+                        eff_start = local_start.astimezone(tz.tzutc()).timestamp()
+                        eff_end = local_end.astimezone(tz.tzutc()).timestamp()
                     else:
                         log_warning(
                             f"Unknown timezone '{influx_day_tz}' for Influx day range; using UTC calendar day"
@@ -1057,100 +1545,45 @@ def get_channel_values_influx(
                     log_warning(
                         f"Could not build local day range for '{influx_day_tz}': {tz_err}; using UTC calendar day"
                     )
-                    start_ts = None
-                    end_ts = None
-            if start_ts is None and end_ts is None:
+                    eff_start = None
+                    eff_end = None
+            if eff_start is None and eff_end is None:
                 log_warning(
-                    "[InfluxDB] Using UTC calendar day for Flux range (pass a non-UTC IANA timezone for local day)"
+                    "[InfluxDB] Using UTC calendar day for range (pass a non-UTC IANA timezone for local day)"
                 )
 
-        # Check if we need to chunk the query (time range > 15 minutes)
-        CHUNK_THRESHOLD_SECONDS = 900  # 15 minutes
-        CHUNK_SIZE_SECONDS = 3600  # 1 hour
+    try:
+        influx_host = ""
+        influx_database = ""
+        influx_bucket = ""
+        boat = str(source_name)
 
-        use_chunking = False
-        chunk_start_ts = None
-        chunk_end_ts = None
-        start_time = "(n/a)"
-        stop_time = "(n/a)"
-
-        if start_ts is not None and end_ts is not None:
-            time_range = end_ts - start_ts
-            if time_range > CHUNK_THRESHOLD_SECONDS:
-                use_chunking = True
-                chunk_start_ts = start_ts
-                chunk_end_ts = end_ts
-                print(f"[InfluxDB] Time range {time_range}s ({time_range/60:.1f} minutes) exceeds {CHUNK_THRESHOLD_SECONDS}s threshold. Splitting into 1-hour chunks aligned to hour boundaries.", flush=True)
-                log_warning(f"[InfluxDB] Chunking query: {time_range}s range split into 1-hour chunks")
-        
-        if use_chunking:
-            # Execute queries for each chunk and merge results
-            # Chunks are aligned to hour boundaries (e.g., 10:00, 11:00, 12:00)
-            chunk_dfs = []
-            current_start = chunk_start_ts
-            
-            while current_start < chunk_end_ts:
-                # Calculate the start of the next hour for this chunk
-                current_dt = datetime.fromtimestamp(current_start, tz=tz.tzutc())
-                # If we're not already at the start of an hour, align to the next hour
-                if current_dt.minute != 0 or current_dt.second != 0 or current_dt.microsecond != 0:
-                    # Move to the start of the next hour
-                    next_hour = current_dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-                    current_end = min(next_hour.timestamp(), chunk_end_ts)
-                else:
-                    # Already at hour boundary, go to next hour
-                    next_hour = current_dt + timedelta(hours=1)
-                    current_end = min(next_hour.timestamp(), chunk_end_ts)
-                
-                # Execute query for this chunk
-                chunk_start_time = datetime.fromtimestamp(current_start, tz=tz.tzutc()).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                chunk_stop_time = datetime.fromtimestamp(current_end, tz=tz.tzutc()).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                
-                chunk_df = _execute_influx_query_chunk(
-                    query_api, influx_bucket, influx_database, boat, formatted_date,
-                    measurements, level, chunk_start_time, chunk_stop_time
-                )
-                
-                if chunk_df is not None and not chunk_df.empty:
-                    chunk_dfs.append(chunk_df)
-                    print(f"[InfluxDB] Chunk {current_start} to {current_end}: retrieved {len(chunk_df)} rows", flush=True)
-                
-                current_start = current_end
-            
-            # Merge all chunk results
-            if len(chunk_dfs) > 0:
-                df = pd.concat(chunk_dfs, ignore_index=True)
-                # Remove duplicates that might occur at chunk boundaries
-                df = df.drop_duplicates(subset=['ts'], keep='first')
-                # Sort by ts
-                df.sort_values(by=['ts'], inplace=True, ascending=True)
-                print(f"[InfluxDB] Merged {len(chunk_dfs)} chunks into {len(df)} total rows", flush=True)
-            else:
-                df = pd.DataFrame()
-        else:
-            # Original single query logic
-            # Determine time range
-            if start_ts is not None and end_ts is not None:
-                # Use specific timestamps
-                start_time = datetime.fromtimestamp(start_ts, tz=tz.tzutc()).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                stop_time = datetime.fromtimestamp(end_ts, tz=tz.tzutc()).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-            else:
-                # Use full day based on date
-                start_time = f"{formatted_date}T00:00:00Z"
-                stop_time = f"{formatted_date}T23:59:59Z"
-            
-            df = _execute_influx_query_chunk(
-                query_api, influx_bucket, influx_database, boat, formatted_date,
-                measurements, level, start_time, stop_time
+        if ver == "2":
+            df, boat, start_time, stop_time, influx_host, influx_database, influx_bucket = _get_channel_values_influx_v2(
+                date,
+                source_name,
+                level,
+                eff_start,
+                eff_end,
+                formatted_date,
+                measurements,
             )
+        else:
+            df, start_time, stop_time = _fetch_influx_v3_dataframe(
+                formatted_date,
+                boat,
+                level,
+                measurements,
+                eff_start,
+                eff_end,
+                had_explicit_range,
+            )
+            influx_host = os.getenv("INFLUX_HOST") or ""
+            influx_database = os.getenv("INFLUX_DATABASE") or ""
+            influx_bucket = "(Influx v3 — no bucket)"
 
-        if use_chunking and chunk_start_ts is not None and chunk_end_ts is not None:
-            start_time = f"chunked({chunk_start_ts}..{chunk_end_ts})"
-            stop_time = "(chunked)"
+        boat_log = boat or str(source_name)
 
-        # Close client
-        client.close()
-        
         if df is not None and not df.empty:
             # Dataset size check
             if len(df) > 10000000:
@@ -1281,15 +1714,31 @@ def get_channel_values_influx(
             return dff
         else:
             # Query succeeded but returned no data - log diagnostic info
-            warning_msg = f"No data returned from InfluxDB query for boat={boat}, level={level}, date={formatted_date}"
+            warning_msg = (
+                f"No data returned from InfluxDB v{ver} query for boat={boat_log}, "
+                f"level={level}, date={formatted_date}"
+            )
             print(f"WARNING: {warning_msg}", flush=True)
             log_warning(warning_msg)
-            
-            query_params = f"Query parameters: bucket={influx_bucket}, org={influx_database}, time_range={start_time} to {stop_time}, measurements={len(measurements)}"
+
+            if ver == "2":
+                query_params = (
+                    f"Query parameters: bucket={influx_bucket}, org={influx_database}, "
+                    f"time_range={start_time} to {stop_time}, measurements={len(measurements)}"
+                )
+                conn_info = (
+                    f"Connection: host={influx_host}, database={influx_database}, bucket={influx_bucket}"
+                )
+            else:
+                query_params = (
+                    f"Query parameters: db={influx_database}, influx=v3, "
+                    f"time_range={start_time} to {stop_time}, measurements={len(measurements)}"
+                )
+                conn_info = (
+                    f"Connection: host={influx_host}, database={influx_database} (Influx v3)"
+                )
             print(f"WARNING: {query_params}", flush=True)
             log_warning(query_params)
-            
-            conn_info = f"Connection: host={influx_host}, database={influx_database}, bucket={influx_bucket}"
             print(f"WARNING: {conn_info}", flush=True)
             log_warning(conn_info)
             
@@ -1307,7 +1756,19 @@ def get_channel_values_influx(
         log_error(f"Error in get_channel_values_influx: {str(e)}", e)
         return dff
 
-def get_channel_values(api_token: str, class_name: str, project_id: str, date: str, source_name: str, channel_list: List[Dict[str, str]], rs: str = '1s', start_ts: Optional[float] = None, end_ts: Optional[float] = None, timezone: Optional[str] = None) -> pd.DataFrame:
+def get_channel_values(
+    api_token: str,
+    class_name: str,
+    project_id: str,
+    date: str,
+    source_name: str,
+    channel_list: List[Dict[str, str]],
+    rs: str = '1s',
+    start_ts: Optional[float] = None,
+    end_ts: Optional[float] = None,
+    timezone: Optional[str] = None,
+    influx_version: Optional[Literal["2", "3"]] = None,
+) -> pd.DataFrame:
     """
     Retrieves channel data from the file server API.
     
@@ -1328,6 +1789,8 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
             For Influx fallbacks with a full-day query (no ``start_ts``/``end_ts``), if this is
             missing or ``UTC``, the dataset timezone is resolved from the app API and passed to Influx
             so the Flux window matches the local calendar date.
+        influx_version: ``'2'`` (Flux) or ``'3'`` (SQL API) for Influx fallbacks; default from
+            ``INFLUX_QUERY_VERSION`` (defaults to ``3``).
 
     Returns:
         DataFrame with channel data (already resampled if rs provided)
@@ -1570,6 +2033,7 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
                         end_ts=end_ts,
                         timezone=influx_timezone,
                         level='strm',  # Use 'strm' level by default
+                        influx_version=influx_version,
                     )
                     
                     if influx_df is not None and not influx_df.empty and 'ts' in influx_df.columns:
@@ -1619,6 +2083,7 @@ def get_channel_values(api_token: str, class_name: str, project_id: str, date: s
                 end_ts=end_ts,
                 timezone=influx_timezone,
                 level='strm',  # Use 'strm' level by default
+                influx_version=influx_version,
             )
             
             if influx_df is not None and not influx_df.empty:

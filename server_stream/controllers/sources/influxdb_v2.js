@@ -138,7 +138,7 @@ class InfluxDBSource extends EventEmitter {
    */
   async connect() {
     if (this.isConnecting) {
-      warn(`[InfluxDBSource] Source ${this.source_id} already connecting`);
+      warn(`[InfluxDBSource_v2] Source ${this.source_id} already connecting`);
       return;
     }
 
@@ -185,7 +185,7 @@ class InfluxDBSource extends EventEmitter {
       this.bucket = influxBucket;
       this.org = influxDatabase;
 
-      log(`[InfluxDBSource] Connecting source ${this.source_id} to InfluxDB 2.x: host=${influxUrl}, org=${influxDatabase}, bucket=${influxBucket}, boat=${this.sourceFilter || 'all'}`);
+      log(`[InfluxDBSource_v2] Connecting source ${this.source_id} to InfluxDB 2.x: host=${influxUrl}, org=${influxDatabase}, bucket=${influxBucket}, boat=${this.sourceFilter || 'all'}`);
 
       // Initialize InfluxDB client
       this.influxClient = new InfluxDB({
@@ -200,7 +200,7 @@ class InfluxDBSource extends EventEmitter {
 
       this.isConnecting = false;
       connectionManager.updateState(this.source_id, 'connected');
-      log(`[InfluxDBSource] Source ${this.source_id} connected to InfluxDB 2.x`);
+      log(`[InfluxDBSource_v2] Source ${this.source_id} connected to InfluxDB 2.x`);
 
       // Start polling if configured
       const pollInterval = this.config.pollInterval || 1000; // Default 1 second
@@ -210,7 +210,7 @@ class InfluxDBSource extends EventEmitter {
 
     } catch (err) {
       this.isConnecting = false;
-      error(`[InfluxDBSource] Failed to connect source ${this.source_id}:`, err.message);
+      error(`[InfluxDBSource_v2] Failed to connect source ${this.source_id}:`, err.message);
       connectionManager.updateState(this.source_id, 'error', err);
       this.emit('error', err);
 
@@ -300,7 +300,7 @@ class InfluxDBSource extends EventEmitter {
     this.baseQuery = query;
     this.pollIntervalMs = interval;
 
-    log(`[InfluxDBSource] Starting polling for source ${this.source_id} every ${interval}ms`);
+    log(`[InfluxDBSource_v2] Starting polling for source ${this.source_id} every ${interval}ms`);
 
     // Initialize: get last timestamp from Redis
     this.initializeLastTimestamp();
@@ -389,7 +389,7 @@ class InfluxDBSource extends EventEmitter {
           const queryInfo = this.lastDataTimestamp 
             ? `querying from ${timeRangeStart} (lastDataTimestamp: ${new Date(this.lastDataTimestamp).toISOString()})`
             : `querying from ${timeRangeStart} (no previous data)`;
-          debug(`[InfluxDBSource] Source ${this.source_id} ${queryInfo}`);
+          debug(`[InfluxDBSource_v2] Source ${this.source_id} ${queryInfo}`);
         }
 
         // Track if query returns new data (will be set by queryData if data is emitted)
@@ -433,7 +433,7 @@ class InfluxDBSource extends EventEmitter {
         
         // OPTIMIZED: Reduce logging - only log every 10th query completion
         if (!this.queryCount || this.queryCount % 10 === 0) {
-          debug(`[InfluxDBSource] Source ${this.source_id} query completed`);
+          debug(`[InfluxDBSource_v2] Source ${this.source_id} query completed`);
         }
         this.lastQueryTime = Date.now();
       } catch (err) {
@@ -450,7 +450,7 @@ class InfluxDBSource extends EventEmitter {
           }
         }
         
-        error(`[InfluxDBSource] Error polling source ${this.source_id}:`, err.message);
+        error(`[InfluxDBSource_v2] Error polling source ${this.source_id}:`, err.message);
         this.emit('error', err);
       }
     }, interval);
@@ -463,7 +463,7 @@ class InfluxDBSource extends EventEmitter {
   parseTimeRange(timeRange) {
     const match = timeRange.match(/^(\d+)([smhd])$/);
     if (!match) {
-      warn(`[InfluxDBSource] Invalid timeRange format: ${timeRange}, using default 1 minute`);
+      warn(`[InfluxDBSource_v2] Invalid timeRange format: ${timeRange}, using default 1 minute`);
       return 60000; // Default to 1 minute
     }
     
@@ -487,18 +487,18 @@ class InfluxDBSource extends EventEmitter {
   async initializeLastTimestamp() {
     try {
       if (!this.source_name) {
-        warn(`[InfluxDBSource] Cannot initialize last timestamp - source_name not set for source_id ${this.source_id}`);
+        warn(`[InfluxDBSource_v2] Cannot initialize last timestamp - source_name not set for source_id ${this.source_id}`);
         return;
       }
       const latestTimestamp = await redisStorage.getLatestTimestamp(this.source_name);
       if (latestTimestamp) {
         this.lastDataTimestamp = latestTimestamp;
-        log(`[InfluxDBSource] Initialized last timestamp from Redis for source_name "${this.source_name}": ${latestTimestamp} (${new Date(latestTimestamp).toISOString()})`);
+        log(`[InfluxDBSource_v2] Initialized last timestamp from Redis for source_name "${this.source_name}": ${latestTimestamp} (${new Date(latestTimestamp).toISOString()})`);
       } else {
-        log(`[InfluxDBSource] No existing data in Redis for source_name "${this.source_name}" (source_id ${this.source_id}), will query from config timeRange`);
+        log(`[InfluxDBSource_v2] No existing data in Redis for source_name "${this.source_name}" (source_id ${this.source_id}), will query from config timeRange`);
       }
     } catch (err) {
-      warn(`[InfluxDBSource] Error initializing last timestamp for source_name "${this.source_name}":`, err.message);
+      warn(`[InfluxDBSource_v2] Error initializing last timestamp for source_name "${this.source_name}":`, err.message);
     }
   }
 
@@ -514,10 +514,10 @@ class InfluxDBSource extends EventEmitter {
       const latestTimestamp = await redisStorage.getLatestTimestamp(this.source_name);
       if (latestTimestamp && (!this.lastDataTimestamp || latestTimestamp > this.lastDataTimestamp)) {
         this.lastDataTimestamp = latestTimestamp;
-        log(`[InfluxDBSource] Source_name "${this.source_name}" (source_id ${this.source_id}) updated last timestamp from Redis: ${latestTimestamp} (${new Date(latestTimestamp).toISOString()})`);
+        log(`[InfluxDBSource_v2] Source_name "${this.source_name}" (source_id ${this.source_id}) updated last timestamp from Redis: ${latestTimestamp} (${new Date(latestTimestamp).toISOString()})`);
       }
     } catch (err) {
-      warn(`[InfluxDBSource] Source_name "${this.source_name}" (source_id ${this.source_id}) error updating last timestamp:`, err.message);
+      warn(`[InfluxDBSource_v2] Source_name "${this.source_name}" (source_id ${this.source_id}) error updating last timestamp:`, err.message);
     }
   }
 
@@ -588,7 +588,7 @@ class InfluxDBSource extends EventEmitter {
                     const convertedValue = value / 10000000;
                     dataPoint.data[key] = convertedValue;
                     if (self.queryCount % 100 === 0) { // Log occasionally
-                      debug(`[InfluxDBSource] Converting GPS coordinate ${key}: ${value} -> ${convertedValue} (divided by 10^7)`);
+                      debug(`[InfluxDBSource_v2] Converting GPS coordinate ${key}: ${value} -> ${convertedValue} (divided by 10^7)`);
                     }
                   } else {
                     // Try to parse as number, otherwise keep as string
@@ -599,7 +599,7 @@ class InfluxDBSource extends EventEmitter {
               }
             }
           } catch (err) {
-            warn(`[InfluxDBSource] Error processing row: ${err.message}`);
+            warn(`[InfluxDBSource_v2] Error processing row: ${err.message}`);
             // Continue processing other rows
           }
         },
@@ -626,7 +626,7 @@ class InfluxDBSource extends EventEmitter {
             if (dataPoints.length === 0) {
               // Only log empty queries occasionally
               if (self.queryCount % 20 === 0) {
-                debug(`[InfluxDBSource] Source ${self.source_id} query returned no data points`);
+                debug(`[InfluxDBSource_v2] Source ${self.source_id} query returned no data points`);
               }
             } else {
               // Sort data points by timestamp to ensure chronological order
@@ -658,7 +658,7 @@ class InfluxDBSource extends EventEmitter {
               
               // OPTIMIZED: Reduce logging - only log every 10th query
               if (self.queryCount % 10 === 0 && (newPointsCount > 0 || skippedPointsCount > 0)) {
-                debug(`[InfluxDBSource] Source ${self.source_id} emitted ${newPointsCount} new points, skipped ${skippedPointsCount} old points (total: ${dataPoints.length})`);
+                debug(`[InfluxDBSource_v2] Source ${self.source_id} emitted ${newPointsCount} new points, skipped ${skippedPointsCount} old points (total: ${dataPoints.length})`);
               }
             }
             
@@ -667,7 +667,7 @@ class InfluxDBSource extends EventEmitter {
               self.lastDataTimestamp = maxTimestamp;
               // OPTIMIZED: Only log timestamp updates occasionally
               if (self.queryCount % 10 === 0) {
-                debug(`[InfluxDBSource] Source ${self.source_id} updated lastDataTimestamp to ${maxTimestamp} (${new Date(maxTimestamp).toISOString()})`);
+                debug(`[InfluxDBSource_v2] Source ${self.source_id} updated lastDataTimestamp to ${maxTimestamp} (${new Date(maxTimestamp).toISOString()})`);
               }
             }
 
@@ -689,7 +689,7 @@ class InfluxDBSource extends EventEmitter {
     if (this.pollInterval) {
       clearInterval(this.pollInterval);
       this.pollInterval = null;
-      log(`[InfluxDBSource] Source ${this.source_id} polling interval cleared`);
+      log(`[InfluxDBSource_v2] Source ${this.source_id} polling interval cleared`);
     }
 
     // Clean up InfluxDB client connection
@@ -704,7 +704,7 @@ class InfluxDBSource extends EventEmitter {
     this.lastQueryTime = null;
 
     connectionManager.updateState(this.source_id, 'disconnected');
-    log(`[InfluxDBSource] Source ${this.source_id} disconnected from InfluxDB 2.x`);
+    log(`[InfluxDBSource_v2] Source ${this.source_id} disconnected from InfluxDB 2.x`);
   }
 
   /**

@@ -1,6 +1,6 @@
 /**
- * Copy SQLite WASM worker files from huni_db dist to public directory
- * This ensures the worker files are available during production builds
+ * Copy SQLite WASM worker files into static-pwa/assets (Vite publicDir).
+ * Ensures /assets/sqlite3.wasm and worker scripts are served in dev and copied to dist.
  */
 
 import { copyFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
@@ -13,7 +13,7 @@ const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, '..');
 const huniDbDistDir = join(projectRoot, 'libs', 'huni_db', 'dist', 'assets');
 const nodeModulesDir = join(projectRoot, 'node_modules', '@sqlite.org', 'sqlite-wasm', 'sqlite-wasm', 'jswasm');
-const targetDir = join(projectRoot, 'public', 'assets');
+const targetDir = join(projectRoot, 'static-pwa', 'assets');
 
 // Determine source directory - prefer huni_db dist, fallback to node_modules
 let sourceDir = null;
@@ -44,7 +44,7 @@ try {
   // Create target directory if it doesn't exist
   if (!existsSync(targetDir)) {
     mkdirSync(targetDir, { recursive: true });
-    console.log('✓ Created public/assets directory');
+    console.log('✓ Created static-pwa/assets directory');
   }
 
   // Copy all SQLite worker and WASM files (and their source maps if they exist)
@@ -122,7 +122,7 @@ try {
     process.exit(1);
   }
 
-  console.log(`✓ Copied ${copiedCount} SQLite file(s) to public/assets`);
+  console.log(`✓ Copied ${copiedCount} SQLite file(s) to static-pwa/assets`);
 } catch (error) {
   console.error('❌ Error copying SQLite worker files:', error.message);
   process.exit(1);

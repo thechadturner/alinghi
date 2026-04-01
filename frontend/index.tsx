@@ -282,6 +282,20 @@ if (import.meta.env.DEV && !(root instanceof HTMLElement)) {
 debug('[App Init] Rendering app...');
 render(() => <App />, root);
 
+// Offline shell: register service worker in production builds (stable /sw.js from static-pwa/)
+if (import.meta.env.PROD && typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register('/sw.js', { scope: '/' })
+      .then((reg) => {
+        debug('[App Init] Service worker registered', reg.scope);
+      })
+      .catch((err) => {
+        warn('[App Init] Service worker registration failed', err);
+      });
+  });
+}
+
 // Flush all HuniDB databases when app closes to ensure data is persisted
 // Lazy load huniDBStore only when needed (pagehide handlers)
 // This prevents blocking initial load, especially on mobile devices

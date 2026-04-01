@@ -18,6 +18,7 @@ export default function Layout(props: { children?: any }) {
   const isIndexRoute = () => location.pathname === "/";
   // Dashboard renders its own header so we don't duplicate
   const isDashboardRoute = () => location.pathname === "/dashboard";
+  const isTaggerRoute = () => location.pathname === "/tagger";
   
   // Legal pages that don't need header (they have their own styling)
   const isLegalPage = () => {
@@ -81,7 +82,7 @@ export default function Layout(props: { children?: any }) {
   
   return (
     <>
-      <Show when={!isWindowRoute() && !isIndexRoute() && !isLegalPage() && !isDashboardRoute()}>
+      <Show when={!isWindowRoute() && !isIndexRoute() && !isLegalPage() && !isDashboardRoute() && !isTaggerRoute()}>
         <Header />
       </Show>
       <Suspense fallback={<LoadingOverlay fullScreen message="Loading..." />}>

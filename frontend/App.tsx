@@ -40,6 +40,7 @@ const UploadRaceCourse = lazy(() => import("@pages/UploadRaceCourse"));
 const UploadDatasetsRoute = lazy(() => import("@pages/UploadDatasetsRoute"));
 const Window = lazy(() => import("@pages/Window"));
 const Dashboard = lazy(() => import("@pages/Dashboard"));
+const Tagger = lazy(() => import("@pages/Tagger"));
 
 import { registerSelectionStoreCleanup } from "@store/selectionStore";
 import { registerPlaybackStoreCleanup, initializeSelectionEffect, initializeManualTimeChangeEffect } from "@store/playbackStore";
@@ -269,6 +270,7 @@ function App() {
         <Route path="/window" component={Window} />
 
         <Route path="/dashboard" component={Dashboard} />
+        <Route path="/tagger" component={Tagger} />
       </Router>
     </>
   );

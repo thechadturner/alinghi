@@ -225,6 +225,8 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   
   return {
+    // Service worker + other static root files (copied to dist as-is)
+    publicDir: resolve(repoRoot, 'static-pwa'),
     plugins: [
       // Transform solid-icons to remove React references
       transformSolidIconsPlugin(),
@@ -553,6 +555,7 @@ export default defineConfig(({ mode }) => {
       '@utils': resolve(__dirname, 'frontend/utils'),
       '@styles': resolve(__dirname, 'frontend/styles'),
       '@config': resolve(__dirname, 'frontend/config'),
+      '@services': resolve(__dirname, 'frontend/services'),
       // Always use built HuniDB distribution for the main application
       '@hunico/hunidb': resolve(__dirname, 'libs/huni_db/dist/index.js'),
     },

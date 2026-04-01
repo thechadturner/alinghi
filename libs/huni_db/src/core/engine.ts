@@ -111,12 +111,11 @@ export class SQLiteEngine {
         print: (msg: string) => defaultLogger.debug('SQLite:', msg),
         printErr: (msg: string) => defaultLogger.error('SQLite error:', msg),
         // Ensure worker / WASM assets resolve correctly when served by Vite
-        // In Vite, files in the `public` directory are served from the root,
-        // so `public/assets/sqlite3-opfs-async-proxy.js` is available at
-        // `/assets/sqlite3-opfs-async-proxy.js` (no `/public` prefix).
+        // Vite `publicDir` is static-pwa/; copy-sqlite-workers.js places files in static-pwa/assets,
+        // so e.g. `sqlite3-opfs-async-proxy.js` is served at `/assets/sqlite3-opfs-async-proxy.js`.
         locateFile: (filename: string): string => {
-          // Strip /public/ prefix if present (files in public/ are served at root)
-          // Vite serves files from public/ directory at the root path
+          // Strip /public/ prefix if present (legacy paths; static root is Vite publicDir)
+          // Vite serves publicDir contents at the site root
           // Handle query parameters by splitting on '?'
           const parts = filename.split('?');
           const pathPart: string = parts[0] || filename;
@@ -131,48 +130,32 @@ export class SQLiteEngine {
           
           // Extract just the filename for matching (without query params)
           const basename: string = cleanPath.split('/').pop() || cleanPath;
-          
-          // Route known SQLite worker assets through the /assets/ path
-          // If the path already includes /assets/, preserve it; otherwise add it
-          if (basename.startsWith('sqlite3-opfs-async-proxy')) {
-            // If cleanPath already starts with /assets/, use it as-is
+
+          // Route sqlite3.wasm and official sqlite worker scripts to /assets/.
+          // Those files are copied to static-pwa/assets by scripts/copy-sqlite-workers.js.
+          //
+          // Do not use import.meta.env.PROD here: this package is prebuilt (libs/huni_db/dist),
+          // so PROD is fixed at library build time, not at app dev/prod runtime. That used to
+          // drop the /assets/ branch (dead code) and leave relative "sqlite3.wasm" to resolve
+          // against the chunk URL — where the wasm file does not exist.
+          const isSqlitePackagedAsset =
+            basename === 'sqlite3.wasm' ||
+            (basename.startsWith('sqlite3-') && basename.endsWith('.js'));
+
+          if (isSqlitePackagedAsset) {
+            if (cleanPath.startsWith('http')) {
+              return queryPart ? `${cleanPath}?${queryPart}` : cleanPath;
+            }
             if (cleanPath.startsWith('/assets/') || cleanPath.startsWith('assets/')) {
               const result = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
-              // Preserve query parameters if they were present
               return queryPart ? `${result}?${queryPart}` : result;
             }
-            // Otherwise, route to /assets/
-            const result = `/assets/${basename}`;
-            // Preserve query parameters if they were present
-            return queryPart ? `${result}?${queryPart}` : result;
-          }
-          
-          // For WASM files: The @sqlite.org/sqlite-wasm package expects to find
-          // sqlite3.wasm relative to where the JS module is loaded from.
-          // In production, WASM files are copied to /assets/ by copy-sqlite-workers.js
-          // In dev, Vite serves node_modules at /node_modules/
-          if (basename === 'sqlite3.wasm') {
-            // If filename is already absolute or a URL, return as-is (but strip /public/ if present)
-            if (cleanPath.startsWith('/') || cleanPath.startsWith('http')) {
+            if (cleanPath.startsWith('/')) {
               const result = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`;
-              // Preserve query parameters if they were present
               return queryPart ? `${result}?${queryPart}` : result;
             }
-            
-            // Check if we're in production (import.meta.env.PROD) or dev mode
-            const isProduction = import.meta.env.PROD;
-            
-            if (isProduction) {
-              // In production, WASM files are in /assets/ (copied by copy-sqlite-workers.js)
-              const result = `/assets/${basename}`;
-              // Preserve query parameters if they were present
-              return queryPart ? `${result}?${queryPart}` : result;
-            } else {
-              // In dev, use Vite's node_modules resolution
-              const result = `/node_modules/@sqlite.org/sqlite-wasm/sqlite-wasm/jswasm/${basename}`;
-              // Preserve query parameters if they were present
-              return queryPart ? `${result}?${queryPart}` : result;
-            }
+            const result = `/assets/${basename}`;
+            return queryPart ? `${result}?${queryPart}` : result;
           }
 
           // Fallback: return cleaned path (with /public/ stripped) or original if no change

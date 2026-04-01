@@ -694,16 +694,33 @@ exports.Verify = async (req, res) => {
     // If user has matched_project_id from email rules OR is in users_pending, create "member" subscription; otherwise "free"
     const subscriptionType = (matchedProjectId || (pendingUser && pendingUser.length > 0)) ? 'member' : 'free';
     
-    // Create subscription for the new user
-    const subscriptionSql = `INSERT INTO admin.user_subscriptions (user_id, subscription_type, status, end_date) VALUES ($1, $2, $3, NOW() + INTERVAL '1 year')`;
-    const subscriptionParams = [newUser[0].user_id, subscriptionType, 'active'];
-    const subscriptionResult = await db.executeCommand(subscriptionSql, subscriptionParams);
-    
-    if (!subscriptionResult) {
-      error('Failed to create subscription for new user');
-      // Don't fail verification if subscription creation fails, just log it
+    // Create subscription for the new user (same columns as users.updateSubscription — partial INSERTs can fail on some DBs)
+    const subscriptionSql = `
+      INSERT INTO admin.user_subscriptions (user_id, subscription_type, status, start_date, end_date, auto_renew)
+      VALUES ($1, $2, 'active', CURRENT_DATE, (CURRENT_DATE + INTERVAL '1 year')::date, false)
+      RETURNING id`;
+    const subscriptionRows = await db.getRows(subscriptionSql, [newUser[0].user_id, subscriptionType]);
+
+    if (!subscriptionRows || subscriptionRows.length === 0) {
+      error(
+        'Failed to create subscription for new user; rolling back user row. user_id=',
+        newUser[0].user_id,
+        'subscription_type=',
+        subscriptionType
+      );
+      const rollbackSql = `DELETE FROM admin.users WHERE user_id = $1`;
+      await db.executeCommand(rollbackSql, [newUser[0].user_id]);
+      return sendResponse(
+        res,
+        info,
+        500,
+        false,
+        'Could not complete account setup. Please try verifying your email again, or contact support if this persists.',
+        null,
+        true
+      );
     }
-    
+
     log(`Created default '${subscriptionType}' subscription for new user: ${newUser[0].user_id}`);
     
     // If matched_project_id exists, add user to project with "reader" permission
