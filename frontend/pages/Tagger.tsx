@@ -3,6 +3,7 @@ import { createSignal, onMount, onCleanup, For, Show, createEffect, createMemo }
 import { useNavigate, useSearchParams } from '@solidjs/router';
 import { authManager } from '@utils/authManager';
 import { user } from '@store/userStore';
+import { FiSettings } from 'solid-icons/fi';
 import { error as logError, debug, warn } from '@utils/console';
 import {
   newLocalClientId,
@@ -64,8 +65,11 @@ type TaggerTestSession = {
   starterUserId: string | null;
 };
 
-/** Server / DB often returns timestamps with a different ISO shape than `Date.toISOString()`. */
-function taggerTimestampsLikelySame(a: string | null | undefined, b: string | null | undefined): boolean {
+/** Match session to row after sync; server `start_time` can skew vs local ISO. */
+const TAGGER_TEST_START_MATCH_MS = 300_000;
+
+/** Loose match for linking session to a row after sync (server may normalize start_time). */
+function taggerTestStartTimesLikelySame(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) {
     return false;
   }
@@ -77,11 +81,22 @@ function taggerTimestampsLikelySame(a: string | null | undefined, b: string | nu
   if (Number.isNaN(ta) || Number.isNaN(tb)) {
     return false;
   }
-  return Math.abs(ta - tb) < 3000;
+  return Math.abs(ta - tb) < TAGGER_TEST_START_MATCH_MS;
 }
 
 function taggerOpenTestMatchesSession(e: TaggerStoredEvent, sess: TaggerTestSession): boolean {
-  return e.clientId === sess.clientId || taggerTimestampsLikelySame(e.start_time, sess.startTimeIso);
+  return e.clientId === sess.clientId || taggerTestStartTimesLikelySame(e.start_time, sess.startTimeIso);
+}
+
+function taggerStarterUserIdFromRow(
+  row: TaggerStoredEvent,
+  me: string | null
+): string | null {
+  const uid = row.user_id;
+  if (uid != null && String(uid).trim() !== '') {
+    return String(uid);
+  }
+  return me;
 }
 
 const PRESETS: readonly PresetDef[] = [
@@ -152,10 +167,13 @@ function taggerIsTestStarter(sess: TaggerTestSession | null, me: Record<string, 
     return false;
   }
   const myId = currentUserIdString(me ?? null);
-  if (sess.starterUserId == null) {
+  if (myId == null || myId === '') {
     return true;
   }
-  return sess.starterUserId === myId;
+  if (sess.starterUserId == null || sess.starterUserId === '') {
+    return true;
+  }
+  return String(sess.starterUserId) === String(myId);
 }
 
 function TaggerQuickPresetButton(props: {
@@ -305,20 +323,32 @@ function taggerBubbleBodyText(row: TaggerStoredEvent, testPhase?: 'start' | 'end
   const et = row.event_type.toUpperCase();
   const parsed = taggerParseSailCrewJson(row.comment);
   if (et === 'SAILS' && parsed) {
-    const m = (parsed.Mainsail ?? '').trim();
-    const h = (parsed.Headsail ?? '').trim();
-    const parts = [m, h].filter((x) => x !== '' && x !== 'NA');
-    return parts.length > 0 ? `Sails: ${parts.join(' ')}` : 'Sails: NA';
+    const sailVal = (raw: string | undefined): string => {
+      const t = (raw ?? '').trim();
+      return t === '' || t === 'NA' ? 'NA' : t;
+    };
+    const m = sailVal(parsed.Mainsail);
+    const h = sailVal(parsed.Headsail);
+    if (m === 'NA' && h === 'NA') {
+      return 'Sails Undefined';
+    }
+    return `Mainsail: ${m}, Headsail: ${h}`;
   }
   if (et === 'CREW' && parsed) {
-    const letters: string[] = [];
-    for (const key of TAGGER_CREW_FIELD_KEYS) {
-      const v = parsed[key]?.trim();
-      if (v && v !== 'NA') {
-        letters.push(v.charAt(0).toUpperCase());
-      }
+    const crewVal = (raw: string | undefined): string => {
+      const t = (raw ?? '').trim();
+      return t === '' || t === 'NA' ? 'NA' : t;
+    };
+    const allCrewNa = TAGGER_CREW_FIELD_KEYS.every((key) => crewVal(parsed[key]) === 'NA');
+    if (allCrewNa) {
+      return 'Crew Undefined';
     }
-    return letters.length > 0 ? `Crew: ${letters.join(' ')}` : 'Crew: —';
+    const parts = TAGGER_CREW_FIELD_KEYS.map((key) => {
+      const v = crewVal(parsed[key]);
+      const label = key === 'Strategist' ? 'Strategy' : key;
+      return `${label}: ${v}`;
+    });
+    return parts.join(', ');
   }
   return row.comment || '—';
 }
@@ -522,6 +552,19 @@ function timestampsPointWindowFromPress(press: Date): {
   };
 }
 
+/** Event types that use a single focus time → point window (Comment, Job, Flag, Nice, Good moment). */
+const TAGGER_FOCUS_TIME_EVENT_TYPES = new Set([
+  'COMMENT',
+  'JOB',
+  'FLAG',
+  'NICE',
+  'GOOD_BALANCE',
+]);
+
+function taggerEventTypeUsesFocusTime(et: string): boolean {
+  return TAGGER_FOCUS_TIME_EVENT_TYPES.has(et.trim().toUpperCase());
+}
+
 type NewTagTimes = {
   focus_time: string;
   start_time: string | null;
@@ -529,7 +572,7 @@ type NewTagTimes = {
   date: string;
 };
 
-/** Times for a new row from the same fields as edit (COMMENT = focus-driven point window). */
+/** Times for a new row from the same fields as edit (focus-driven point window for comment-like types). */
 function buildTimesForNewFromForm(
   typeStr: string,
   focusLocalValue: string,
@@ -537,7 +580,7 @@ function buildTimesForNewFromForm(
   endLocalValue: string
 ): NewTagTimes {
   const et = typeStr.trim().toUpperCase();
-  if (et === 'COMMENT') {
+  if (taggerEventTypeUsesFocusTime(et)) {
     const iso = datetimeLocalValueToIso(focusLocalValue.trim());
     const base =
       iso && !Number.isNaN(new Date(iso).getTime()) ? new Date(iso) : new Date();
@@ -569,6 +612,8 @@ const TAGGER_MOBILE_SWIPE_MQ = '(max-width: 899px)';
 /** Matches CSS: two-column Quick tag + Session Tags (not stacked compose-only). */
 const TAGGER_DESKTOP_TWO_COL_MQ = '(min-width: 900px)';
 const TAGGER_SWIPE_MIN_DX = 56;
+const TAGGER_LONG_PRESS_MS = 2000;
+const TAGGER_LONG_PRESS_MOVE_PX = 12;
 
 function taggerMobileSwipeEnabled(): boolean {
   return typeof window !== 'undefined' && window.matchMedia(TAGGER_MOBILE_SWIPE_MQ).matches;
@@ -604,6 +649,99 @@ type TaggerMessageBubbleProps = {
 function TaggerMessageBubble(props: TaggerMessageBubbleProps) {
   let touchStartX = 0;
   let touchStartY = 0;
+
+  let longPressTimer: number | undefined;
+  let longPressGestureActive = false;
+  let longPressPid = -1;
+  let longPressStartX = 0;
+  let longPressStartY = 0;
+  let longPressMoveHandler: ((ev: PointerEvent) => void) | undefined;
+  let longPressUpHandler: ((ev: PointerEvent) => void) | undefined;
+
+  const clearLongPressTimer = () => {
+    if (longPressTimer !== undefined) {
+      clearTimeout(longPressTimer);
+      longPressTimer = undefined;
+    }
+  };
+
+  const detachLongPressWindowListeners = () => {
+    if (longPressMoveHandler && longPressUpHandler) {
+      window.removeEventListener('pointermove', longPressMoveHandler);
+      window.removeEventListener('pointerup', longPressUpHandler);
+      window.removeEventListener('pointercancel', longPressUpHandler);
+    }
+    longPressMoveHandler = undefined;
+    longPressUpHandler = undefined;
+  };
+
+  const cancelLongPressGesture = () => {
+    if (!longPressGestureActive) {
+      return;
+    }
+    longPressGestureActive = false;
+    longPressPid = -1;
+    clearLongPressTimer();
+    detachLongPressWindowListeners();
+  };
+
+  const onBubblePointerDown = (e: PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) {
+      return;
+    }
+    const el = e.target as HTMLElement | null;
+    if (el?.closest?.('button, a[href], input, textarea, select, label')) {
+      return;
+    }
+
+    cancelLongPressGesture();
+
+    const capturedPid = e.pointerId;
+    longPressGestureActive = true;
+    longPressPid = capturedPid;
+    longPressStartX = e.clientX;
+    longPressStartY = e.clientY;
+
+    const onWindowPointerMove = (ev: PointerEvent) => {
+      if (!longPressGestureActive || ev.pointerId !== longPressPid) {
+        return;
+      }
+      const dx = ev.clientX - longPressStartX;
+      const dy = ev.clientY - longPressStartY;
+      if (dx * dx + dy * dy > TAGGER_LONG_PRESS_MOVE_PX * TAGGER_LONG_PRESS_MOVE_PX) {
+        cancelLongPressGesture();
+      }
+    };
+
+    const onWindowPointerUp = (ev: PointerEvent) => {
+      if (!longPressGestureActive || ev.pointerId !== longPressPid) {
+        return;
+      }
+      cancelLongPressGesture();
+    };
+
+    longPressMoveHandler = onWindowPointerMove;
+    longPressUpHandler = onWindowPointerUp;
+
+    longPressTimer = window.setTimeout(() => {
+      longPressTimer = undefined;
+      if (!longPressGestureActive || longPressPid !== capturedPid) {
+        return;
+      }
+      longPressGestureActive = false;
+      longPressPid = -1;
+      detachLongPressWindowListeners();
+      props.onEdit(props.row);
+    }, TAGGER_LONG_PRESS_MS);
+
+    window.addEventListener('pointermove', onWindowPointerMove);
+    window.addEventListener('pointerup', onWindowPointerUp);
+    window.addEventListener('pointercancel', onWindowPointerUp);
+  };
+
+  onCleanup(() => {
+    cancelLongPressGesture();
+  });
 
   const [testElapsedTick, setTestElapsedTick] = createSignal(0);
 
@@ -703,6 +841,7 @@ function TaggerMessageBubble(props: TaggerMessageBubbleProps) {
               class={`tagger-msg__bubble ${bubbleClass()}${
                 showTail() ? ' tagger-msg__bubble--tail' : ''
               }`}
+              onPointerDown={onBubblePointerDown}
             >
               <div class="tagger-msg__bubble-meta tagger-msg__bubble-meta--time-only">
                 <span class="tagger-msg__time">{timeLabel()}</span>
@@ -755,6 +894,7 @@ function TaggerNoteAndEventFields(props: {
         <label for="tagger-comment">Comment / note</label>
         <textarea
           id="tagger-comment"
+          class="tagger-comment-note"
           ref={(el) => props.setCommentTextAreaRef(el ?? undefined)}
           value={props.comment()}
           onInput={(e) => props.setComment(e.currentTarget.value)}
@@ -786,7 +926,7 @@ function TaggerEditTimeFields(props: {
   endLocal: Accessor<string>;
   setEndLocal: (v: string) => void;
 }) {
-  const showFocus = createMemo(() => props.eventTypeUpper() === 'COMMENT');
+  const showFocus = createMemo(() => taggerEventTypeUsesFocusTime(props.eventTypeUpper()));
   const showRange = createMemo(() => {
     const u = props.eventTypeUpper();
     return u === 'TEST' || u === 'CREW' || u === 'SAILS';
@@ -1015,6 +1155,99 @@ function TaggerStructuredIntervalFormFields(props: {
   );
 }
 
+function taggerCsvEscapeField(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+const TAGGER_CSV_HEADERS = [
+  'client_id',
+  'server_id',
+  'project_id',
+  'user_id',
+  'user_name',
+  'date',
+  'focus_time',
+  'start_time',
+  'end_time',
+  'event_type',
+  'comment',
+  'date_modified',
+  'pending',
+  'pending_delete',
+  'updated_at',
+] as const;
+
+function taggerBuildEventsCsv(rows: TaggerStoredEvent[]): string {
+  const visible = rows.filter((r) => !r.pendingDelete);
+  const sorted = sortEventsChronoAsc(visible);
+  const lines: string[] = [TAGGER_CSV_HEADERS.join(',')];
+  for (const e of sorted) {
+    const cells = [
+      e.clientId,
+      e.serverId == null ? '' : String(e.serverId),
+      String(e.projectId),
+      e.user_id ?? '',
+      e.user_name ?? '',
+      e.date ?? '',
+      e.focus_time ?? '',
+      e.start_time ?? '',
+      e.end_time ?? '',
+      e.event_type,
+      e.comment,
+      e.date_modified ?? '',
+      e.pending ? 'true' : 'false',
+      e.pendingDelete ? 'true' : 'false',
+      String(e.updatedAt),
+    ].map((c) => taggerCsvEscapeField(String(c)));
+    lines.push(cells.join(','));
+  }
+  return lines.join('\r\n');
+}
+
+type TaggerSaveFilePickerOptions = {
+  suggestedName?: string;
+  types?: Array<{ description?: string; accept: Record<string, string[]> }>;
+};
+
+async function taggerSaveCsvBlob(blob: Blob, suggestedName: string): Promise<void> {
+  const w = window as Window & {
+    showSaveFilePicker?: (options?: TaggerSaveFilePickerOptions) => Promise<FileSystemFileHandle>;
+  };
+  if (typeof w.showSaveFilePicker === 'function') {
+    try {
+      const handle = await w.showSaveFilePicker({
+        suggestedName,
+        types: [{ description: 'CSV spreadsheet', accept: { 'text/csv': ['.csv'] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    } catch (err: unknown) {
+      const name = err && typeof err === 'object' && 'name' in err ? String((err as { name: unknown }).name) : '';
+      if (name === 'AbortError') {
+        return;
+      }
+      warn('[Tagger] Save file picker failed, using download fallback', err);
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = suggestedName;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export default function Tagger() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -1028,6 +1261,7 @@ export default function Tagger() {
   const [composeAfterPreset, setComposeAfterPreset] = createSignal(false);
   let commentTextAreaRef: HTMLTextAreaElement | undefined;
   const [banner, setBanner] = createSignal<{ kind: 'warn' | 'error'; text: string } | undefined>(undefined);
+  const [feedSettingsOpen, setFeedSettingsOpen] = createSignal(false);
   const [online, setOnline] = createSignal(typeof navigator !== 'undefined' ? navigator.onLine : true);
   /** Local test in progress; server row has `end_time` null until Stop test. */
   const [testSession, setTestSession] = createSignal<TaggerTestSession | null>(null);
@@ -1143,7 +1377,7 @@ export default function Tagger() {
       return false;
     }
     const et = eventType().trim().toUpperCase();
-    return et !== 'COMMENT' && et !== 'JOB';
+    return !taggerEventTypeUsesFocusTime(et);
   });
 
   type FeedDisplayItem = {
@@ -1215,9 +1449,6 @@ export default function Tagger() {
   };
 
   const startTestSession = async (pid: number): Promise<void> => {
-    if (testSession()) {
-      return;
-    }
     const existing = await taggerGetEventsForProject(pid);
     const openTests = existing.filter(taggerIsTestRowOpen);
     if (openTests.length > 1) {
@@ -1231,10 +1462,11 @@ export default function Tagger() {
       const r = openTests[0];
       if (r.start_time) {
         await refreshFromDb(pid);
+        const me = currentUserIdString(user() as Record<string, unknown> | null);
         setTestSession({
           clientId: r.clientId,
           startTimeIso: r.start_time,
-          starterUserId: currentUserIdString(user() as Record<string, unknown> | null),
+          starterUserId: taggerStarterUserIdFromRow(r, me),
         });
         setBanner({
           kind: 'warn',
@@ -1265,10 +1497,39 @@ export default function Tagger() {
     await taggerPutEvent(row);
     await refreshFromDb(pid);
     setTestSession({ clientId, startTimeIso: startIso, starterUserId });
-    await taggerTrySyncCreate(pid, clientId);
-    await taggerFlushOutbox(pid);
-    await syncAll(pid);
     setBanner(undefined);
+    queueMicrotask(() => {
+      requestAnimationFrame(() => {
+        taggerScrollSessionFeedToBottom(taggerFeedScrollEl);
+      });
+    });
+    try {
+      const migratedCid = await taggerTrySyncCreate(pid, clientId);
+      await taggerFlushOutbox(pid);
+      await syncAll(pid);
+      const rowsAfter = await taggerGetEventsForProject(pid);
+      const cidResolved = migratedCid ?? clientId;
+      const resolved = rowsAfter.find((e) => e.clientId === cidResolved);
+      if (resolved && taggerIsTestRowOpen(resolved)) {
+        const me = currentUserIdString(user() as Record<string, unknown> | null);
+        setTestSession({
+          clientId: resolved.clientId,
+          startTimeIso: resolved.start_time ?? startIso,
+          starterUserId: taggerStarterUserIdFromRow(resolved, me),
+        });
+      }
+      queueMicrotask(() => {
+        requestAnimationFrame(() => {
+          taggerScrollSessionFeedToBottom(taggerFeedScrollEl);
+        });
+      });
+    } catch (e) {
+      logError('[Tagger] Test sync after start failed', e);
+      setBanner({
+        kind: 'warn',
+        text: 'Test started locally. Sync will retry when the connection is available.',
+      } as const);
+    }
     debug('[Tagger] Test started', startIso);
   };
 
@@ -1328,27 +1589,29 @@ export default function Tagger() {
       return;
     }
 
-    const candidates = list.filter(
+    const openForMe = list.filter(
       (e) =>
-        e.pending &&
+        e.event_type.toUpperCase() === 'TEST' &&
         taggerIsTestRowOpen(e) &&
         e.start_time &&
-        (e.user_id == null || e.user_id === me)
+        (me == null ||
+          me === '' ||
+          e.user_id == null ||
+          String(e.user_id) === String(me))
     );
-    if (candidates.length !== 1) {
+    if (openForMe.length !== 1) {
       return;
     }
-    const only = candidates[0];
-    if (only.user_id != null && only.user_id !== me) {
+    const only = openForMe[0];
+    const st = only.start_time;
+    if (!st) {
       return;
     }
-    if (only.start_time) {
-      setTestSession({
-        clientId: only.clientId,
-        startTimeIso: only.start_time,
-        starterUserId: me,
-      });
-    }
+    setTestSession({
+      clientId: only.clientId,
+      startTimeIso: st,
+      starterUserId: taggerStarterUserIdFromRow(only, me),
+    });
   });
 
   let taggerFeedScrollEl: HTMLDivElement | undefined;
@@ -1624,6 +1887,29 @@ export default function Tagger() {
     return JSON.stringify(base);
   };
 
+  /** After loc→srv migration, `structuredCompose.clientId` may be stale; find the open row for this kind. */
+  const resolveStructuredComposeClientId = async (
+    pid: number,
+    sc: { kind: 'sails' | 'crew'; clientId: string }
+  ): Promise<string | null> => {
+    const direct = await taggerGetEvent(sc.clientId);
+    if (direct) {
+      return sc.clientId;
+    }
+    const et = sc.kind === 'sails' ? 'SAILS' : 'CREW';
+    const all = await taggerGetEventsForProject(pid);
+    const open = all.filter(
+      (e) =>
+        e.projectId === pid &&
+        e.event_type.toUpperCase() === et &&
+        taggerIsSailCrewRowOpen(e)
+    );
+    if (open.length !== 1) {
+      return null;
+    }
+    return open[0].clientId;
+  };
+
   const persistStructuredRowFromForm = async (pid: number, clientId: string, commentJson: string) => {
     const row = await taggerGetEvent(clientId);
     if (!row) {
@@ -1653,18 +1939,32 @@ export default function Tagger() {
     if (pid == null || !sc) {
       return;
     }
-    const clientId = sc.clientId;
-    const kind = sc.kind;
     flushStructuredSaveTimer();
     structuredSaveTimer = window.setTimeout(() => {
       structuredSaveTimer = undefined;
       void (async () => {
         try {
-          const row = await taggerGetEvent(clientId);
-          const raw = row?.comment;
+          const sc2 = structuredCompose();
+          if (pid !== projectId() || !sc2) {
+            return;
+          }
+          let cid = sc2.clientId;
+          let row = await taggerGetEvent(cid);
+          if (!row) {
+            const alt = await resolveStructuredComposeClientId(pid, sc2);
+            if (alt != null) {
+              cid = alt;
+              setStructuredCompose({ kind: sc2.kind, clientId: alt });
+              row = await taggerGetEvent(cid);
+            }
+          }
+          if (!row) {
+            return;
+          }
+          const raw = row.comment;
           const json =
-            kind === 'sails' ? buildSailsCommentFromForm(raw) : buildCrewCommentFromForm(raw);
-          await persistStructuredRowFromForm(pid, clientId, json);
+            sc2.kind === 'sails' ? buildSailsCommentFromForm(raw) : buildCrewCommentFromForm(raw);
+          await persistStructuredRowFromForm(pid, cid, json);
         } catch (e) {
           logError('[Tagger] Structured persist failed', e);
         }
@@ -1679,13 +1979,28 @@ export default function Tagger() {
       return;
     }
     flushStructuredSaveTimer();
-    const clientId = sc.clientId;
-    const kind = sc.kind;
     try {
-      const row = await taggerGetEvent(clientId);
-      const raw = row?.comment;
+      let clientId = sc.clientId;
+      let row = await taggerGetEvent(clientId);
+      if (!row) {
+        const alt = await resolveStructuredComposeClientId(pid, sc);
+        if (alt != null) {
+          clientId = alt;
+          setStructuredCompose({ kind: sc.kind, clientId: alt });
+          row = await taggerGetEvent(clientId);
+        }
+      }
+      if (!row) {
+        warn('[Tagger] flushStructuredSaveNow: no row for structured compose', sc.clientId);
+        setBanner({
+          kind: 'error',
+          text: 'Could not find this interval to save. Try again or refresh the page.',
+        } as const);
+        return;
+      }
+      const raw = row.comment;
       const json =
-        kind === 'sails' ? buildSailsCommentFromForm(raw) : buildCrewCommentFromForm(raw);
+        sc.kind === 'sails' ? buildSailsCommentFromForm(raw) : buildCrewCommentFromForm(raw);
       await persistStructuredRowFromForm(pid, clientId, json);
       setBanner(undefined);
       const wasEditingExisting = editingClientId() != null;
@@ -1712,7 +2027,7 @@ export default function Tagger() {
     if (eventType().trim() !== b.eventType.trim()) {
       return true;
     }
-    if (et === 'COMMENT' && editFocusTimeLocal() !== b.focus) {
+    if (taggerEventTypeUsesFocusTime(et) && editFocusTimeLocal() !== b.focus) {
       return true;
     }
     if (
@@ -1795,17 +2110,20 @@ export default function Tagger() {
     await taggerPutEvent(row);
     await refreshFromDb(pid);
     const fresh = await taggerGetEvent(clientId);
-    setStructuredCompose({ kind, clientId });
     resetStructuredFormFields();
     if (fresh) {
       loadStructuredFormFromRow(fresh);
     }
-    await taggerTrySyncCreate(pid, clientId);
-    await taggerFlushOutbox(pid);
-    await syncAll(pid);
+    setStructuredCompose({ kind, clientId });
     setBanner(undefined);
     setStructuredEditBaseline(structuredFormSnapshot());
-    debug('[Tagger] Structured interval started', kind, clientId);
+    const migratedCid = await taggerTrySyncCreate(pid, clientId);
+    await taggerFlushOutbox(pid);
+    await syncAll(pid);
+    if (migratedCid != null && migratedCid !== clientId) {
+      setStructuredCompose({ kind, clientId: migratedCid });
+    }
+    debug('[Tagger] Structured interval started', kind, migratedCid ?? clientId);
   };
 
   const handleAddOrUpdate = async () => {
@@ -1834,7 +2152,7 @@ export default function Tagger() {
         pending: true,
         updatedAt: Date.now(),
       };
-      if (etExisting === 'COMMENT') {
+      if (taggerEventTypeUsesFocusTime(etExisting)) {
         const iso = datetimeLocalValueToIso(editFocusTimeLocal());
         if (iso) {
           updated.focus_time = iso;
@@ -1923,38 +2241,59 @@ export default function Tagger() {
   const handlePresetClick = async (p: PresetDef) => {
     const pid = projectId();
     if (pid == null) {
+      setBanner({
+        kind: 'error',
+        text: 'No project loaded. Open Tagger with a project id in the URL (for example ?pid=1).',
+      } as const);
       return;
     }
 
     if (p.eventType === 'TEST') {
-      flushStructuredSaveTimer();
-      setStructuredCompose(null);
-      resetStructuredFormFields();
-      setComposeAfterPreset(false);
-      setEditingClientId(null);
-      setComment('');
-      const sess = testSession();
-      const me = user() as Record<string, unknown> | null;
-      if (sess && taggerIsTestStarter(sess, me)) {
-        await stopTestSession(pid, sess);
-        return;
+      try {
+        flushStructuredSaveTimer();
+        setStructuredCompose(null);
+        resetStructuredFormFields();
+        setComposeAfterPreset(false);
+        setEditingClientId(null);
+        setComment('');
+        const rowsNow = await taggerGetEventsForProject(pid);
+        const me = user() as Record<string, unknown> | null;
+        let sess = testSession();
+        if (sess) {
+          const sessionRef = sess;
+          const matchRow = rowsNow.find(
+            (e) =>
+              e.event_type.toUpperCase() === 'TEST' &&
+              taggerIsTestRowOpen(e) &&
+              taggerOpenTestMatchesSession(e, sessionRef)
+          );
+          if (!matchRow) {
+            setTestSession(null);
+            sess = null;
+          } else if (taggerIsTestStarter(sess, me)) {
+            await stopTestSession(pid, sess);
+            return;
+          } else {
+            setBanner({
+              kind: 'warn',
+              text: 'A test is already open in Session Tags. Only the person who started it can press Stop Test here.',
+            } as const);
+            return;
+          }
+        }
+        const openSc = rowsNow.some((e) => e.projectId === pid && taggerIsSailCrewRowOpen(e));
+        if (openSc) {
+          setBanner({
+            kind: 'warn',
+            text: 'Finish or leave the sail or crew interval (BACK) before starting a test.',
+          } as const);
+          return;
+        }
+        await startTestSession(pid);
+      } catch (e) {
+        logError('[Tagger] Test preset failed', e);
+        setBanner({ kind: 'error', text: 'Could not start or stop the test. Try again.' } as const);
       }
-      if (sess) {
-        setBanner({
-          kind: 'warn',
-          text: 'Another test is in progress on this device. Stop it first.',
-        } as const);
-        return;
-      }
-      const openSc = events().some((e) => e.projectId === pid && taggerIsSailCrewRowOpen(e));
-      if (openSc) {
-        setBanner({
-          kind: 'warn',
-          text: 'Finish or leave the sail or crew interval (BACK) before starting a test.',
-        } as const);
-        return;
-      }
-      await startTestSession(pid);
       return;
     }
 
@@ -2014,6 +2353,26 @@ export default function Tagger() {
     const ok = await handleDelete(row);
     if (ok) {
       clearForm();
+    }
+  };
+
+  const handleExportEventsCsv = async () => {
+    const pid = projectId();
+    if (pid == null) {
+      setBanner({ kind: 'error', text: 'No project loaded. Cannot export events.' } as const);
+      return;
+    }
+    const rows = events().filter((e) => e.projectId === pid);
+    const csv = taggerBuildEventsCsv(rows);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const suggestedName = `tagger-events-project-${pid}-${stamp}.csv`;
+    try {
+      await taggerSaveCsvBlob(blob, suggestedName);
+      debug('[Tagger] CSV export finished', { projectId: pid, rowCount: rows.filter((r) => !r.pendingDelete).length });
+    } catch (e) {
+      logError('[Tagger] CSV export failed', e);
+      setBanner({ kind: 'error', text: 'Could not save the CSV file.' } as const);
     }
   };
 
@@ -2393,6 +2752,50 @@ export default function Tagger() {
           </section>
         </Show>
       </div>
+
+      <Show when={feedSettingsOpen()}>
+        <div
+          class="tagger-settings-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="tagger-settings-heading"
+        >
+          <button
+            type="button"
+            class="tagger-settings-overlay__backdrop"
+            aria-label="Close settings"
+            onClick={() => setFeedSettingsOpen(false)}
+          />
+          <div class="tagger-settings-overlay__panel">
+            <h3 id="tagger-settings-heading" class="tagger-settings-overlay__title">
+              Tagger settings
+            </h3>
+            <p class="tagger-settings-overlay__hint">
+              Export session events for this project (same rows as Session Tags, excluding items pending delete). Your
+              browser will ask where to save the file when supported; otherwise the file downloads with the suggested
+              name.
+            </p>
+            <div class="tagger-settings-overlay__actions">
+              <button type="button" class="tagger-btn tagger-btn--primary" onClick={() => void handleExportEventsCsv()}>
+                Save events to CSV…
+              </button>
+              <button type="button" class="tagger-btn tagger-btn--secondary" onClick={() => setFeedSettingsOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      <button
+        type="button"
+        class="tagger-settings-fab"
+        aria-label={feedSettingsOpen() ? 'Close settings' : 'Open settings'}
+        aria-expanded={feedSettingsOpen()}
+        onClick={() => setFeedSettingsOpen((o) => !o)}
+      >
+        <FiSettings size={24} />
+      </button>
     </div>
   );
 }

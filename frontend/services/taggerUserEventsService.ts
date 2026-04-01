@@ -332,45 +332,49 @@ export async function taggerFlushOutbox(projectId: number): Promise<void> {
   }
 }
 
-/** Try immediate server write; on failure enqueue outbox (caller updates IDB first). */
-export async function taggerTrySyncCreate(projectId: number, clientId: string): Promise<boolean> {
+/**
+ * Try immediate server write; on failure enqueue outbox (caller updates IDB first).
+ * @returns New `clientId` (`srv-*`) after a successful server create and local row replacement; `null` if the row stays `loc-*` or is missing.
+ */
+export async function taggerTrySyncCreate(projectId: number, clientId: string): Promise<string | null> {
   const row = await taggerGetEvent(clientId);
   if (!row) {
-    return false;
+    return null;
   }
   if (!isOnline()) {
     await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
-    return false;
+    return null;
   }
   try {
     const res = await postData(apiEndpoints.app.userEvents, buildWriteBody(projectId, row));
     if (!res.success) {
       await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
-      return false;
+      return null;
     }
     const data = res.data as UserEventApiRow | undefined;
     const newId = data?.user_event_id;
     if (newId == null) {
       await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
-      return false;
+      return null;
     }
     const nameFromApi = data?.user_name;
     const user_name =
       nameFromApi != null && String(nameFromApi).trim() !== '' ? String(nameFromApi).trim() : row.user_name ?? null;
+    const newClientId = `srv-${newId}`;
     await taggerDeleteEvent(clientId);
     await taggerPutEvent({
       ...row,
       serverId: newId,
-      clientId: `srv-${newId}`,
+      clientId: newClientId,
       pending: false,
       user_name,
       date_modified: mergeDateModifiedFromApi(row, data),
     });
-    return true;
+    return newClientId;
   } catch (e) {
     warn('[taggerUserEventsService] trySyncCreate error', e);
     await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
-    return false;
+    return null;
   }
 }
 

@@ -10,6 +10,11 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Match .tagger-settings-fab — extra bottom space in feed so the last bubble clears the icon */
+  --tagger-fab-size: 2.75rem;
+  --tagger-fab-edge: 1rem;
+  --tagger-fab-gap: 0.5rem;
+  --tagger-fab-bottom-offset: calc(var(--tagger-fab-size) + var(--tagger-fab-edge) + var(--tagger-fab-gap));
 }
 
 .tagger-page__header {
@@ -42,6 +47,99 @@
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+}
+
+/* Bottom-right settings (matches FiSettings usage elsewhere in RaceSight) */
+.tagger-settings-fab {
+  position: fixed;
+  right: var(--tagger-fab-edge);
+  bottom: var(--tagger-fab-edge);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tagger-fab-size);
+  height: var(--tagger-fab-size);
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.tagger-settings-fab:hover {
+  opacity: 0.88;
+}
+
+.tagger-settings-fab:focus-visible {
+  outline: 2px solid var(--color-accent, #58a6ff);
+  outline-offset: 3px;
+}
+
+.tagger-settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+.tagger-settings-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+
+.tagger-settings-overlay__panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 22rem;
+  padding: 1.1rem 1.15rem;
+  border-radius: 10px;
+  background: var(--color-bg-secondary, #1c2128);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  box-sizing: border-box;
+}
+
+.tagger-settings-overlay__title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #e8eaed);
+}
+
+.tagger-settings-overlay__hint {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--color-text-secondary, #9aa0a6);
+}
+
+.tagger-settings-overlay__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+@media (min-width: 480px) {
+  .tagger-settings-overlay__actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
 }
 
 .tagger-status {
@@ -185,6 +283,12 @@
   resize: vertical;
 }
 
+.tagger-form-grid--compose .tagger-field--full textarea.tagger-comment-note {
+  flex: 0 0 auto;
+  height: 100px;
+  min-height: 100px;
+}
+
 /* Comment / Job (new entry only): note fills from quick tags down to actions */
 .tagger-form-grid--compose.tagger-form-grid--compose-simple {
   flex: 1 1 auto;
@@ -199,6 +303,12 @@
 .tagger-form-grid--compose.tagger-form-grid--compose-simple .tagger-field--full textarea {
   min-height: 0;
   flex: 1 1 auto;
+}
+
+.tagger-form-grid--compose.tagger-form-grid--compose-simple .tagger-field--full textarea.tagger-comment-note {
+  flex: 0 0 auto;
+  height: 100px;
+  min-height: 100px;
 }
 
 /* Sails / Crew structured compose: fill area like comment compose */
@@ -265,8 +375,8 @@
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
-  /* Room for bubble tail (::before) extending left from first-in-group bubbles */
-  padding: 0.45rem 0.15rem 0.35rem 0.4rem;
+  /* Room for bubble tail (::before); bottom clears fixed settings FAB */
+  padding: 0.45rem 0.15rem calc(0.35rem + var(--tagger-fab-bottom-offset)) 0.4rem;
 }
 
 .tagger-panel--feed.tagger-panel--feed-editing {
@@ -275,11 +385,11 @@
 }
 
 .tagger-feed-edit-wrap {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.35rem;
 }
 
 /* Sails/Crew in Session Tags: keep actions flush under the form (no flex gap in the middle). */
@@ -308,7 +418,7 @@
 }
 
 .tagger-form-grid--feed-edit {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -321,13 +431,12 @@
   min-height: 0;
 }
 
-.tagger-form-grid--feed-edit .tagger-field--full:has(textarea) {
-  flex: 1 1 auto;
+.tagger-form-grid--feed-edit .tagger-field--full:has(textarea.tagger-comment-note) {
+  flex: 0 0 auto;
 }
 
-.tagger-form-grid--feed-edit .tagger-field--full textarea {
-  flex: 1 1 auto;
-  min-height: min(32dvh, 240px);
+.tagger-form-grid--feed-edit .tagger-field--full textarea.tagger-comment-note {
+  flex: 0 0 auto;
   resize: vertical;
 }
 
@@ -353,7 +462,7 @@
 
 .tagger-form-actions--feed-edit {
   flex-shrink: 0;
-  margin-top: 0.25rem;
+  margin-top: 0.1rem;
   width: 100%;
   box-sizing: border-box;
 }
@@ -414,6 +523,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   box-sizing: border-box;
+}
+
+/* Avoid accidental text selection when scrolling, long-pressing, or swiping */
+.tagger-msg__name-pill,
+.tagger-msg__bubble,
+.tagger-quick-row .tagger-btn {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* Second column: bubble + desktop Edit */
@@ -877,6 +994,12 @@
   resize: vertical;
 }
 
+.tagger-field textarea.tagger-comment-note {
+  height: 100px;
+  min-height: 100px;
+  box-sizing: border-box;
+}
+
 .tagger-datetime-input {
   min-width: 0;
   width: 100%;
@@ -1053,7 +1176,7 @@
 }
 
 .tagger-empty {
-  padding: 1rem 0.75rem;
+  padding: 1rem 0.75rem calc(1rem + var(--tagger-fab-bottom-offset));
   text-align: center;
   color: var(--color-text-secondary, #9aa0a6);
   font-size: 0.8125rem;
