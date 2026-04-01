@@ -16,10 +16,10 @@ export default function Layout(props: { children?: any }) {
   // Hide header on /window route (standalone component windows) and index page
   const isWindowRoute = () => location.pathname === "/window";
   const isIndexRoute = () => location.pathname === "/";
-  // Dashboard renders its own header so we don't duplicate
+  // Dashboard and Tagger render the same in-page Header as the dashboard (no duplicate global bar)
   const isDashboardRoute = () => location.pathname === "/dashboard";
   const isTaggerRoute = () => location.pathname === "/tagger";
-  
+
   // Legal pages that don't need header (they have their own styling)
   const isLegalPage = () => {
     const path = location.pathname;

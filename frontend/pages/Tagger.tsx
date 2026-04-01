@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from '@solidjs/router';
 import { authManager } from '@utils/authManager';
 import { user } from '@store/userStore';
 import { FiSettings } from 'solid-icons/fi';
+import Header from '../components/app/Header';
 import { error as logError, debug, warn } from '@utils/console';
 import {
   newLocalClientId,
@@ -18,6 +19,7 @@ import {
   taggerTrySyncCreate,
   taggerTrySyncUpdate,
   taggerTrySyncDelete,
+  taggerFetchLatestClosedCrewForSeed,
 } from '@services/taggerUserEventsService';
 import {
   loadCrewComboHistory,
@@ -84,8 +86,41 @@ function taggerTestStartTimesLikelySame(a: string | null | undefined, b: string 
   return Math.abs(ta - tb) < TAGGER_TEST_START_MATCH_MS;
 }
 
-function taggerOpenTestMatchesSession(e: TaggerStoredEvent, sess: TaggerTestSession): boolean {
-  return e.clientId === sess.clientId || taggerTestStartTimesLikelySame(e.start_time, sess.startTimeIso);
+/**
+ * Match local test session to a stored row. Prefer `clientId` (exact).
+ * Fuzzy `start_time` is only for server/client clock skew after sync — it must not match another
+ * user's test: two starters within 5 minutes would otherwise both match the same `find()` row.
+ */
+function taggerOpenTestMatchesSession(
+  e: TaggerStoredEvent,
+  sess: TaggerTestSession,
+  me?: string | null
+): boolean {
+  if (e.clientId === sess.clientId) {
+    return true;
+  }
+  if (!taggerTestStartTimesLikelySame(e.start_time, sess.startTimeIso)) {
+    return false;
+  }
+  const su =
+    sess.starterUserId != null && String(sess.starterUserId).trim() !== ''
+      ? String(sess.starterUserId)
+      : null;
+  const ru =
+    e.user_id != null && String(e.user_id).trim() !== '' ? String(e.user_id) : null;
+  if (ru != null && su != null) {
+    return ru === su;
+  }
+  if (ru != null && su == null) {
+    return false;
+  }
+  if (su != null) {
+    if (me != null && me !== '') {
+      return su === me;
+    }
+    return true;
+  }
+  return true;
 }
 
 function taggerStarterUserIdFromRow(
@@ -346,6 +381,50 @@ function taggerDefaultCrewPayload(): Record<string, string> {
     Strategist: 'NA',
     IntervalStart: 'Crew on',
   };
+}
+
+/** Closed sail/crew interval (ended in DB or marked via JSON); excludes drafts and tombstones. */
+function taggerIsSailCrewRowCompleted(row: TaggerStoredEvent): boolean {
+  if (row.pendingDelete) {
+    return false;
+  }
+  const et = row.event_type.trim().toUpperCase();
+  if (et !== 'SAILS' && et !== 'CREW') {
+    return false;
+  }
+  return !taggerIsSailCrewRowOpen(row);
+}
+
+function taggerSailCrewRecencyTimeMs(row: TaggerStoredEvent): number {
+  const parse = (t: string | null | undefined): number => {
+    if (t == null || String(t).trim() === '') {
+      return 0;
+    }
+    const ms = new Date(t).getTime();
+    return Number.isNaN(ms) ? 0 : ms;
+  }
+  return Math.max(parse(row.end_time), parse(row.start_time), parse(row.focus_time));
+}
+
+/** Most recent completed row of this kind in the project store (local + merged server). */
+function findLastCompletedSailCrewRowForKind(
+  rows: TaggerStoredEvent[],
+  projectId: number,
+  kind: 'sails' | 'crew'
+): TaggerStoredEvent | null {
+  const want = kind === 'sails' ? 'SAILS' : 'CREW';
+  const candidates = rows.filter(
+    (r) =>
+      r.projectId === projectId &&
+      !r.pendingDelete &&
+      r.event_type.trim().toUpperCase() === want &&
+      taggerIsSailCrewRowCompleted(r)
+  );
+  if (candidates.length === 0) {
+    return null;
+  }
+  candidates.sort((a, b) => taggerSailCrewRecencyTimeMs(b) - taggerSailCrewRecencyTimeMs(a));
+  return candidates[0];
 }
 
 function taggerCloseOpenSailCrewRowComment(prevComment: string, intervalEnd: 'Sail down' | 'Crew off'): string {
@@ -1583,11 +1662,12 @@ export default function Tagger() {
 
   const stopTestSession = async (pid: number, sess: TaggerTestSession): Promise<void> => {
     const rows = await taggerGetEventsForProject(pid);
+    const meStr = currentUserIdString(user() as Record<string, unknown> | null);
     const row = rows.find(
       (e) =>
         e.event_type.toUpperCase() === 'TEST' &&
         taggerIsTestRowOpen(e) &&
-        taggerOpenTestMatchesSession(e, sess)
+        taggerOpenTestMatchesSession(e, sess, meStr)
     );
     if (!row) {
       warn('[Tagger] Could not find open test row to stop; clearing session');
@@ -1625,7 +1705,7 @@ export default function Tagger() {
         (e) =>
           e.event_type.toUpperCase() === 'TEST' &&
           taggerIsTestRowOpen(e) &&
-          taggerOpenTestMatchesSession(e, sess)
+          taggerOpenTestMatchesSession(e, sess, me)
       );
       if (!row || !taggerIsTestRowOpen(row)) {
         setTestSession(null);
@@ -1889,7 +1969,8 @@ export default function Tagger() {
     return taggerStringifySailCrewJson(merged);
   };
 
-  const loadStructuredFormFromRow = (row: TaggerStoredEvent) => {
+  /** Mainsail/headsail or crew combos only (times set separately for new intervals). */
+  const loadStructuredComboFieldsFromRow = (row: TaggerStoredEvent) => {
     const parsed = taggerParseSailCrewJson(row.comment);
     const et = row.event_type.toUpperCase();
     if (et === 'SAILS') {
@@ -1904,6 +1985,10 @@ export default function Tagger() {
       setCrewFlightStbd(taggerCrewFieldForInput(d['Flight Stbd']));
       setCrewStrategist(taggerCrewFieldForInput(d.Strategist));
     }
+  };
+
+  const loadStructuredFormFromRow = (row: TaggerStoredEvent) => {
+    loadStructuredComboFieldsFromRow(row);
     setStructuredStartLocal(isoToDatetimeLocalValue(row.start_time));
     setStructuredEndLocal(row.end_time ? isoToDatetimeLocalValue(row.end_time) : '');
   };
@@ -2171,8 +2256,8 @@ export default function Tagger() {
     setComposeAfterPreset(false);
     setComment('');
     setEditingClientId(null);
-    const rows = await taggerGetEventsForProject(pid);
-    const open = rows.filter(taggerIsSailCrewRowOpen);
+    let rowsForSeed = await taggerGetEventsForProject(pid);
+    const open = rowsForSeed.filter(taggerIsSailCrewRowOpen);
     if (open.length > 1) {
       setBanner({
         kind: 'warn',
@@ -2198,8 +2283,23 @@ export default function Tagger() {
         await taggerFlushOutbox(pid);
       }
       await syncAll(pid);
+      rowsForSeed = await taggerGetEventsForProject(pid);
     }
     resetStructuredFormFields();
+    let seed = findLastCompletedSailCrewRowForKind(rowsForSeed, pid, kind);
+    // Offline (or no local completed row): crew combos stay NA unless local had a match above.
+    // Online with no local completed CREW: ask the server for the latest closed interval and cache it locally.
+    if (!seed && kind === 'crew' && typeof navigator !== 'undefined' && navigator.onLine) {
+      const fromServer = await taggerFetchLatestClosedCrewForSeed(pid);
+      if (fromServer) {
+        seed = fromServer;
+        debug('[Tagger] Crew combos seeded from server (no completed CREW in local store)');
+      }
+    }
+    if (seed) {
+      loadStructuredComboFieldsFromRow(seed);
+      debug('[Tagger] Structured compose seeded from last saved row', kind, seed.clientId);
+    }
     const now = new Date();
     setStructuredStartLocal(isoToDatetimeLocalValue(now.toISOString()));
     setStructuredEndLocal('');
@@ -2351,11 +2451,12 @@ export default function Tagger() {
         let sess = testSession();
         if (sess) {
           const sessionRef = sess;
+          const meStr = currentUserIdString(me);
           const matchRow = rowsNow.find(
             (e) =>
               e.event_type.toUpperCase() === 'TEST' &&
               taggerIsTestRowOpen(e) &&
-              taggerOpenTestMatchesSession(e, sessionRef)
+              taggerOpenTestMatchesSession(e, sessionRef, meStr)
           );
           if (!matchRow) {
             setTestSession(null);
@@ -2479,23 +2580,22 @@ export default function Tagger() {
     }
   };
 
-  return (
-    <div class="tagger-page">
-      <header class="tagger-page__header">
-        <h1 class="tagger-page__title">Tagger</h1>
-        <div class="tagger-page__meta">
-          <span
-            classList={{
-              'tagger-status': true,
-              'tagger-status--online': online(),
-              'tagger-status--offline': !online(),
-            }}
-          >
-            {online() ? 'Online' : 'Offline'}
-          </span>
-        </div>
-      </header>
+  const taggerOnlineStatusEl = () => (
+    <span
+      classList={{
+        'tagger-status': true,
+        'tagger-status--online': online(),
+        'tagger-status--offline': !online(),
+      }}
+    >
+      {online() ? 'Online' : 'Offline'}
+    </span>
+  );
 
+  return (
+    <>
+      <Header />
+      <div class="tagger-page">
       <Show when={banner} keyed fallback={null}>
         {(b) => {
           const msg = b();
@@ -2522,7 +2622,10 @@ export default function Tagger() {
             'tagger-panel--compose-wide': taggerHideSessionFeed(),
           }}
         >
-          <h2 class="tagger-panel__title">Quick tag</h2>
+          <div class="tagger-panel__title-row">
+            <h2 class="tagger-panel__title tagger-panel__title--inline">Quick tag</h2>
+            <Show when={taggerHideSessionFeed()}>{taggerOnlineStatusEl()}</Show>
+          </div>
           <div class="tagger-quick-row">
             <For each={PRESETS}>
               {(preset) => (
@@ -2629,7 +2732,10 @@ export default function Tagger() {
                 taggerStructuredFormInFeed(),
             }}
           >
-            <h2 class="tagger-panel__title">Session Tags</h2>
+            <div class="tagger-panel__title-row">
+              <h2 class="tagger-panel__title tagger-panel__title--inline">Session Tags</h2>
+              {taggerOnlineStatusEl()}
+            </div>
             <Show when={taggerPlainComposeInFeed()}>
               <div class="tagger-feed-edit-wrap">
                 <p class="tagger-feed-edit__hint">
@@ -2893,6 +2999,7 @@ export default function Tagger() {
       >
         <FiSettings size={24} />
       </button>
-    </div>
+      </div>
+    </>
   );
 }

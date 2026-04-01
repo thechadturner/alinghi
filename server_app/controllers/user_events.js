@@ -105,7 +105,8 @@ exports.listUserEvents = async (req, res) => {
   }
 
   try {
-    const { project_id, date_from, date_to, after_user_event_id, modified_after } = req.query;
+    const { project_id, date_from, date_to, after_user_event_id, modified_after, event_type, interval_closed, limit } =
+      req.query;
     const allowed = await check_permissions(req, 'read', project_id);
     if (!allowed) {
       // 403: authenticated but no access to this project — do not use 401 (client clears session on 401).
@@ -159,7 +160,37 @@ exports.listUserEvents = async (req, res) => {
         p += 1;
       }
     }
+
+    const etFilter = event_type != null ? String(event_type).trim() : '';
+    if (etFilter !== '') {
+      sql += ` AND lower(trim(e.event_type::text)) = lower(trim($${p}::text))`;
+      params.push(etFilter);
+      p += 1;
+    }
+
+    const icRaw = interval_closed != null ? String(interval_closed).toLowerCase() : '';
+    if (icRaw === '1' || icRaw === 'true') {
+      sql += ` AND (
+        (e.end_time IS NOT NULL AND btrim(e.end_time::text) <> '')
+        OR (e.tags IS NOT NULL AND jsonb_typeof(e.tags) = 'object' AND btrim(COALESCE(e.tags->>'IntervalEnd', '')) <> '')
+      )`;
+    } else if (icRaw === '0' || icRaw === 'false') {
+      sql += ` AND NOT (
+        (e.end_time IS NOT NULL AND btrim(e.end_time::text) <> '')
+        OR (e.tags IS NOT NULL AND jsonb_typeof(e.tags) = 'object' AND btrim(COALESCE(e.tags->>'IntervalEnd', '')) <> '')
+      )`;
+    }
+
     sql += ` ORDER BY COALESCE(e.date_modified, e.focus_time, e.start_time, e.date::timestamp) DESC NULLS LAST, e.user_event_id DESC`;
+
+    const lim =
+      limit !== undefined && limit !== null && String(limit).trim() !== ''
+        ? Math.min(200, Math.max(1, parseInt(String(limit), 10)))
+        : null;
+    if (lim != null && Number.isFinite(lim)) {
+      sql += ` LIMIT $${p}`;
+      params.push(lim);
+    }
 
     const rows = await db.GetRows(sql, params);
     const countSql = `SELECT COUNT(*)::int AS c FROM ${TABLE} WHERE project_id = $1`;
@@ -192,6 +223,34 @@ exports.createUserEvent = async (req, res) => {
     const userId = req.user?.user_id;
     if (!userId) {
       return sendResponse(res, info, 401, false, 'User context required', null);
+    }
+
+    /** Idempotent retry (e.g. offline sync POST twice): same user + shape as an existing row → return it. */
+    const dupSelectSql = `
+      SELECT e.user_event_id, e.project_id, e.user_id, u.user_name AS user_name, e.date,
+             e.focus_time, e.start_time, e.end_time,
+             e.event_type, e.tags, e.date_modified
+      FROM ${TABLE} e
+      LEFT JOIN admin.users u ON u.user_id = e.user_id
+      WHERE e.project_id = $1
+        AND e.user_id = $2
+        AND lower(trim(e.event_type::text)) = lower(trim($3::text))
+        AND e.start_time IS NOT DISTINCT FROM $4::timestamptz
+        AND e.end_time IS NOT DISTINCT FROM $5::timestamptz
+        AND e.tags = $6::jsonb
+      ORDER BY e.user_event_id ASC
+      LIMIT 1`;
+
+    const dupRows = await db.GetRows(dupSelectSql, [
+      project_id,
+      userId,
+      String(event_type ?? ''),
+      start_time ?? null,
+      end_time ?? null,
+      tags,
+    ]);
+    if (dupRows.length) {
+      return sendResponse(res, info, 200, true, 'User event already exists', rowFromDb(dupRows[0]), false);
     }
 
     const sql = `

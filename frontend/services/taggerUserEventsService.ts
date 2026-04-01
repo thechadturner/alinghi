@@ -52,6 +52,16 @@ function buildWriteBody(projectId: number, row: TaggerStoredEvent): Record<strin
   };
 }
 
+/** Serialize creates/updates/deletes per project so trySyncCreate and flushOutbox cannot POST the same row twice in parallel. */
+const taggerProjectWriteChains = new Map<number, Promise<unknown>>();
+
+function enqueueTaggerProjectWrite<T>(projectId: number, work: () => Promise<T>): Promise<T> {
+  const prev = taggerProjectWriteChains.get(projectId) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(work);
+  taggerProjectWriteChains.set(projectId, next.then(() => undefined, () => undefined));
+  return next;
+}
+
 function localTodayYmd(): string {
   const d = new Date();
   const y = d.getFullYear();
@@ -137,6 +147,43 @@ function mergeDateModifiedFromApi(row: TaggerStoredEvent, data: UserEventApiRow 
  * else 14-day window on `date_modified`. Compares `total` vs local server row count and
  * runs `taggerMergeServerRows` when counts diverge (e.g. server deletes).
  */
+/**
+ * Latest completed CREW row from the API (for combo defaults when local store has none).
+ * Upserts into local storage so the next offline session can seed from it too.
+ */
+export async function taggerFetchLatestClosedCrewForSeed(
+  projectId: number,
+  signal?: AbortSignal
+): Promise<TaggerStoredEvent | null> {
+  if (!isOnline()) {
+    return null;
+  }
+  try {
+    const params = new URLSearchParams();
+    params.set('project_id', String(projectId));
+    params.set('event_type', 'CREW');
+    params.set('interval_closed', '1');
+    params.set('limit', '1');
+    const url = `${apiEndpoints.app.userEvents}?${params.toString()}`;
+    const res = await getData(url, signal);
+    if (!res.success) {
+      debug('[taggerUserEventsService] Crew seed list failed', res.message);
+      return null;
+    }
+    const { rows } = parseUserEventsListPayload(res.data);
+    if (rows.length === 0) {
+      return null;
+    }
+    const stored = serverRowToStored(projectId, rows[0] as unknown as Record<string, unknown>);
+    await taggerUpsertServerRows(projectId, [stored]);
+    debug('[taggerUserEventsService] Fetched latest closed CREW for seed', projectId, stored.serverId);
+    return stored;
+  } catch (e) {
+    warn('[taggerUserEventsService] Crew seed fetch failed', e);
+    return null;
+  }
+}
+
 export async function taggerPullAndMergeServer(projectId: number, signal?: AbortSignal): Promise<boolean> {
   if (!isOnline()) {
     return false;
@@ -224,11 +271,12 @@ export async function taggerPullAndMergeServer(projectId: number, signal?: Abort
 }
 
 export async function taggerFlushOutbox(projectId: number): Promise<void> {
-  if (!isOnline()) {
-    return;
-  }
+  return enqueueTaggerProjectWrite(projectId, async () => {
+    if (!isOnline()) {
+      return;
+    }
 
-  const items = await taggerGetOutboxForProject(projectId);
+    const items = await taggerGetOutboxForProject(projectId);
   for (const it of items) {
     if (it.id == null) {
       continue;
@@ -258,6 +306,7 @@ export async function taggerFlushOutbox(projectId: number): Promise<void> {
             ? String(nameFromApi).trim()
             : row.user_name ?? null;
         const oldCid = row.clientId;
+        await taggerClearOutboxForClient(projectId, oldCid);
         await taggerDeleteEvent(oldCid);
         await taggerPutEvent({
           ...row,
@@ -330,6 +379,7 @@ export async function taggerFlushOutbox(projectId: number): Promise<void> {
       break;
     }
   }
+  });
 }
 
 /**
@@ -345,37 +395,46 @@ export async function taggerTrySyncCreate(projectId: number, clientId: string): 
     await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
     return null;
   }
-  try {
-    const res = await postData(apiEndpoints.app.userEvents, buildWriteBody(projectId, row));
-    if (!res.success) {
+  return enqueueTaggerProjectWrite(projectId, async () => {
+    const r = await taggerGetEvent(clientId);
+    if (!r || r.pendingDelete) {
+      return null;
+    }
+    try {
+      const res = await postData(apiEndpoints.app.userEvents, buildWriteBody(projectId, r));
+      if (!res.success) {
+        await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
+        return null;
+      }
+      const data = res.data as UserEventApiRow | undefined;
+      const newId = data?.user_event_id;
+      if (newId == null) {
+        await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
+        return null;
+      }
+      const nameFromApi = data?.user_name;
+      const user_name =
+        nameFromApi != null && String(nameFromApi).trim() !== ''
+          ? String(nameFromApi).trim()
+          : r.user_name ?? null;
+      const newClientId = `srv-${newId}`;
+      await taggerClearOutboxForClient(projectId, clientId);
+      await taggerDeleteEvent(clientId);
+      await taggerPutEvent({
+        ...r,
+        serverId: newId,
+        clientId: newClientId,
+        pending: false,
+        user_name,
+        date_modified: mergeDateModifiedFromApi(r, data),
+      });
+      return newClientId;
+    } catch (e) {
+      warn('[taggerUserEventsService] trySyncCreate error', e);
       await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
       return null;
     }
-    const data = res.data as UserEventApiRow | undefined;
-    const newId = data?.user_event_id;
-    if (newId == null) {
-      await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
-      return null;
-    }
-    const nameFromApi = data?.user_name;
-    const user_name =
-      nameFromApi != null && String(nameFromApi).trim() !== '' ? String(nameFromApi).trim() : row.user_name ?? null;
-    const newClientId = `srv-${newId}`;
-    await taggerDeleteEvent(clientId);
-    await taggerPutEvent({
-      ...row,
-      serverId: newId,
-      clientId: newClientId,
-      pending: false,
-      user_name,
-      date_modified: mergeDateModifiedFromApi(row, data),
-    });
-    return newClientId;
-  } catch (e) {
-    warn('[taggerUserEventsService] trySyncCreate error', e);
-    await taggerEnqueueOutbox({ op: 'create', clientId, projectId });
-    return null;
-  }
+  });
 }
 
 export async function taggerTrySyncUpdate(projectId: number, clientId: string): Promise<boolean> {
@@ -388,31 +447,39 @@ export async function taggerTrySyncUpdate(projectId: number, clientId: string): 
     await taggerPutEvent({ ...row, pending: true });
     return false;
   }
-  try {
-    const url = `${apiEndpoints.app.userEvents}/${row.serverId}`;
-    const res = await putData(url, buildWriteBody(projectId, row));
-    if (!res.success) {
-      await taggerEnqueueOutbox({ op: 'update', clientId, projectId });
-      await taggerPutEvent({ ...row, pending: true });
+  return enqueueTaggerProjectWrite(projectId, async () => {
+    const r = await taggerGetEvent(clientId);
+    if (!r || r.serverId == null) {
       return false;
     }
-    const upd = res.data as UserEventApiRow | undefined;
-    const nameFromApi = upd?.user_name;
-    const user_name =
-      nameFromApi != null && String(nameFromApi).trim() !== '' ? String(nameFromApi).trim() : row.user_name ?? null;
-    await taggerPutEvent({
-      ...row,
-      pending: false,
-      user_name,
-      date_modified: mergeDateModifiedFromApi(row, upd),
-    });
-    return true;
-  } catch (e) {
-    warn('[taggerUserEventsService] trySyncUpdate error', e);
-    await taggerEnqueueOutbox({ op: 'update', clientId, projectId });
-    await taggerPutEvent({ ...row, pending: true });
-    return false;
-  }
+    try {
+      const url = `${apiEndpoints.app.userEvents}/${r.serverId}`;
+      const res = await putData(url, buildWriteBody(projectId, r));
+      if (!res.success) {
+        await taggerEnqueueOutbox({ op: 'update', clientId, projectId });
+        await taggerPutEvent({ ...r, pending: true });
+        return false;
+      }
+      const upd = res.data as UserEventApiRow | undefined;
+      const nameFromApi = upd?.user_name;
+      const user_name =
+        nameFromApi != null && String(nameFromApi).trim() !== ''
+          ? String(nameFromApi).trim()
+          : r.user_name ?? null;
+      await taggerPutEvent({
+        ...r,
+        pending: false,
+        user_name,
+        date_modified: mergeDateModifiedFromApi(r, upd),
+      });
+      return true;
+    } catch (e) {
+      warn('[taggerUserEventsService] trySyncUpdate error', e);
+      await taggerEnqueueOutbox({ op: 'update', clientId, projectId });
+      await taggerPutEvent({ ...r, pending: true });
+      return false;
+    }
+  });
 }
 
 export async function taggerTrySyncDelete(projectId: number, clientId: string): Promise<boolean> {
@@ -430,20 +497,31 @@ export async function taggerTrySyncDelete(projectId: number, clientId: string): 
     await taggerPutEvent({ ...row, pendingDelete: true, pending: true });
     return false;
   }
-  try {
-    const delUrl = `${apiEndpoints.app.userEvents}/${row.serverId}?project_id=${encodeURIComponent(String(projectId))}`;
-    const res = await deleteData(delUrl, {});
-    if (!res.success) {
+  return enqueueTaggerProjectWrite(projectId, async () => {
+    const r = await taggerGetEvent(clientId);
+    if (!r) {
+      return true;
+    }
+    if (r.serverId == null) {
+      await taggerClearOutboxForClient(projectId, clientId);
+      await taggerDeleteEvent(clientId);
+      return true;
+    }
+    try {
+      const delUrl = `${apiEndpoints.app.userEvents}/${r.serverId}?project_id=${encodeURIComponent(String(projectId))}`;
+      const res = await deleteData(delUrl, {});
+      if (!res.success) {
+        await taggerEnqueueOutbox({ op: 'delete', clientId, projectId });
+        await taggerPutEvent({ ...r, pendingDelete: true, pending: true });
+        return false;
+      }
+      await taggerDeleteEvent(clientId);
+      return true;
+    } catch (e) {
+      warn('[taggerUserEventsService] trySyncDelete error', e);
       await taggerEnqueueOutbox({ op: 'delete', clientId, projectId });
-      await taggerPutEvent({ ...row, pendingDelete: true, pending: true });
+      await taggerPutEvent({ ...r, pendingDelete: true, pending: true });
       return false;
     }
-    await taggerDeleteEvent(clientId);
-    return true;
-  } catch (e) {
-    warn('[taggerUserEventsService] trySyncDelete error', e);
-    await taggerEnqueueOutbox({ op: 'delete', clientId, projectId });
-    await taggerPutEvent({ ...row, pendingDelete: true, pending: true });
-    return false;
-  }
+  });
 }

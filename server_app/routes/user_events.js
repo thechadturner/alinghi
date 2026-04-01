@@ -29,6 +29,21 @@ router.get(
       .trim()
       .isLength({ min: 4, max: 64 })
       .withMessage('modified_after must be an ISO 8601 timestamp string'),
+    query('event_type')
+      .optional()
+      .isString()
+      .trim()
+      .isLength({ min: 1, max: 64 })
+      .withMessage('event_type filter must be 1–64 characters'),
+    query('interval_closed')
+      .optional()
+      .isIn(['0', '1', 'true', 'false'])
+      .withMessage('interval_closed must be 0, 1, true, or false'),
+    query('limit')
+      .optional()
+      .isInt({ min: 1, max: 200 })
+      .withMessage('limit must be an integer from 1 to 200')
+      .toInt(),
   ],
   controller.listUserEvents
 );

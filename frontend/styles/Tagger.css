@@ -1,8 +1,9 @@
 /* Tagger — RaceSight-aligned; fits viewport height; compose mode expands note area */
 
 .tagger-page {
-  height: 100vh;
-  max-height: 100dvh;
+  /* Below global RaceSight .header (60px) */
+  height: calc(100vh - 60px);
+  max-height: calc(100dvh - 60px);
   box-sizing: border-box;
   padding: 0.5rem 0.75rem 0.65rem;
   background: var(--color-bg-primary, #0f1419);
@@ -15,38 +16,6 @@
   --tagger-fab-edge: 1rem;
   --tagger-fab-gap: 0.5rem;
   --tagger-fab-bottom-offset: calc(var(--tagger-fab-size) + var(--tagger-fab-edge) + var(--tagger-fab-gap));
-}
-
-.tagger-page__header {
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 1rem;
-  margin-bottom: 0.5rem;
-  padding-bottom: 0.45rem;
-  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08));
-}
-
-.tagger-page__title {
-  margin: 0;
-  font-size: 1.2rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.tagger-page__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1rem;
-  font-size: 0.8125rem;
-  color: var(--color-text-secondary, #9aa0a6);
-}
-
-.tagger-page__meta span {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
 }
 
 /* Bottom-right settings (matches FiSettings usage elsewhere in RaceSight) */
@@ -258,7 +227,7 @@
   min-height: 0;
 }
 
-.tagger-panel--compose-wide .tagger-panel__title,
+.tagger-panel--compose-wide .tagger-panel__title-row,
 .tagger-panel--compose-wide .tagger-quick-row {
   flex-shrink: 0;
 }
@@ -833,6 +802,14 @@
   }
 }
 
+.tagger-panel__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem 0.75rem;
+  margin: 0 0 0.5rem;
+}
+
 .tagger-panel__title {
   margin: 0 0 0.5rem;
   font-size: 0.8125rem;
@@ -840,6 +817,16 @@
   color: var(--color-text-secondary, #9aa0a6);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+.tagger-panel__title--inline {
+  margin: 0;
+}
+
+.tagger-panel__title-row .tagger-status {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .tagger-quick-row {

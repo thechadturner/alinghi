@@ -158,14 +158,25 @@ export default function Header() {
 
   return (
     <Show when={!isIndexPage() || isLoggedIn()}>
-      <header class="header" onContextMenu={(e: MouseEvent) => e.preventDefault()}>
+      <header
+        class="header"
+        classList={{ 'header--dashboard': isDashboardPage() }}
+        onContextMenu={(e: MouseEvent) => e.preventDefault()}
+      >
       <div class="logo">
-        {/* Project name header - hidden on mobile (width < 1000px) */}
-        <Show when={!isMobile()}>
-          <a href="/">{projectHeader()}</a>
-        </Show>
-        {/* Class name, source, date header - shown on mobile (width < 1000px) when data is available, or on desktop when conditions are met */}
-        <Show when={isLoggedIn() && isDashboardPage() && selectedClassName() && (selectedSourceName() || sidebarState() === 'live' || streamingStore.isInitialized)}>
+        <a class="header-project-title" href="/">
+          {projectHeader()}
+        </a>
+        {/* Class / source / date: dashboard only, desktop (>1000px); hidden on mobile to free header space */}
+        <Show
+          when={
+            isLoggedIn() &&
+            isDashboardPage() &&
+            !isMobile() &&
+            selectedClassName() &&
+            (selectedSourceName() || sidebarState() === 'live' || streamingStore.isInitialized)
+          }
+        >
           <span class="logo-subtitle">
             {selectedClassName().toUpperCase()}
             <Show when={sidebarState() !== 'live' && !streamingStore.isInitialized && selectedSourceName()}>

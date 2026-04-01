@@ -1090,19 +1090,6 @@ body.index-page #root {
   font-weight: normal;
 }
 
-/* Hide RACESIGHT on small screens, keep subtitle visible */
-@media (max-width: 729px) {
-  .logo a {
-    display: none;
-  }
-
-  .logo-subtitle {
-    position: static;
-    transform: none;
-    left: auto;
-  }
-}
-
 /* Grey background for autofilled/readonly fields - only change text color, not background */
 .dataset-info-page form input.grey-background {
   /* Don't override background-color - let it use the normal form input background */
@@ -6722,12 +6709,23 @@ html body #main-content>#media-container.targets-page,
     transform: translateX(-100%);
   }
 
-  /* Mobile header layout adjustments */
+  /* Mobile header: tighter inset; title/subtitle 4px smaller than desktop (24px → 20px) */
   .header {
     justify-content: flex-start;
-    /* Move logo to the left next to button */
+    align-items: center;
+    padding-left: 10px;
+  }
+
+  .header.header--dashboard {
     padding-left: 60px;
-    /* Make space for mobile menu button */
+  }
+
+  .logo a {
+    font-size: 20px;
+  }
+
+  .logo .logo-date {
+    font-size: 20px;
   }
 
   .logo {
@@ -6736,13 +6734,30 @@ html body #main-content>#media-container.targets-page,
     display: flex;
     align-items: center;
     height: 100%;
+    min-width: 0;
+    flex: 1;
+    max-width: calc(100vw - 120px);
+    gap: 10px;
   }
 
-  /* Vertically center logo-subtitle when project name is hidden (mobile mode) */
-  .logo-subtitle {
+  .logo a.header-project-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .logo>.logo-subtitle {
     position: static;
     transform: none;
     left: auto;
+    font-size: 20px;
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .mobile-menu-button {
@@ -6762,8 +6777,11 @@ html body #main-content>#media-container.targets-page,
     }
 
     .header {
+      padding-left: 10px;
+    }
+
+    .header.header--dashboard {
       padding-left: 55px;
-      /* Slightly less padding for smaller screens */
     }
 
     .mobile-auth-links {

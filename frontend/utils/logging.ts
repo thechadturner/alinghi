@@ -171,9 +171,17 @@ export const storeLocalLog = (type: 'message' | 'activity' | 'user_activity', pa
   }
 };
 
+/** Browser offline (DevTools throttling, airplane mode, etc.) — avoid pointless fetches and auth retries. */
+function isBrowserOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
 // Ensure CSRF cookie exists for the target service by calling its /health endpoint
 const ensureCsrfFor = async (targetUrl: string): Promise<void> => {
   try {
+    if (isBrowserOffline()) {
+      return;
+    }
     // Skip in Web Workers (no window, no CSRF needed)
     if (typeof window === 'undefined') {
       return;
@@ -227,6 +235,16 @@ export async function logMessage(file_name: string, message_type: LogLevel, mess
     
     // Check if user is authenticated
     if (!authManager.isAuthenticated()) {
+      storeLocalLog('message', payload);
+      return;
+    }
+
+    // Offline: skip network (no /api/health, no log POST, no makeAuthenticatedRequest retries).
+    // Debug lines already printed in the browser console via console.ts.
+    if (isBrowserOffline()) {
+      if (message_type === LOG_LEVELS.DEBUG) {
+        return;
+      }
       storeLocalLog('message', payload);
       return;
     }
@@ -331,6 +349,11 @@ export async function logActivity(project_id: number, dataset_id: number, file_n
       return;
     }
 
+    if (isBrowserOffline()) {
+      storeLocalLog('activity', payload);
+      return;
+    }
+
     // Ensure CSRF cookie for admin service exists
     await ensureCsrfFor(url);
 
@@ -382,6 +405,10 @@ export const logPageLoad = async (fileName: string, pageName: string, context: s
 // Flush pending logs when user logs in
 export async function flushPendingLogs(): Promise<void> {
   try {
+    if (isBrowserOffline()) {
+      return;
+    }
+
     const logs: PendingLog[] = JSON.parse(localStorage.getItem('pending_logs') || '[]');
     
     if (logs.length === 0) {
