@@ -1,0 +1,1065 @@
+/* Tagger — RaceSight-aligned; fits viewport height; compose mode expands note area */
+
+.tagger-page {
+  height: 100vh;
+  max-height: 100dvh;
+  box-sizing: border-box;
+  padding: 0.5rem 0.75rem 0.65rem;
+  background: var(--color-bg-primary, #0f1419);
+  color: var(--color-text-primary, #e8eaed);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tagger-page__header {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08));
+}
+
+.tagger-page__title {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.tagger-page__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #9aa0a6);
+}
+
+.tagger-page__meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.tagger-status {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.tagger-status--online {
+  color: #3fb950;
+}
+
+.tagger-status--offline {
+  color: #f85149;
+}
+
+.tagger-banner {
+  flex-shrink: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.tagger-banner--warn {
+  background: rgba(251, 188, 4, 0.12);
+  border: 1px solid rgba(251, 188, 4, 0.35);
+  color: #fdd663;
+}
+
+.tagger-banner--error {
+  background: rgba(242, 139, 130, 0.12);
+  border: 1px solid rgba(242, 139, 130, 0.35);
+  color: #f28b82;
+}
+
+.tagger-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+@media (min-width: 900px) {
+  .tagger-layout {
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  .tagger-layout--compose {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tagger-panel--actions {
+    flex: 0 0 min(280px, 32vw);
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  /* Sidebar: quick tags stacked, equal width */
+  .tagger-panel--actions .tagger-quick-row {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+  }
+
+  .tagger-panel--actions .tagger-quick-row .tagger-btn {
+    width: 100%;
+    box-sizing: border-box;
+    text-align: center;
+  }
+
+  .tagger-layout--compose .tagger-panel--actions {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
+    max-height: none;
+  }
+
+  .tagger-panel--table,
+  .tagger-panel--feed {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+.tagger-layout--compose {
+  min-height: 0;
+}
+
+/* Compose-only layout: table hidden — fill remaining viewport */
+.tagger-layout--compose .tagger-panel--actions {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.tagger-layout--editing .tagger-panel--actions {
+  flex-shrink: 0;
+}
+
+.tagger-panel--compose-wide {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tagger-panel--compose-wide .tagger-panel__title,
+.tagger-panel--compose-wide .tagger-quick-row {
+  flex-shrink: 0;
+}
+
+.tagger-form-grid--compose {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tagger-form-grid--compose .tagger-field--full {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tagger-form-grid--compose .tagger-field--full textarea {
+  flex: 1 1 auto;
+  min-height: min(42dvh, 360px);
+  resize: vertical;
+}
+
+/* Comment / Job (new entry only): note fills from quick tags down to actions */
+.tagger-form-grid--compose.tagger-form-grid--compose-simple {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tagger-form-grid--compose.tagger-form-grid--compose-simple .tagger-field--full {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tagger-form-grid--compose.tagger-form-grid--compose-simple .tagger-field--full textarea {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+/* Sails / Crew structured compose: fill area like comment compose */
+.tagger-form-grid--compose.tagger-form-grid--compose-interval {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Stack fields like Session Tags comment edit: tight vertical rhythm, no flex stretch */
+  justify-content: flex-start;
+}
+
+.tagger-interval-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.tagger-field--interval-select label {
+  margin-bottom: 0.06rem;
+}
+
+.tagger-form-grid--compose.tagger-form-grid--compose-interval .tagger-interval-fields,
+.tagger-form-grid--compose.tagger-form-grid--compose-interval .tagger-interval-fields--times {
+  flex: 0 0 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  overflow: visible;
+}
+
+/* Override compose-wide “grow every field” so Mainsail/Headsail aren’t miles apart */
+.tagger-form-grid--compose.tagger-form-grid--compose-interval .tagger-field--full {
+  flex: 0 0 auto;
+  min-height: unset;
+}
+
+.tagger-interval-select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.tagger-panel {
+  background: var(--color-bg-secondary, #1a1f26);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+  box-sizing: border-box;
+}
+
+.tagger-panel--table,
+.tagger-panel--feed {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.tagger-feed-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  /* Room for bubble tail (::before) extending left from first-in-group bubbles */
+  padding: 0.45rem 0.15rem 0.35rem 0.4rem;
+}
+
+.tagger-panel--feed.tagger-panel--feed-editing {
+  flex: 1;
+  min-height: 0;
+}
+
+.tagger-feed-edit-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+/* Sails/Crew in Session Tags: keep actions flush under the form (no flex gap in the middle). */
+.tagger-feed-edit-wrap--interval {
+  flex: 0 1 auto;
+  align-self: stretch;
+  width: 100%;
+  min-height: 0;
+}
+
+.tagger-feed-edit-wrap--interval .tagger-form-grid--feed-edit-interval {
+  flex: 0 1 auto;
+}
+
+.tagger-feed-edit__hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary, #9aa0a6);
+  flex-shrink: 0;
+}
+
+.tagger-feed-edit__hint--secondary {
+  margin-top: -0.15rem;
+  font-size: 0.72rem;
+  opacity: 0.92;
+}
+
+.tagger-form-grid--feed-edit {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.tagger-form-grid--feed-edit .tagger-field--full {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tagger-form-grid--feed-edit .tagger-field--full:has(textarea) {
+  flex: 1 1 auto;
+}
+
+.tagger-form-grid--feed-edit .tagger-field--full textarea {
+  flex: 1 1 auto;
+  min-height: min(32dvh, 240px);
+  resize: vertical;
+}
+
+/* Sails/Crew edit in Session Tags (desktop): same column as comment edit, compact fields */
+.tagger-form-grid--feed-edit-interval {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  justify-content: flex-start;
+}
+
+.tagger-form-grid--feed-edit-interval .tagger-interval-fields,
+.tagger-form-grid--feed-edit-interval .tagger-interval-fields--times {
+  flex: 0 0 auto;
+}
+
+.tagger-form-grid--feed-edit-interval .tagger-field--full {
+  flex: 0 0 auto;
+  min-height: unset;
+}
+
+.tagger-form-actions--feed-edit {
+  flex-shrink: 0;
+  margin-top: 0.25rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.tagger-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 100%;
+  overflow: visible;
+}
+
+/* Tighter vertical rhythm when the same author sends several messages in a row */
+.tagger-msg--group-cont {
+  margin-top: -0.45rem;
+}
+
+.tagger-msg__swipe-wrap {
+  touch-action: pan-y;
+  max-width: 100%;
+  width: 100%;
+  overflow: visible;
+}
+
+/* Two columns: narrow name band + messages (WhatsApp-style) */
+.tagger-msg__grid {
+  display: grid;
+  grid-template-columns: minmax(calc(4.6rem - 50px), calc(6.75rem - 50px)) minmax(0, 1fr);
+  gap: 0.4rem 0.55rem;
+  width: 100%;
+  max-width: 100%;
+  align-items: start;
+  box-sizing: border-box;
+  padding: 0 0.1rem;
+}
+
+.tagger-msg__name-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding-top: 0.2rem;
+}
+
+.tagger-msg__name-pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #e8eaed);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+/* Second column: bubble + desktop Edit */
+.tagger-msg__bubble-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 0.45rem;
+  min-width: 0;
+  width: 100%;
+  overflow: visible;
+}
+
+.tagger-msg__bubble-row .tagger-msg__bubble {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tagger-msg__edit-desktop {
+  display: none;
+}
+
+.tagger-msg__bubble {
+  max-width: 100%;
+  width: 100%;
+  border-radius: 12px;
+  padding: 0.5rem 0.6rem 0.4rem;
+  box-sizing: border-box;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  position: relative;
+  z-index: 0;
+}
+
+/* Event type (left) + time (right) inside bubble */
+.tagger-msg__bubble-meta {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+/* Time sits in the corner and can overlap the first line of body text */
+.tagger-msg__bubble-meta--time-only {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.45rem;
+  margin-bottom: 0;
+  justify-content: flex-end;
+  z-index: 2;
+  gap: 0.15rem;
+  align-items: center;
+}
+
+.tagger-msg__kind {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.88;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tagger-msg__time {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.95;
+  text-align: right;
+  white-space: nowrap;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.tagger-msg__bubble--default .tagger-msg__time {
+  color: var(--color-text-primary, #e8eaed);
+  background: rgba(0, 0, 0, 0.35);
+  text-shadow: none;
+}
+
+.tagger-msg__bubble--comment .tagger-msg__time,
+.tagger-msg__bubble--test .tagger-msg__time,
+.tagger-msg__bubble--sail .tagger-msg__time,
+.tagger-msg__bubble--crew .tagger-msg__time,
+.tagger-msg__bubble--job .tagger-msg__time,
+.tagger-msg__bubble--flag .tagger-msg__time,
+.tagger-msg__bubble--nice .tagger-msg__time,
+.tagger-msg__bubble--good-balance .tagger-msg__time {
+  color: rgba(13, 17, 23, 0.88);
+  background: rgba(255, 255, 255, 0.42);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.tagger-msg__text {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  font-weight: 500;
+  word-break: break-word;
+  /* Narrow band so time can sit over the tail of short lines */
+  padding-right: 2rem;
+}
+
+.tagger-msg__elapsed {
+  margin: 0.4rem 0 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'Cascadia Code', 'Segoe UI Mono', monospace;
+  letter-spacing: 0.04em;
+  opacity: 0.95;
+}
+
+.tagger-msg__pending {
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.tagger-msg__actions--mobile {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+@media (max-width: 899px) {
+  .tagger-msg__actions--mobile {
+    display: none;
+  }
+}
+
+.tagger-msg__bubble--comment .tagger-msg__actions--mobile,
+.tagger-msg__bubble--test .tagger-msg__actions--mobile,
+.tagger-msg__bubble--sail .tagger-msg__actions--mobile,
+.tagger-msg__bubble--crew .tagger-msg__actions--mobile,
+.tagger-msg__bubble--job .tagger-msg__actions--mobile,
+.tagger-msg__bubble--flag .tagger-msg__actions--mobile,
+.tagger-msg__bubble--nice .tagger-msg__actions--mobile,
+.tagger-msg__bubble--good-balance .tagger-msg__actions--mobile {
+  border-top-color: rgba(0, 0, 0, 0.15);
+}
+
+.tagger-msg__action {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  background: rgba(255, 255, 255, 0.2);
+  color: inherit;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.tagger-msg__action:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.tagger-msg__bubble--default .tagger-msg__action {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text-primary, #e8eaed);
+}
+
+.tagger-msg__bubble--default .tagger-msg__action:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* Bubble fills match quick-tag button gradients; --tagger-bubble-tail = upward-pointing nib (desktop) */
+.tagger-msg__bubble--comment {
+  --tagger-bubble-tail: #c5cad2;
+  background: linear-gradient(180deg, #f0f3f6 0%, #d8dee6 100%);
+  color: #0d1117;
+  border: 1px solid rgba(13, 17, 23, 0.1);
+}
+
+.tagger-msg__bubble--test {
+  --tagger-bubble-tail: #5a9cf0;
+  background: linear-gradient(180deg, #79c0ff 0%, #388bfd 100%);
+  color: #0d1117;
+}
+
+.tagger-msg__bubble--sail {
+  --tagger-bubble-tail: #e89440;
+  background: linear-gradient(180deg, #ffa657 0%, #d6812b 100%);
+  color: #0d1117;
+}
+
+.tagger-msg__bubble--crew {
+  --tagger-bubble-tail: #b87ff5;
+  background: linear-gradient(180deg, #d2a8ff 0%, #a371f7 100%);
+  color: #0d1117;
+}
+
+.tagger-msg__bubble--job {
+  --tagger-bubble-tail: #a8b0b8;
+  background: linear-gradient(180deg, #c9d1d9 0%, #8b949e 100%);
+  color: #0d1117;
+}
+
+.tagger-msg__bubble--flag {
+  --tagger-bubble-tail: #fdd835;
+  background: linear-gradient(180deg, #fffde7 0%, #ffeb3b 45%, #fdd835 100%);
+  color: #0d1117;
+}
+
+.tagger-msg__bubble--nice {
+  --tagger-bubble-tail: #6adb7a;
+  background: linear-gradient(180deg, #7ee787 0%, #56d364 100%);
+  color: #0d1117;
+}
+
+.tagger-msg__bubble--good-balance {
+  --tagger-bubble-tail: #0d9f6e;
+  background: linear-gradient(180deg, #6ee7b7 0%, #059669 100%);
+  color: #0d1117;
+}
+
+.tagger-msg__bubble--default {
+  --tagger-bubble-tail: #3d444d;
+  background: var(--color-bg-tertiary, #2d333b);
+  color: var(--color-text-primary, #e8eaed);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.12));
+}
+
+/* First message in a group: nib points left toward the username column */
+.tagger-msg__bubble--tail {
+  border-top-left-radius: 10px;
+}
+
+.tagger-msg__bubble--tail::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 11px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 5px 7px 5px 0;
+  border-color: transparent var(--tagger-bubble-tail) transparent transparent;
+  filter: drop-shadow(-1px 0 0 rgba(0, 0, 0, 0.1));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.tagger-msg--group-cont .tagger-msg__bubble {
+  border-top-left-radius: 12px;
+}
+
+/* Desktop (matches Tagger mobile swipe breakpoint): wider name column, Edit outside bubble */
+@media (min-width: 900px) {
+  .tagger-msg__grid {
+    grid-template-columns: minmax(calc(5.5rem - 50px), calc(8rem - 50px)) minmax(0, 1fr);
+  }
+
+  .tagger-msg__actions--mobile {
+    display: none;
+  }
+
+  .tagger-msg__edit-desktop {
+    display: flex;
+    align-items: flex-end;
+    flex-shrink: 0;
+    padding-bottom: 0.15rem;
+  }
+
+  .tagger-msg__action--outside {
+    font-size: 0.72rem;
+    padding: 0.22rem 0.45rem;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--color-text-secondary, #9aa0a6);
+    cursor: pointer;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .tagger-msg__action--outside:hover {
+    background: rgba(255, 255, 255, 0.11);
+    color: var(--color-text-primary, #e8eaed);
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+}
+
+.tagger-panel__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #9aa0a6);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tagger-quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.45rem;
+}
+
+.tagger-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: #0d1117;
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+
+.tagger-btn:hover {
+  filter: brightness(1.08);
+}
+
+.tagger-btn:active {
+  transform: scale(0.98);
+}
+
+/* Test / Sail / Crew: interval recording — waiting for second press */
+.tagger-btn--recording {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 0 12px rgba(88, 166, 255, 0.45);
+  animation: tagger-recording-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tagger-recording-pulse {
+  0%,
+  100% {
+    filter: brightness(1.05);
+  }
+  50% {
+    filter: brightness(1.15);
+  }
+}
+
+.tagger-btn--comment {
+  background: linear-gradient(180deg, #f0f3f6 0%, #d8dee6 100%);
+  color: #0d1117;
+  border: 1px solid rgba(13, 17, 23, 0.14);
+}
+
+.tagger-btn--test {
+  background: linear-gradient(180deg, #79c0ff 0%, #388bfd 100%);
+  color: #0d1117;
+}
+
+/* Wider hit area + label fit when Test → Stop Test */
+.tagger-btn--test.tagger-btn--stop-test {
+  min-width: 7.25rem;
+  padding-left: 0.85rem;
+  padding-right: 0.85rem;
+  white-space: nowrap;
+}
+
+.tagger-btn--sail {
+  background: linear-gradient(180deg, #ffa657 0%, #d6812b 100%);
+}
+
+.tagger-btn--crew {
+  background: linear-gradient(180deg, #d2a8ff 0%, #a371f7 100%);
+}
+
+.tagger-btn--job {
+  background: linear-gradient(180deg, #c9d1d9 0%, #8b949e 100%);
+  color: #0d1117;
+}
+
+.tagger-btn--flag {
+  background: linear-gradient(180deg, #ffeb3b 0%, #fbc02d 100%);
+  color: #0d1117;
+}
+
+.tagger-btn--nice {
+  background: linear-gradient(180deg, #7ee787 0%, #56d364 100%);
+  color: #0d1117;
+}
+
+.tagger-btn--good-balance {
+  background: linear-gradient(180deg, #6ee7b7 0%, #059669 100%);
+  color: #0d1117;
+}
+
+.tagger-btn--secondary {
+  background: var(--color-bg-tertiary, #2d333b);
+  color: var(--color-text-primary, #e8eaed);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.12));
+}
+
+.tagger-btn--danger {
+  border-color: rgba(248, 81, 73, 0.55);
+  color: #f85149;
+}
+
+.tagger-btn--danger:hover {
+  background: rgba(248, 81, 73, 0.12);
+}
+
+.tagger-btn--primary {
+  background: linear-gradient(180deg, #58a6ff 0%, #1f6feb 100%);
+  color: #fff;
+}
+
+.tagger-form-grid {
+  display: grid;
+  gap: 0.55rem;
+}
+
+@media (min-width: 600px) {
+  .tagger-form-grid:not(.tagger-form-grid--compose) {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.tagger-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.tagger-field--full {
+  grid-column: 1 / -1;
+}
+
+.tagger-field label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-secondary, #9aa0a6);
+}
+
+.tagger-field input,
+.tagger-field textarea,
+.tagger-field select {
+  font: inherit;
+  font-size: 0.875rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.12));
+  background-color: var(--color-bg-primary, #0f1419);
+  color: var(--color-text-primary, #e8eaed);
+  color-scheme: dark;
+}
+
+.tagger-field select option,
+.tagger-field select optgroup {
+  background-color: var(--color-bg-primary, #0f1419);
+  color: var(--color-text-primary, #e8eaed);
+}
+
+.tagger-field textarea {
+  min-height: 3.5rem;
+  resize: vertical;
+}
+
+.tagger-datetime-input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.tagger-field__hint {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--color-text-secondary, #9aa0a6);
+  margin-top: 0.2rem;
+  line-height: 1.35;
+}
+
+.tagger-interval-fields--times {
+  flex-shrink: 0;
+}
+
+.tagger-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+  flex-shrink: 0;
+}
+
+.tagger-form-actions__start {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.tagger-form-actions__end {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-left: auto;
+}
+
+.tagger-btn--back {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text-primary, #e8eaed);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.14));
+}
+
+.tagger-btn--back:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.tagger-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tagger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.tagger-table th,
+.tagger-table td {
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08));
+  vertical-align: top;
+}
+
+.tagger-table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-bg-secondary, #1a1f26);
+  z-index: 1;
+  font-weight: 600;
+  color: var(--color-text-secondary, #9aa0a6);
+}
+
+.tagger-table tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tagger-type-pill {
+  display: inline-block;
+  padding: 0.12rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tagger-type-pill--comment {
+  background: rgba(139, 148, 158, 0.22);
+  color: #c9d1d9;
+}
+
+.tagger-type-pill--test {
+  background: rgba(56, 139, 253, 0.2);
+  color: #79c0ff;
+}
+
+.tagger-type-pill--sail {
+  background: rgba(214, 129, 43, 0.25);
+  color: #ffa657;
+}
+
+.tagger-type-pill--crew {
+  background: rgba(163, 113, 247, 0.2);
+  color: #d2a8ff;
+}
+
+.tagger-type-pill--other {
+  background: rgba(248, 81, 73, 0.2);
+  color: #ff7b72;
+}
+
+.tagger-type-pill--default {
+  background: rgba(139, 148, 158, 0.2);
+  color: #8b949e;
+}
+
+.tagger-type-pill--job {
+  background: rgba(139, 148, 158, 0.35);
+  color: #c9d1d9;
+}
+
+.tagger-type-pill--flag {
+  background: rgba(255, 235, 59, 0.45);
+  color: #f9a825;
+}
+
+.tagger-type-pill--nice {
+  background: rgba(86, 211, 100, 0.2);
+  color: #7ee787;
+}
+
+.tagger-type-pill--good-balance {
+  background: rgba(5, 150, 105, 0.25);
+  color: #6ee7b7;
+}
+
+.tagger-pending {
+  font-size: 0.65rem;
+  color: #d29922;
+  margin-left: 0.35rem;
+}
+
+.tagger-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.tagger-table-actions button {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--color-text-primary, #e8eaed);
+  cursor: pointer;
+}
+
+.tagger-table-actions button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.tagger-empty {
+  padding: 1rem 0.75rem;
+  text-align: center;
+  color: var(--color-text-secondary, #9aa0a6);
+  font-size: 0.8125rem;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
