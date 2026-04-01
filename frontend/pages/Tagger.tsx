@@ -113,6 +113,12 @@ const PRESETS: readonly PresetDef[] = [
     btnClass: 'tagger-btn--good-balance',
     instantSave: true,
   },
+  {
+    label: 'Bad',
+    eventType: 'BAD_MOMENT',
+    btnClass: 'tagger-btn--bad-moment',
+    instantSave: true,
+  },
 ];
 
 function hasLocalAuthCredential(): boolean {
@@ -220,6 +226,9 @@ function taggerIsTestRowComplete(row: TaggerStoredEvent): boolean {
 }
 
 function taggerIsTestRowOpen(row: TaggerStoredEvent): boolean {
+  if (row.pendingDelete) {
+    return false;
+  }
   if (row.event_type.toUpperCase() !== 'TEST' || !row.start_time) {
     return false;
   }
@@ -234,15 +243,47 @@ const TAGGER_CREW_FIELD_KEYS = [
   'Strategist',
 ] as const;
 
+/**
+ * SAILS/CREW intervals store an end marker in JSON (`IntervalEnd`) when closed via the app.
+ * Some rows may have that set while `end_time` is still null (legacy/sync); treat them as closed
+ * so Test and new intervals are not blocked incorrectly.
+ */
+function taggerSailCrewPayloadIndicatesIntervalEnded(comment: string): boolean {
+  const parsed = taggerParseSailCrewJson(comment);
+  if (!parsed) {
+    return false;
+  }
+  return String(parsed.IntervalEnd ?? '').trim() !== '';
+}
+
 function taggerIsSailCrewRowOpen(row: TaggerStoredEvent): boolean {
-  const et = row.event_type.toUpperCase();
+  if (row.pendingDelete) {
+    return false;
+  }
+  const et = row.event_type.trim().toUpperCase();
   if (et !== 'SAILS' && et !== 'CREW') {
     return false;
   }
   if (!row.start_time) {
     return false;
   }
-  return row.end_time == null || row.end_time === '';
+  const end = row.end_time;
+  if (end != null && String(end).trim() !== '') {
+    return false;
+  }
+  if (taggerSailCrewPayloadIndicatesIntervalEnded(row.comment)) {
+    return false;
+  }
+  return true;
+}
+
+/** True when the row would export with an empty end_time unless we close it first. */
+function taggerRowMissingEndTimeForCsv(row: TaggerStoredEvent): boolean {
+  if (row.pendingDelete) {
+    return false;
+  }
+  const t = row.end_time;
+  return t == null || String(t).trim() === '';
 }
 
 function taggerParseSailCrewJson(raw: string): Record<string, string> | null {
@@ -519,6 +560,7 @@ function bubbleClassForEventType(eventType: string): string {
   if (x === 'flag' || x.includes('flag')) return 'tagger-msg__bubble--flag';
   if (x === 'nice' || x.includes('nice')) return 'tagger-msg__bubble--nice';
   if (x.includes('good balance') || x.includes('good_balance')) return 'tagger-msg__bubble--good-balance';
+  if (x.includes('bad moment') || x.includes('bad_moment')) return 'tagger-msg__bubble--bad-moment';
   return 'tagger-msg__bubble--default';
 }
 
@@ -552,13 +594,14 @@ function timestampsPointWindowFromPress(press: Date): {
   };
 }
 
-/** Event types that use a single focus time → point window (Comment, Job, Flag, Nice, Good moment). */
+/** Event types that use a single focus time → point window (Comment, Job, Flag, Nice, Good moment, Bad). */
 const TAGGER_FOCUS_TIME_EVENT_TYPES = new Set([
   'COMMENT',
   'JOB',
   'FLAG',
   'NICE',
   'GOOD_BALANCE',
+  'BAD_MOMENT',
 ]);
 
 function taggerEventTypeUsesFocusTime(et: string): boolean {
@@ -1266,7 +1309,8 @@ export default function Tagger() {
   /** Local test in progress; server row has `end_time` null until Stop test. */
   const [testSession, setTestSession] = createSignal<TaggerTestSession | null>(null);
 
-  type StructuredComposeState = { kind: 'sails' | 'crew'; clientId: string };
+  /** `clientId: null` = new sail/crew interval not persisted until Add entry / Save. */
+  type StructuredComposeState = { kind: 'sails' | 'crew'; clientId: string | null };
   const [structuredCompose, setStructuredCompose] = createSignal<StructuredComposeState | null>(null);
   const [sailsMainsail, setSailsMainsail] = createSignal('');
   const [sailsHeadsail, setSailsHeadsail] = createSignal('');
@@ -1362,6 +1406,10 @@ export default function Tagger() {
     const pid = projectId();
     if (pid == null) {
       return null;
+    }
+    const sc = structuredCompose();
+    if (sc && sc.clientId === null) {
+      return { eventType: sc.kind === 'sails' ? 'SAILS' : 'CREW' };
     }
     const list = events().filter((e) => e.projectId === pid && taggerIsSailCrewRowOpen(e));
     if (list.length !== 1) {
@@ -1890,8 +1938,11 @@ export default function Tagger() {
   /** After loc→srv migration, `structuredCompose.clientId` may be stale; find the open row for this kind. */
   const resolveStructuredComposeClientId = async (
     pid: number,
-    sc: { kind: 'sails' | 'crew'; clientId: string }
+    sc: { kind: 'sails' | 'crew'; clientId: string | null }
   ): Promise<string | null> => {
+    if (sc.clientId == null) {
+      return null;
+    }
     const direct = await taggerGetEvent(sc.clientId);
     if (direct) {
       return sc.clientId;
@@ -1936,7 +1987,7 @@ export default function Tagger() {
   const scheduleStructuredPersistForCurrentForm = () => {
     const pid = projectId();
     const sc = structuredCompose();
-    if (pid == null || !sc) {
+    if (pid == null || !sc || sc.clientId === null) {
       return;
     }
     flushStructuredSaveTimer();
@@ -1945,7 +1996,7 @@ export default function Tagger() {
       void (async () => {
         try {
           const sc2 = structuredCompose();
-          if (pid !== projectId() || !sc2) {
+          if (pid !== projectId() || !sc2 || sc2.clientId === null) {
             return;
           }
           let cid = sc2.clientId;
@@ -1980,6 +2031,48 @@ export default function Tagger() {
     }
     flushStructuredSaveTimer();
     try {
+      if (sc.clientId === null) {
+        const eventTypeU = sc.kind === 'sails' ? 'SAILS' : 'CREW';
+        const draftTemplate: TaggerStoredEvent = {
+          clientId: '__draft__',
+          serverId: null,
+          projectId: pid,
+          user_id: null,
+          date: null,
+          focus_time: null,
+          start_time: null,
+          end_time: null,
+          event_type: eventTypeU,
+          comment: '',
+          pending: true,
+          updatedAt: Date.now(),
+        };
+        const times = mergeIntervalRowTimesFromDatetimeLocal(
+          draftTemplate,
+          structuredStartLocal(),
+          structuredEndLocal()
+        );
+        const commentJson =
+          sc.kind === 'sails' ? buildSailsCommentFromForm(undefined) : buildCrewCommentFromForm(undefined);
+        const clientId = newLocalClientId();
+        const row: TaggerStoredEvent = {
+          clientId,
+          serverId: null,
+          projectId: pid,
+          user_id: null,
+          ...times,
+          event_type: eventTypeU,
+          comment: commentJson,
+          pending: true,
+          updatedAt: Date.now(),
+        };
+        const ok = await persistNewRow(pid, row);
+        if (ok) {
+          exitStructuredNewCompose();
+        }
+        return;
+      }
+
       let clientId = sc.clientId;
       let row = await taggerGetEvent(clientId);
       if (!row) {
@@ -2047,6 +2140,22 @@ export default function Tagger() {
     return structuredFormSnapshot() !== b;
   });
 
+  /** New draft sail/crew: always offer Add entry; editing: only when dirty. */
+  const taggerStructuredShowPrimarySave = createMemo(() => {
+    const sc = structuredCompose();
+    if (!sc) {
+      return false;
+    }
+    if (editingClientId()) {
+      return taggerStructuredEditDirty();
+    }
+    return sc.clientId === null;
+  });
+
+  const taggerStructuredPrimarySaveLabel = createMemo(() =>
+    editingClientId() ? 'Save changes' : 'Add entry'
+  );
+
   const startStructuredInterval = async (kind: 'sails' | 'crew') => {
     const pid = projectId();
     if (pid == null) {
@@ -2088,42 +2197,16 @@ export default function Tagger() {
       } else {
         await taggerFlushOutbox(pid);
       }
+      await syncAll(pid);
     }
-    const clientId = newLocalClientId();
-    const now = new Date();
-    const startIso = now.toISOString();
-    const payload = kind === 'sails' ? taggerDefaultSailsPayload() : taggerDefaultCrewPayload();
-    const row: TaggerStoredEvent = {
-      clientId,
-      serverId: null,
-      projectId: pid,
-      user_id: null,
-      date: localDateYmd(now),
-      focus_time: startIso,
-      start_time: startIso,
-      end_time: null,
-      event_type: kind === 'sails' ? 'SAILS' : 'CREW',
-      comment: taggerStringifySailCrewJson(payload),
-      pending: true,
-      updatedAt: Date.now(),
-    };
-    await taggerPutEvent(row);
-    await refreshFromDb(pid);
-    const fresh = await taggerGetEvent(clientId);
     resetStructuredFormFields();
-    if (fresh) {
-      loadStructuredFormFromRow(fresh);
-    }
-    setStructuredCompose({ kind, clientId });
-    setBanner(undefined);
+    const now = new Date();
+    setStructuredStartLocal(isoToDatetimeLocalValue(now.toISOString()));
+    setStructuredEndLocal('');
+    setStructuredCompose({ kind, clientId: null });
     setStructuredEditBaseline(structuredFormSnapshot());
-    const migratedCid = await taggerTrySyncCreate(pid, clientId);
-    await taggerFlushOutbox(pid);
-    await syncAll(pid);
-    if (migratedCid != null && migratedCid !== clientId) {
-      setStructuredCompose({ kind, clientId: migratedCid });
-    }
-    debug('[Tagger] Structured interval started', kind, migratedCid ?? clientId);
+    setBanner(undefined);
+    debug('[Tagger] Structured compose opened (draft)', kind);
   };
 
   const handleAddOrUpdate = async () => {
@@ -2250,6 +2333,13 @@ export default function Tagger() {
 
     if (p.eventType === 'TEST') {
       try {
+        if (structuredCompose()?.clientId === null) {
+          setBanner({
+            kind: 'warn',
+            text: 'Save or discard (BACK) the sail or crew draft before starting a test.',
+          } as const);
+          return;
+        }
         flushStructuredSaveTimer();
         setStructuredCompose(null);
         resetStructuredFormFields();
@@ -2281,14 +2371,9 @@ export default function Tagger() {
             return;
           }
         }
-        const openSc = rowsNow.some((e) => e.projectId === pid && taggerIsSailCrewRowOpen(e));
-        if (openSc) {
-          setBanner({
-            kind: 'warn',
-            text: 'Finish or leave the sail or crew interval (BACK) before starting a test.',
-          } as const);
-          return;
-        }
+        // Do not block Test when a SAILS/CREW row is still "open" in Session Tags. Those intervals are
+        // created as soon as you tap Sails/Crew; BACK only closes the form and often leaves end_time
+        // unset, which would block Tests forever. Tests can run while a sail/crew row is open.
         await startTestSession(pid);
       } catch (e) {
         logError('[Tagger] Test preset failed', e);
@@ -2362,14 +2447,32 @@ export default function Tagger() {
       setBanner({ kind: 'error', text: 'No project loaded. Cannot export events.' } as const);
       return;
     }
-    const rows = events().filter((e) => e.projectId === pid);
-    const csv = taggerBuildEventsCsv(rows);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    const suggestedName = `tagger-events-project-${pid}-${stamp}.csv`;
+    const endIso = new Date().toISOString();
+    const snapshot = events().filter((e) => e.projectId === pid);
+    const needCloseEnd = snapshot.filter(taggerRowMissingEndTimeForCsv);
     try {
+      if (needCloseEnd.length > 0) {
+        debug('[Tagger] CSV export: setting end_time on open rows', { projectId: pid, count: needCloseEnd.length });
+        for (const row of needCloseEnd) {
+          const updated: TaggerStoredEvent = { ...row, end_time: endIso, pending: true };
+          await taggerPutEvent(updated);
+          if (updated.serverId != null) {
+            await taggerTrySyncUpdate(pid, updated.clientId);
+          }
+        }
+        await syncAll(pid);
+      }
+      const rows = await taggerGetEventsForProject(pid);
+      const csv = taggerBuildEventsCsv(rows);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      const suggestedName = `tagger-events-project-${pid}-${stamp}.csv`;
       await taggerSaveCsvBlob(blob, suggestedName);
-      debug('[Tagger] CSV export finished', { projectId: pid, rowCount: rows.filter((r) => !r.pendingDelete).length });
+      debug('[Tagger] CSV export finished', {
+        projectId: pid,
+        rowCount: rows.filter((r) => !r.pendingDelete).length,
+        closedOpenIntervals: needCloseEnd.length,
+      });
     } catch (e) {
       logError('[Tagger] CSV export failed', e);
       setBanner({ kind: 'error', text: 'Could not save the CSV file.' } as const);
@@ -2472,13 +2575,13 @@ export default function Tagger() {
           <Show when={structuredCompose() !== null && !taggerStructuredFormInFeed()}>
             <div class="tagger-form-actions">
               <div class="tagger-form-actions__start">
-                <Show when={taggerStructuredEditDirty()}>
+                <Show when={taggerStructuredShowPrimarySave()}>
                   <button
                     type="button"
                     class="tagger-btn tagger-btn--primary"
                     onClick={() => void flushStructuredSaveNow()}
                   >
-                    Save changes
+                    {taggerStructuredPrimarySaveLabel()}
                   </button>
                 </Show>
                 <Show when={editingClientId() && structuredCompose() !== null}>
@@ -2579,8 +2682,8 @@ export default function Tagger() {
                   when={editingClientId()}
                   fallback={
                     <p class="tagger-feed-edit__hint">
-                      Set times and selections below. Changes save automatically after a short delay. Save returns to
-                      the list; BACK closes this panel (the interval stays in the list).
+                      Set times and selections below, then tap Add entry to create the interval, or BACK to discard
+                      without saving.
                     </p>
                   }
                 >
@@ -2590,12 +2693,6 @@ export default function Tagger() {
                   <p class="tagger-feed-edit__hint tagger-feed-edit__hint--secondary">
                     Changes save automatically after a short delay, or use Save changes. Use Cancel to close without
                     deleting.
-                  </p>
-                </Show>
-                <Show when={!editingClientId() && structuredCompose() !== null}>
-                  <p class="tagger-feed-edit__hint tagger-feed-edit__hint--secondary">
-                    Use Save changes to persist immediately and return to the list; otherwise changes sync after a short
-                    delay.
                   </p>
                 </Show>
                 <div
@@ -2632,13 +2729,13 @@ export default function Tagger() {
                 </div>
                 <div class="tagger-form-actions tagger-form-actions--feed-edit">
                   <div class="tagger-form-actions__start">
-                    <Show when={taggerStructuredEditDirty()}>
+                    <Show when={taggerStructuredShowPrimarySave()}>
                       <button
                         type="button"
                         class="tagger-btn tagger-btn--primary"
                         onClick={() => void flushStructuredSaveNow()}
                       >
-                        Save changes
+                        {taggerStructuredPrimarySaveLabel()}
                       </button>
                     </Show>
                     <Show when={editingClientId()}>

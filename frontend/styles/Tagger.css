@@ -626,7 +626,8 @@
 .tagger-msg__bubble--job .tagger-msg__time,
 .tagger-msg__bubble--flag .tagger-msg__time,
 .tagger-msg__bubble--nice .tagger-msg__time,
-.tagger-msg__bubble--good-balance .tagger-msg__time {
+.tagger-msg__bubble--good-balance .tagger-msg__time,
+.tagger-msg__bubble--bad-moment .tagger-msg__time {
   color: rgba(13, 17, 23, 0.88);
   background: rgba(255, 255, 255, 0.42);
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
@@ -679,7 +680,8 @@
 .tagger-msg__bubble--job .tagger-msg__actions--mobile,
 .tagger-msg__bubble--flag .tagger-msg__actions--mobile,
 .tagger-msg__bubble--nice .tagger-msg__actions--mobile,
-.tagger-msg__bubble--good-balance .tagger-msg__actions--mobile {
+.tagger-msg__bubble--good-balance .tagger-msg__actions--mobile,
+.tagger-msg__bubble--bad-moment .tagger-msg__actions--mobile {
   border-top-color: rgba(0, 0, 0, 0.15);
 }
 
@@ -755,6 +757,12 @@
 .tagger-msg__bubble--good-balance {
   --tagger-bubble-tail: #0d9f6e;
   background: linear-gradient(180deg, #6ee7b7 0%, #059669 100%);
+  color: #0d1117;
+}
+
+.tagger-msg__bubble--bad-moment {
+  --tagger-bubble-tail: #b91c1c;
+  background: linear-gradient(180deg, #fecaca 0%, #ef4444 100%);
   color: #0d1117;
 }
 
@@ -920,6 +928,11 @@
 
 .tagger-btn--good-balance {
   background: linear-gradient(180deg, #6ee7b7 0%, #059669 100%);
+  color: #0d1117;
+}
+
+.tagger-btn--bad-moment {
+  background: linear-gradient(180deg, #fecaca 0%, #dc2626 100%);
   color: #0d1117;
 }
 
@@ -1147,6 +1160,11 @@
 .tagger-type-pill--good-balance {
   background: rgba(5, 150, 105, 0.25);
   color: #6ee7b7;
+}
+
+.tagger-type-pill--bad-moment {
+  background: rgba(220, 38, 38, 0.3);
+  color: #fca5a5;
 }
 
 .tagger-pending {
