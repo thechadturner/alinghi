@@ -979,6 +979,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
   const [refsReady, setRefsReady] = createSignal(false);
   /** Incremented after each fleet multi-chart draw so legend table tracks D3 zoom domain. */
   const [fleetLegendTableEpoch, bumpFleetLegendTableEpoch] = createSignal(0);
+
+  /** Legend table reads xZoom from D3 refs; bump only when zoom domain changes, not on every fleet redraw (e.g. highlight / IO). */
+  const bumpFleetLegendAfterZoomDomainChange = () => {
+    if (props.showLegendTable) {
+      bumpFleetLegendTableEpoch((n) => n + 1);
+    }
+  };
   // Remove the signals but keep a ref for tracking last update
   let lastUpdateTime = 0;
   let lastTimeWindowRedrawTime = 0; // Throttle timeWindow-driven redraws when playing (FleetTimeSeries loop fix)
@@ -1059,6 +1066,12 @@ const TimeSeries = (props: TimeSeriesProps) => {
   let fleetMultiIntersectionObservers: IntersectionObserver[] = [];
   /** Per-chart index: whether chart is in buffered viewport (near visible) */
   let fleetMultiChartNearVisible = new Map<number, boolean>();
+  /** Delayed unmount timers to avoid observer edge flicker. */
+  let fleetMultiHideTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** Abort scroll listeners for fleet chart virtualization (recreated each multi draw). */
+  let fleetVirtualizationScrollAbort: AbortController | null = null;
+  /** IO idle flush timer (cleared on each multi draw). */
+  let fleetIoIdleFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const requestFleetChartRedraw = () => {
     if (!containerRef) return;
@@ -1975,6 +1988,10 @@ const TimeSeries = (props: TimeSeriesProps) => {
     return heightPerChart;
   };
 
+  const requestDrawPlots = () => {
+    drawPlots();
+  };
+
   const drawPlots = () => {
     debug('🎨 TimeSeries: drawPlots() called');
 
@@ -2021,6 +2038,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
       fleetMultiIntersectionObservers.forEach((o) => o.disconnect());
       fleetMultiIntersectionObservers = [];
       fleetMultiChartNearVisible.clear();
+      fleetMultiHideTimers.forEach((t) => clearTimeout(t));
+      fleetMultiHideTimers.clear();
+      if (fleetIoIdleFlushTimer) {
+        clearTimeout(fleetIoIdleFlushTimer);
+        fleetIoIdleFlushTimer = null;
+      }
+      fleetVirtualizationScrollAbort?.abort();
+      fleetVirtualizationScrollAbort = null;
       if (fleetMultiRedrawRafId != null) {
         cancelAnimationFrame(fleetMultiRedrawRafId);
         fleetMultiRedrawRafId = null;
@@ -2343,6 +2368,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
             const savedScrollTop = containerRef ? containerRef.scrollTop : null;
             const savedScrollLeft = containerRef ? containerRef.scrollLeft : null;
             redrawFleetMultiVisible();
+            bumpFleetLegendAfterZoomDomainChange();
             requestAnimationFrame(() => {
               requestAnimationFrame(() => {
                 if (containerRef && savedScrollTop != null && savedScrollLeft != null) {
@@ -2397,6 +2423,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         xZoomMulti.domain(xScaleMulti.domain());
         redrawFleetMultiVisible();
         updateSelectedTimeLineMulti();
+        bumpFleetLegendAfterZoomDomainChange();
       };
 
       const renderFleetMultiChart = (idx: number) => {
@@ -2663,56 +2690,80 @@ const TimeSeries = (props: TimeSeriesProps) => {
           updateSelectedTimeLineMulti();
         });
 
+        let fleetChartMouseMoveRaf: number | null = null;
+        let fleetChartMouseMoveLatest: MouseEvent | null = null;
+        let fleetChartMouseMoveLastSig = "";
         singleSvg.on("mousemove", function (event: MouseEvent) {
-          const svgEl = (singleSvg.node() as SVGElement).ownerSVGElement;
-          const rect = svgEl?.getBoundingClientRect();
-          let lineXInG: number;
-          if (rect && rect.width > 0) {
-            const logicalX = (event.clientX - rect.left) * (multiContainerWidth / rect.width);
-            lineXInG = logicalX - margin.left;
-          } else {
-            const pt = d3.pointer(event);
-            lineXInG = pt[0];
-          }
-          const rawX = lineXInG - multiXOffset;
-          const range = xZoomMulti.range();
-          const rangeMin = Math.min(range[0], range[1]);
-          const rangeMax = Math.max(range[0], range[1]);
-          const clampedX = rangeMax > rangeMin ? Math.max(rangeMin, Math.min(rangeMax, rawX)) : rangeMin;
-          const xValueDate = xZoomMulti.invert(clampedX);
-          const timeMs =
-            xValueDate instanceof Date ? xValueDate.getTime() : typeof xValueDate === "number" ? xValueDate : NaN;
-          const vLine = verticalLinesMulti[idx];
-          if (vLine) vLine.attr("x1", lineXInG).attr("x2", lineXInG).attr("visibility", "visible");
-          if (!Number.isFinite(timeMs)) {
-            tooltipMulti.style("visibility", "hidden");
-            return;
-          }
-          let content = `Time: ${formatTime(xValueDate, datasetTimezone()) || xValueDate.toLocaleTimeString()}`;
-          const tipD0 = xZoomMulti.domain()[0];
-          const tipD1 = xZoomMulti.domain()[1];
-          chartsData[idx].series.forEach((series) => {
-            if (series.data.length === 0) return;
-            const tipY = getTransformedValueAtClosestTime(
-              series,
-              timeMs,
-              tipD0,
-              tipD1,
-              segmentGapForLayout,
-              undefined,
-              CLOSEST_SAMPLE_TOOLTIP_MAX_MS
-            );
-            if (tipY !== undefined) {
-              content += `<br>${seriesDisplayName(series)}: ${Round(tipY, 2)}`;
+          if (isPlaying()) return;
+          fleetChartMouseMoveLatest = event;
+          if (fleetChartMouseMoveRaf != null) return;
+          fleetChartMouseMoveRaf = requestAnimationFrame(() => {
+            fleetChartMouseMoveRaf = null;
+            const ev = fleetChartMouseMoveLatest;
+            fleetChartMouseMoveLatest = null;
+            if (!ev) return;
+            const svgEl = (singleSvg.node() as SVGElement).ownerSVGElement;
+            const rect = svgEl?.getBoundingClientRect();
+            let lineXInG: number;
+            if (rect && rect.width > 0) {
+              const logicalX = (ev.clientX - rect.left) * (multiContainerWidth / rect.width);
+              lineXInG = logicalX - margin.left;
+            } else {
+              const pt = d3.pointer(ev, singleSvg.node() as SVGElement);
+              lineXInG = pt[0];
             }
+            const rawX = lineXInG - multiXOffset;
+            const range = xZoomMulti.range();
+            const rangeMin = Math.min(range[0], range[1]);
+            const rangeMax = Math.max(range[0], range[1]);
+            const clampedX = rangeMax > rangeMin ? Math.max(rangeMin, Math.min(rangeMax, rawX)) : rangeMin;
+            const xValueDate = xZoomMulti.invert(clampedX);
+            const timeMs =
+              xValueDate instanceof Date ? xValueDate.getTime() : typeof xValueDate === "number" ? xValueDate : NaN;
+            if (!Number.isFinite(timeMs)) {
+              const vLine = verticalLinesMulti[idx];
+              if (vLine) vLine.attr("visibility", "hidden");
+              tooltipMulti.style("visibility", "hidden");
+              fleetChartMouseMoveLastSig = "";
+              return;
+            }
+            let content = `Time: ${formatTime(xValueDate, datasetTimezone()) || xValueDate.toLocaleTimeString()}`;
+            const tipD0 = xZoomMulti.domain()[0];
+            const tipD1 = xZoomMulti.domain()[1];
+            chartsData[idx].series.forEach((series) => {
+              if (series.data.length === 0) return;
+              const tipY = getTransformedValueAtClosestTime(
+                series,
+                timeMs,
+                tipD0,
+                tipD1,
+                segmentGapForLayout,
+                undefined,
+                CLOSEST_SAMPLE_TOOLTIP_MAX_MS
+              );
+              if (tipY !== undefined) {
+                content += `<br>${seriesDisplayName(series)}: ${Round(tipY, 2)}`;
+              }
+            });
+            const sig = `${Math.round(lineXInG)}:${content}`;
+            if (sig === fleetChartMouseMoveLastSig) return;
+            fleetChartMouseMoveLastSig = sig;
+            const vLine = verticalLinesMulti[idx];
+            if (vLine) vLine.attr("x1", lineXInG).attr("x2", lineXInG).attr("visibility", "visible");
+            tooltipMulti
+              .style("top", `${ev.clientY}px`)
+              .style("left", `${ev.clientX}px`)
+              .style("visibility", "visible")
+              .html(content);
           });
-          tooltipMulti
-            .style("top", `${event.clientY}px`)
-            .style("left", `${event.clientX}px`)
-            .style("visibility", "visible")
-            .html(content);
         });
         singleSvg.on("mouseout", function () {
+          fleetChartMouseMoveLastSig = "";
+          if (fleetChartMouseMoveRaf != null) {
+            cancelAnimationFrame(fleetChartMouseMoveRaf);
+            fleetChartMouseMoveRaf = null;
+          }
+          fleetChartMouseMoveLatest = null;
           if (!isPlaying()) {
             const vLine = verticalLinesMulti[idx];
             if (vLine) vLine.attr("visibility", "hidden");
@@ -2740,7 +2791,6 @@ const TimeSeries = (props: TimeSeriesProps) => {
           });
           updateSelectedTimeLineMulti();
           drawEventOverlaysMulti();
-          bumpFleetLegendTableEpoch((n) => n + 1);
           setTimeout(() => {
             isProgrammaticallyUpdatingBrush = false;
           }, 150);
@@ -2748,6 +2798,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
       };
 
       const fleetIoMarginPx = Math.max(Math.round(multiTotalHeight * 3), 120);
+      const fleetUnmountDelayMs = 180;
+      /** Only apply IO-driven mount/unmount after this much vertical scroll since last apply (reduces flash). */
+      const FLEET_VIRTUALIZATION_SCROLL_THRESHOLD_PX = 300;
+      /** If IO keeps firing without a large scroll, still apply so charts do not stay wrong (resize, small nudges). */
+      const FLEET_VIRTUALIZATION_IO_IDLE_MS = 450;
+
+      const fleetIoPending: IntersectionObserverEntry[] = [];
+      let fleetIoLastFlushAnchor = -1;
+
+      const getFleetScrollAnchor = (): number => {
+        if (!containerRef) return typeof window !== "undefined" ? window.scrollY : 0;
+        return (typeof window !== "undefined" ? window.scrollY : 0) + containerRef.scrollTop;
+      };
+
       const applyFleetMultiIoEntry = (entry: IntersectionObserverEntry): boolean => {
         const el = entry.target as HTMLElement;
         const raw = el.getAttribute("data-chart-index") ?? el.dataset.chartIndex;
@@ -2756,23 +2820,74 @@ const TimeSeries = (props: TimeSeriesProps) => {
         const prev = fleetMultiChartNearVisible.get(idx) ?? false;
         const nowVis = entry.isIntersecting;
         if (prev === nowVis) return false;
-        fleetMultiChartNearVisible.set(idx, nowVis);
-        if (nowVis && !prev) {
+        if (nowVis) {
+          const pendingHide = fleetMultiHideTimers.get(idx);
+          if (pendingHide) {
+            clearTimeout(pendingHide);
+            fleetMultiHideTimers.delete(idx);
+          }
+          fleetMultiChartNearVisible.set(idx, true);
           renderFleetMultiChart(idx);
-        } else if (!nowVis && prev) {
-          clearFleetMultiChart(idx);
+          return true;
         }
+        fleetMultiChartNearVisible.set(idx, false);
+        const pendingHide = fleetMultiHideTimers.get(idx);
+        if (pendingHide) clearTimeout(pendingHide);
+        const hideTimer = setTimeout(() => {
+          fleetMultiHideTimers.delete(idx);
+          if (fleetMultiChartNearVisible.get(idx) === true) return;
+          clearFleetMultiChart(idx);
+          updateSelectedTimeLineMulti();
+          drawEventOverlaysMulti();
+        }, fleetUnmountDelayMs);
+        fleetMultiHideTimers.set(idx, hideTimer);
         return true;
       };
-      const fleetIo = new IntersectionObserver((entries) => {
+
+      let fleetIo: IntersectionObserver;
+      const flushFleetIoPending = (force: boolean): boolean => {
+        const anchor = getFleetScrollAnchor();
+        const neverFlushed = fleetIoLastFlushAnchor < 0;
+        if (!force && !neverFlushed) {
+          if (Math.abs(anchor - fleetIoLastFlushAnchor) < FLEET_VIRTUALIZATION_SCROLL_THRESHOLD_PX) {
+            return false;
+          }
+        }
+        const byTarget = new Map<Element, IntersectionObserverEntry>();
+        for (const e of fleetIoPending) {
+          byTarget.set(e.target, e);
+        }
+        fleetIoPending.length = 0;
+        for (const e of fleetIo.takeRecords()) {
+          byTarget.set(e.target, e);
+        }
         let changed = false;
-        entries.forEach((entry) => {
+        byTarget.forEach((entry) => {
           if (applyFleetMultiIoEntry(entry)) changed = true;
         });
         if (changed) {
           updateSelectedTimeLineMulti();
           drawEventOverlaysMulti();
         }
+        fleetIoLastFlushAnchor = anchor;
+        if (fleetIoIdleFlushTimer) {
+          clearTimeout(fleetIoIdleFlushTimer);
+          fleetIoIdleFlushTimer = null;
+        }
+        return true;
+      };
+
+      const armFleetIoIdleFlush = () => {
+        if (fleetIoIdleFlushTimer) clearTimeout(fleetIoIdleFlushTimer);
+        fleetIoIdleFlushTimer = setTimeout(() => {
+          fleetIoIdleFlushTimer = null;
+          flushFleetIoPending(true);
+        }, FLEET_VIRTUALIZATION_IO_IDLE_MS);
+      };
+
+      fleetIo = new IntersectionObserver((entries) => {
+        fleetIoPending.push(...entries);
+        armFleetIoIdleFlush();
       }, {
         root: null,
         rootMargin: `${fleetIoMarginPx}px 0px ${fleetIoMarginPx}px 0px`,
@@ -2780,15 +2895,27 @@ const TimeSeries = (props: TimeSeriesProps) => {
       });
       chartContainers.forEach((el) => fleetIo.observe(el));
       fleetMultiIntersectionObservers.push(fleetIo);
-      const initialRecords = fleetIo.takeRecords();
-      let initialChanged = false;
-      initialRecords.forEach((entry) => {
-        if (applyFleetMultiIoEntry(entry)) initialChanged = true;
-      });
-      if (initialChanged) {
-        updateSelectedTimeLineMulti();
-        drawEventOverlaysMulti();
+
+      fleetVirtualizationScrollAbort = new AbortController();
+      const fleetVirtSig = fleetVirtualizationScrollAbort.signal;
+      const onFleetVirtScroll = () => {
+        const flushed = flushFleetIoPending(false);
+        if (!flushed && fleetIoPending.length > 0) {
+          armFleetIoIdleFlush();
+        }
+      };
+      const onFleetScrollEnd = () => {
+        flushFleetIoPending(true);
+      };
+      if (typeof window !== "undefined") {
+        window.addEventListener("scroll", onFleetVirtScroll, { capture: true, signal: fleetVirtSig });
+        window.addEventListener("scrollend", onFleetScrollEnd, { capture: true, signal: fleetVirtSig });
       }
+      containerRef.addEventListener("scroll", onFleetVirtScroll, { signal: fleetVirtSig });
+      containerRef.addEventListener("scrollend", onFleetScrollEnd, { signal: fleetVirtSig });
+
+      fleetIoPending.push(...fleetIo.takeRecords());
+      flushFleetIoPending(true);
 
       lastBrushCreateTime = Date.now();
 
@@ -2834,6 +2961,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
           const windowStart = windowEnd - (twAfterRefs * 60 * 1000);
           xZoomMulti.domain([windowStart, windowEnd]);
           redrawMulti();
+          bumpFleetLegendAfterZoomDomainChange();
         }
       }
       // Defer so time-window effect doesn't run in same tick as drawPlots (avoids lockup on play).
@@ -2881,12 +3009,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
             }
           }
           refs.redraw();
+          bumpFleetLegendAfterZoomDomainChange();
         }
       };
       if (containerRef) {
         containerRef.addEventListener('wheel', wheelHandler, { passive: false, capture: true });
       }
-      bumpFleetLegendTableEpoch((n) => n + 1);
+      bumpFleetLegendAfterZoomDomainChange();
       setTimeout(() => { isProgrammaticallyUpdatingBrush = false; }, 150);
       return;
     }
@@ -4617,75 +4746,92 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
     // Brush is now enabled by default - no key activation needed
 
-    // Add hover effects (mousemove), but without the red indicators
-    svg.on("mousemove", function (event) {
-      // Skip hover effects during playback
+    let singleChartMouseMoveRaf: number | null = null;
+    let singleChartMouseMoveLatest: MouseEvent | null = null;
+    let singleChartMouseMoveLastSig = "";
+
+    // Add hover effects (mousemove), but without the red indicators — rAF + unchanged signature skips DOM work
+    svg.on("mousemove", function (event: MouseEvent) {
       if (isPlaying()) return;
+      singleChartMouseMoveLatest = event;
+      if (singleChartMouseMoveRaf != null) return;
+      singleChartMouseMoveRaf = requestAnimationFrame(() => {
+        singleChartMouseMoveRaf = null;
+        const ev = singleChartMouseMoveLatest;
+        singleChartMouseMoveLatest = null;
+        if (!ev) return;
 
-      // Regular hover behavior when not playing
-      const mouseX = d3.pointer(event)[0];
-      const xValue = xZoom.invert(mouseX - xOffset);
-      const xValueDate = new Date(xValue); // Convert timestamp to Date object
+        const mouseX = d3.pointer(ev, svg.node() as Element)[0];
+        const xValue = xZoom.invert(mouseX - xOffset);
+        const xValueDate = new Date(xValue);
 
-      verticalLine.attr("x1", mouseX).attr("x2", mouseX).attr("visibility", "visible");
+        const timezone = datasetTimezone();
+        const timeString = formatTime(xValueDate, timezone) || xValueDate.toLocaleTimeString();
+        let tooltipContent = `Time: ${timeString}`;
 
-      // Format tooltip content from the data
-      const timezone = datasetTimezone();
-      const timeString = formatTime(xValueDate, timezone) || xValueDate.toLocaleTimeString();
-      let tooltipContent = `Time: ${timeString}`;
-
-      const htLo = xZoom.domain()[0];
-      const htHi = xZoom.domain()[1];
-      const htTimeTh = segmentGapForLayout;
-      const htIsCut = isCut();
-      const htCutEvents = cutEvents();
-      const htHasMultipleCutRanges = htIsCut && htCutEvents && htCutEvents.length > 1;
-      const getCutRangeIndexHt = (point: { x: Date; y: number }) => {
-        if (!htHasMultipleCutRanges) return -1;
-        const pointTime = point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime();
-        for (let ci = 0; ci < htCutEvents.length; ci++) {
-          const range = htCutEvents[ci];
-          if (typeof range === "number") continue;
-          if (range.start_time && range.end_time) {
-            const startTime = new Date(range.start_time).getTime();
-            const endTime = new Date(range.end_time).getTime();
-            if (pointTime >= startTime && pointTime <= endTime) {
-              return ci;
+        const htLo = xZoom.domain()[0];
+        const htHi = xZoom.domain()[1];
+        const htTimeTh = segmentGapForLayout;
+        const htIsCut = isCut();
+        const htCutEvents = cutEvents();
+        const htHasMultipleCutRanges = htIsCut && htCutEvents && htCutEvents.length > 1;
+        const getCutRangeIndexHt = (point: { x: Date; y: number }) => {
+          if (!htHasMultipleCutRanges) return -1;
+          const pointTime = point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime();
+          for (let ci = 0; ci < htCutEvents.length; ci++) {
+            const range = htCutEvents[ci];
+            if (typeof range === "number") continue;
+            if (range.start_time && range.end_time) {
+              const startTime = new Date(range.start_time).getTime();
+              const endTime = new Date(range.end_time).getTime();
+              if (pointTime >= startTime && pointTime <= endTime) {
+                return ci;
+              }
             }
           }
-        }
-        return -1;
-      };
+          return -1;
+        };
 
-      chartsData.forEach((chart) => {
-        chart.series.forEach((series) => {
-          if (series.data.length === 0) return;
+        chartsData.forEach((chart) => {
+          chart.series.forEach((series) => {
+            if (series.data.length === 0) return;
 
-          const tipY = getTransformedValueAtClosestTime(
-            series,
-            xValueDate.getTime(),
-            htLo,
-            htHi,
-            htTimeTh,
-            htHasMultipleCutRanges ? getCutRangeIndexHt : undefined,
-            CLOSEST_SAMPLE_TOOLTIP_MAX_MS
-          );
-          if (tipY !== undefined) {
-            tooltipContent += `<br>${seriesDisplayName(series)}: ${Round(tipY, 2)}`;
-          }
+            const tipY = getTransformedValueAtClosestTime(
+              series,
+              xValueDate.getTime(),
+              htLo,
+              htHi,
+              htTimeTh,
+              htHasMultipleCutRanges ? getCutRangeIndexHt : undefined,
+              CLOSEST_SAMPLE_TOOLTIP_MAX_MS
+            );
+            if (tipY !== undefined) {
+              tooltipContent += `<br>${seriesDisplayName(series)}: ${Round(tipY, 2)}`;
+            }
+          });
         });
-      });
 
-      tooltip.style("top", `${event.clientY}px`)
-        .style("left", `${event.clientX}px`)
-        .style("visibility", "visible")
-        .html(tooltipContent);
+        const sig = `${Math.round(mouseX)}:${tooltipContent}`;
+        if (sig === singleChartMouseMoveLastSig) return;
+        singleChartMouseMoveLastSig = sig;
+
+        verticalLine.attr("x1", mouseX).attr("x2", mouseX).attr("visibility", "visible");
+        tooltip
+          .style("top", `${ev.clientY}px`)
+          .style("left", `${ev.clientX}px`)
+          .style("visibility", "visible")
+          .html(tooltipContent);
+      });
     });
 
-    // Also update mouseout to respect playing state
     svg.on("mouseout", function () {
+      singleChartMouseMoveLastSig = "";
+      if (singleChartMouseMoveRaf != null) {
+        cancelAnimationFrame(singleChartMouseMoveRaf);
+        singleChartMouseMoveRaf = null;
+      }
+      singleChartMouseMoveLatest = null;
       if (!isPlaying()) {
-        // Only hide the line when not playing
         verticalLine.attr("visibility", "hidden");
       }
 
@@ -5045,7 +5191,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
               if (hasData) {
                 // Chart already has data from parent, just draw it
-                drawPlots();
+                requestDrawPlots();
                 return;
               }
 
@@ -5059,7 +5205,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
                   }
 
                   await processDataForCharts();
-                  drawPlots();
+                  requestDrawPlots();
                 } catch (error: any) {
                   logError('🔄 TimeSeries: Error in chart effect timeout callback:', {
                     error: error,
@@ -5131,7 +5277,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               }
 
               await processDataForCharts();
-              drawPlots();
+              requestDrawPlots();
             } catch (error: any) {
               logError('🔄 TimeSeries: Error in map filter effect timeout callback:', {
                 error: error,
@@ -5199,7 +5345,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
           if (!isProcessingData && !isFetchingData && props.chart) {
             debug('🔄 TimeSeries: Safeguard - reloading data after selectedRange clear');
             await processDataForCharts();
-            drawPlots();
+            requestDrawPlots();
             debug('🔄 TimeSeries: Data reloaded after selectedRange clear (safeguard)');
           } else {
             debug('🔄 TimeSeries: Safeguard reload skipped - data already being processed');
@@ -5264,7 +5410,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
           if (!isProcessingData && !isFetchingData && props.chart) {
             debug('🔄 TimeSeries: Reloading data after cut events change');
             await processDataForCharts();
-            drawPlots();
+            requestDrawPlots();
 
             // When cuts are set, treat it as a fresh dataset - reset all zoom/selection state
             // When cuts are cleared, reset zoom to show full dataset
@@ -5335,6 +5481,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
                   if (typeof refs.redraw === 'function') {
                     debug('🔄 TimeSeries: Calling redraw after zoom reset for cut data');
                     refs.redraw();
+                    bumpFleetLegendAfterZoomDomainChange();
                   }
 
                   setZoom(false); // Reset zoom state since we're showing full extent
@@ -5463,6 +5610,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
                 if (typeof refs.redraw === 'function') {
                   debug('🔄 TimeSeries: Redrawing after cross-window selection update');
                   refs.redraw();
+                  bumpFleetLegendAfterZoomDomainChange();
                 }
 
                 // Restore brush to show the selection visually
@@ -5500,7 +5648,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     // Process data and draw plots
     if (props.chart) {
       processDataForCharts().then(() => {
-        drawPlots();
+        requestDrawPlots();
 
         // Clear brush selection on initialization (don't restore from selectedRange)
         setTimeout(() => {
@@ -5535,22 +5683,86 @@ const TimeSeries = (props: TimeSeriesProps) => {
     }
 
     // Add comprehensive resize detection for responsive chart sizing
-    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
+    let resizeDebounceTimeout: ReturnType<typeof setTimeout> | null = null;
+    let resizeCooldownTimeout: ReturnType<typeof setTimeout> | null = null;
+    /** Last rounded size used to ignore ResizeObserver noise from our own DOM updates (reduces flash loops). */
+    let lastResizeObservedW = -1;
+    let lastResizeObservedH = -1;
+    /** Coalesce ResizeObserver callbacks to one measurement per animation frame. */
+    let resizeObsFlushRafId: number | null = null;
+    /** Limits back-to-back full redraws after layout settles (scrollbar / nested RO bursts). */
+    let lastResizeDrivenDrawAt = 0;
+    let eventOverlayUpdateRafId: number | null = null;
+
+    const RESIZE_SIG_EPSILON_PX = 6;
+    const RESIZE_DEBOUNCE_MS = 260;
+    const RESIZE_POST_DRAW_COOLDOWN_MS = 420;
+
+    const measurePlotResizeSignature = (): { w: number; h: number } | null => {
+      const el = containerRef;
+      if (!el) return null;
+      if (props.showLegendTable) {
+        const first = el.querySelector(".time-series-single-chart") as HTMLElement | null;
+        const target = first ?? el;
+        const r = target.getBoundingClientRect();
+        return { w: Math.round(r.width), h: Math.round(r.height) };
+      }
+      const r = el.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height) };
+    };
+
+    const resizeSignatureChanged = (sig: { w: number; h: number }, prevW: number, prevH: number): boolean => {
+      if (prevW < 0) return true;
+      // Fleet multi-chart: row count / legend height changes as charts mount — only plot width drives redraw.
+      if (props.showLegendTable) {
+        return Math.abs(sig.w - prevW) > RESIZE_SIG_EPSILON_PX;
+      }
+      return (
+        Math.abs(sig.w - prevW) > RESIZE_SIG_EPSILON_PX || Math.abs(sig.h - prevH) > RESIZE_SIG_EPSILON_PX
+      );
+    };
+
+    const flushResizeObserverMeasurement = () => {
+      resizeObsFlushRafId = null;
+      const sig = measurePlotResizeSignature();
+      if (!sig) return;
+      if (!resizeSignatureChanged(sig, lastResizeObservedW, lastResizeObservedH)) {
+        debug('TimeSeries: ResizeObserver skipped (within epsilon)');
+        return;
+      }
+      lastResizeObservedW = sig.w;
+      lastResizeObservedH = sig.h;
+      debug('TimeSeries: ResizeObserver triggered');
+      triggerChartResize();
+    };
+
+    const scheduleResizeDrawAfterCooldown = () => {
+      clearTimeout(resizeCooldownTimeout);
+      resizeCooldownTimeout = null;
+      const now = Date.now();
+      if (
+        lastResizeDrivenDrawAt > 0 &&
+        now - lastResizeDrivenDrawAt < RESIZE_POST_DRAW_COOLDOWN_MS
+      ) {
+        const wait = RESIZE_POST_DRAW_COOLDOWN_MS - (now - lastResizeDrivenDrawAt);
+        debug('TimeSeries: Resize draw deferred (post-draw cooldown)', { waitMs: wait });
+        resizeCooldownTimeout = setTimeout(() => {
+          resizeCooldownTimeout = null;
+          scheduleResizeDrawAfterCooldown();
+        }, wait);
+        return;
+      }
+      lastResizeDrivenDrawAt = Date.now();
+      debug('TimeSeries: Triggering chart resize');
+      requestDrawPlots();
+    };
 
     const triggerChartResize = () => {
-      clearTimeout(resizeTimeout);
-      resizeTimeout = setTimeout(() => {
-        debug('TimeSeries: Triggering chart resize');
-        if (containerRef && props.showLegendTable) {
-          containerRef.querySelectorAll('.time-series-single-chart').forEach((el) => {
-            const svg = (el as HTMLElement).querySelector('svg');
-            if (svg) svg.remove();
-          });
-        } else {
-          d3.select(containerRef).select("svg").remove();
-        }
-        drawPlots();
-      }, 100); // Shorter debounce for better responsiveness
+      clearTimeout(resizeDebounceTimeout);
+      resizeDebounceTimeout = setTimeout(() => {
+        resizeDebounceTimeout = null;
+        scheduleResizeDrawAfterCooldown();
+      }, RESIZE_DEBOUNCE_MS);
     };
 
     const handleResize = () => {
@@ -5561,20 +5773,17 @@ const TimeSeries = (props: TimeSeriesProps) => {
       const container = containerRef;
       if (!container) return;
 
-      // ResizeObserver to watch for container size changes
-      if (window.ResizeObserver) {
-        resizeObserver = new ResizeObserver((entries) => {
-          debug('TimeSeries: ResizeObserver triggered');
-          triggerChartResize();
+      // ResizeObserver to watch for container size changes.
+      // In fleet mode, mouse hover/layout micro-shifts can cascade into redraw loops; keep redraw
+      // ownership with scroll virtualization + explicit resize events instead.
+      if (!props.showLegendTable && window.ResizeObserver) {
+        resizeObserver = new ResizeObserver(() => {
+          if (resizeObsFlushRafId != null) return;
+          resizeObsFlushRafId = requestAnimationFrame(flushResizeObserverMeasurement);
         });
         resizeObserver.observe(container);
-
-        // Also observe split-panel if we're in split view
-        const splitPanel = container.closest('.split-panel');
-        if (splitPanel) {
-          debug('TimeSeries: Observing split-panel for resize');
-          resizeObserver.observe(splitPanel);
-        }
+        // Rely on container observation only: observing split-panel as well produced duplicate
+        // notifications per layout pass and amplified resize→drawPlots loops in fleet view.
       }
 
       // MutationObserver to watch for sidebar class changes (only relevant outside split view)
@@ -5684,14 +5893,33 @@ const TimeSeries = (props: TimeSeriesProps) => {
         clearTimeout(cutEventsReloadTimeout);
         cutEventsReloadTimeout = null;
       }
-      if (resizeTimeout) {
-        clearTimeout(resizeTimeout);
-        resizeTimeout = null;
+      if (resizeDebounceTimeout) {
+        clearTimeout(resizeDebounceTimeout);
+        resizeDebounceTimeout = null;
       }
-
+      if (resizeCooldownTimeout) {
+        clearTimeout(resizeCooldownTimeout);
+        resizeCooldownTimeout = null;
+      }
+      if (resizeObsFlushRafId != null) {
+        cancelAnimationFrame(resizeObsFlushRafId);
+        resizeObsFlushRafId = null;
+      }
+      if (eventOverlayUpdateRafId != null) {
+        cancelAnimationFrame(eventOverlayUpdateRafId);
+        eventOverlayUpdateRafId = null;
+      }
+      if (fleetIoIdleFlushTimer) {
+        clearTimeout(fleetIoIdleFlushTimer);
+        fleetIoIdleFlushTimer = null;
+      }
+      fleetVirtualizationScrollAbort?.abort();
+      fleetVirtualizationScrollAbort = null;
       fleetMultiIntersectionObservers.forEach((o) => o.disconnect());
       fleetMultiIntersectionObservers = [];
       fleetMultiChartNearVisible.clear();
+      fleetMultiHideTimers.forEach((t) => clearTimeout(t));
+      fleetMultiHideTimers.clear();
       if (fleetMultiRedrawRafId != null) {
         cancelAnimationFrame(fleetMultiRedrawRafId);
         fleetMultiRedrawRafId = null;
@@ -5789,7 +6017,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         debug('⏰ TimeSeries: Playing state - updating timeline');
         // Use immediate updates for faster playback speeds
         const speed = playbackSpeed();
-        const useTransitions = speed === 1;
+        const useTransitions = speed === 1 && !isMultiContainer;
 
         debug('⏰ TimeSeries: Playback settings', {
           speed,
@@ -6027,6 +6255,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
           if (typeof refs.redraw === 'function') {
             refs.redraw();
+            bumpFleetLegendAfterZoomDomainChange();
           }
 
           setZoom(false);
@@ -6080,6 +6309,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               if (typeof refs.redraw === 'function') {
                 debug('🔄 TimeSeries: Calling redraw after zoom reset');
                 refs.redraw();
+                bumpFleetLegendAfterZoomDomainChange();
               }
 
               setZoom(false);
@@ -6107,6 +6337,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
               }
               if (typeof refs.redraw === 'function') {
                 refs.redraw();
+                bumpFleetLegendAfterZoomDomainChange();
               }
               setZoom(false);
               setHasSelection(false);
@@ -6139,6 +6370,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
             if (typeof refs.redraw === 'function') {
               debug('🔄 TimeSeries: Calling redraw after zoom reset');
               refs.redraw();
+              bumpFleetLegendAfterZoomDomainChange();
             }
 
             setZoom(false);
@@ -6226,6 +6458,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
             if (typeof refs.redraw === 'function') {
               debug('🧹 TimeSeries: Redrawing after range zoom');
               refs.redraw();
+              bumpFleetLegendAfterZoomDomainChange();
             }
 
             // Restore brush selection only if not in cut mode (cut mode shows all data, no brush needed)
@@ -6300,15 +6533,29 @@ const TimeSeries = (props: TimeSeriesProps) => {
       }
 
       const refs = d3.select(containerRef).property("__timeSeriesRefs");
-      if (refs && refs.drawEventOverlays && typeof refs.drawEventOverlays === 'function') {
+      if (!refs || !refs.drawEventOverlays || typeof refs.drawEventOverlays !== "function") {
+        return;
+      }
+
+      if (eventOverlayUpdateRafId != null) {
+        cancelAnimationFrame(eventOverlayUpdateRafId);
+        eventOverlayUpdateRafId = null;
+      }
+      eventOverlayUpdateRafId = requestAnimationFrame(() => {
+        eventOverlayUpdateRafId = null;
+        if (!containerRef) return;
+        const r2 = d3.select(containerRef).property("__timeSeriesRefs") as {
+          drawEventOverlays?: () => void;
+        } | null;
+        if (!r2?.drawEventOverlays) return;
         debug('🎨 TimeSeries: Updating overlays due to selection/cut change', {
           eventCount: events.length,
           rangeCount: ranges.length,
           isCut: currentIsCut,
           cutRangesCount: currentCutEvents?.length || 0
         });
-        refs.drawEventOverlays();
-      }
+        r2.drawEventOverlays();
+      });
     });
   });
 
@@ -6384,6 +6631,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
       // When playing, skip setZoom(true) to avoid re-triggering selectedTime effect every tick (prevents lockup).
       if (!playing) setZoom(true);
       refsNow.redraw();
+      bumpFleetLegendAfterZoomDomainChange();
     };
 
     if (playing) {
@@ -6418,6 +6666,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     refs.xZoom.domain(fullDomain);
     setZoom(false);
     refs.redraw();
+    bumpFleetLegendAfterZoomDomainChange();
   });
 
   return (

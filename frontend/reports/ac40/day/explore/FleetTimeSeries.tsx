@@ -717,6 +717,10 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
   let hasInitialFetch = false; // Track if we've done the initial fetch
   let isFetching = false; // Guard to prevent concurrent fetches
   let progressCheckInterval: ReturnType<typeof setInterval> | null = null;
+  /** Which fetch run created `progressCheckInterval` (avoid stale runs clearing a newer run's timer). */
+  let progressIntervalOwnerRunId = -1;
+  /** Bumped on each new fetch start and on unmount; in-flight async checks this to stop overlapping loads. */
+  let fleetDataFetchRunId = 0;
   let effectRunCount = 0; // Track effect runs for debugging
   let lastEffectTime = 0; // Track when effect last ran to prevent rapid-fire calls
   
@@ -848,12 +852,15 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
 
   // Fetch chart configuration and ensure data is available
   const fetchChartConfigAndData = async () => {
-    debug('🕐 TimeSeriesPage: fetchChartConfigAndData started');
-    
+    const runId = ++fleetDataFetchRunId;
+    const stale = () => runId !== fleetDataFetchRunId;
+    debug('🕐 TimeSeriesPage: fetchChartConfigAndData started', { runId });
+
     // Note: Duplicate fetch prevention is handled by the createEffect that calls this function
     // We don't check isLoading here because it starts as true and would block the initial fetch
-    
+
     try {
+      if (stale()) return;
       setIsLoading(true);
       setLoadingProgress(0);
       setLoadingMessage("Loading time series configuration...");
@@ -862,13 +869,14 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       // 1. Resolve chart object name: use explicit/selected name, or first available from list (never hardcode "default")
       const currentUser = user();
       if (!currentUser?.user_id) {
-        setChartConfig(null);
+        if (!stale()) setChartConfig(null);
         return;
       }
       let nameToUse: string | null = props?.objectName || selectedPage() || null;
       if (!nameToUse) {
         const namesUrl = `${apiEndpoints.app.users}/object/names?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&user_id=${encodeURIComponent(currentUser.user_id)}&parent_name=fleet_timeseries`;
         const namesResponse = await getData(namesUrl);
+        if (stale()) return;
         const namesList = namesResponse?.success && Array.isArray(namesResponse?.data) ? namesResponse.data as { object_name: string }[] : [];
         if (namesList.length > 0) {
           nameToUse = namesList[0].object_name;
@@ -878,7 +886,7 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       }
       if (!nameToUse) {
         debug('🕐 TimeSeriesPage: No chart objects found for fleet_timeseries; skipping chart config fetch');
-        setChartConfig(null);
+        if (!stale()) setChartConfig(null);
         return;
       }
 
@@ -886,6 +894,7 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       debug('🕐 TimeSeriesPage: Fetching chart config from:', apiUrl);
 
       const response = await getData(apiUrl);
+      if (stale()) return;
       debug('🕐 TimeSeriesPage: Chart config response received:', {
         success: response.success,
         hasData: !!response.data,
@@ -903,7 +912,7 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
           projectId: selectedProjectId(),
           className: selectedClassName()
         });
-        setChartConfig(null);
+        if (!stale()) setChartConfig(null);
         return;
       }
 
@@ -1037,7 +1046,8 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       let sourcesUrl = `${apiEndpoints.app.datasets}/date/dataset_id?class_name=${encodeURIComponent(selectedClassName())}&project_id=${encodeURIComponent(selectedProjectId())}&date=${encodeURIComponent(dateStr)}`;
       if (timezone) sourcesUrl += `&timezone=${encodeURIComponent(timezone)}`;
       const sourcesResponse = await getData(sourcesUrl);
-      
+      if (stale()) return;
+
       if (!sourcesResponse.success || !sourcesResponse.data) {
         throw new Error("Failed to fetch sources for selected date.");
       }
@@ -1170,6 +1180,7 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       if (progressCheckInterval) {
         clearInterval(progressCheckInterval);
         progressCheckInterval = null;
+        progressIntervalOwnerRunId = -1;
       }
       progressCheckInterval = setInterval(() => {
         const total = totalFleetLoadSources();
@@ -1192,6 +1203,7 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
           setLoadingProgress(base + (idx / total) * segment);
         }
       }, 200);
+      progressIntervalOwnerRunId = runId;
       debug('🕐 TimeSeriesPage: Fetching data for charts...');
       debug('🕐 TimeSeriesPage: seriesSourceMap size:', seriesSourceMap.size);
       debug('🕐 TimeSeriesPage: sourcesToUse count:', sourcesToUse.length);
@@ -1218,6 +1230,10 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       const sourceDataMap = new Map<number, any[]>(); // Map source_id to data array
       let sourceIndex = 0;
       for (const source of sourcesToUse) {
+        if (stale()) {
+          debug('🕐 TimeSeriesPage: Stopping source fetch loop (stale run — navigation or newer fetch)');
+          return;
+        }
         if (!sourcesNeeded.has(source.source_id)) {
           debug(`🕐 TimeSeriesPage: Skipping source ${source.source_name} (not in sourcesNeeded)`);
           continue; // Skip sources not needed for any series
@@ -1265,7 +1281,8 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
             },
             "timeseries"
           );
-          
+          if (stale()) return;
+
           if (data && data.length > 0) {
             // Add source identification to each data point
             const dataWithSource = data.map((item: any) => ({
@@ -1303,6 +1320,8 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
           } catch (_) {}
         }
       } catch (_) {}
+
+      if (stale()) return;
 
       // 8. Get source colors from sourcesStore (single source of truth)
       const sourceColorMap = new Map<string, string>();
@@ -1518,7 +1537,9 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
           series: expandedSeries
         };
       });
-      
+
+      if (stale()) return;
+
       debug('🕐 TimeSeriesPage: Created chart config with', newChartConfig.length, 'charts');
 
       // Filter series by selected sources (if any sources are selected)
@@ -1549,23 +1570,27 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
       // Note: Cut filtering is handled reactively in applyFiltersToCharts
       // This ensures data is re-filtered when cut events change
       const { filteredChartConfig, ranges } = await applyFiltersToCharts(filteredBySources);
+      if (stale()) return;
       setEventTimeRanges(ranges);
       setChartConfig(filteredChartConfig);
       debug('🕐 TimeSeriesPage: Chart config set successfully');
-      
+
     } catch (error: unknown) {
       logError('🕐 TimeSeriesPage: Error fetching chart configuration and data:', error as any);
-      setChartConfig(null);
+      if (!stale()) setChartConfig(null);
     } finally {
-      if (progressCheckInterval) {
+      if (progressCheckInterval !== null && progressIntervalOwnerRunId === runId) {
         clearInterval(progressCheckInterval);
         progressCheckInterval = null;
+        progressIntervalOwnerRunId = -1;
       }
       setCurrentFleetLoadSourceId(null);
-      setLoadingProgress(100);
-      setLoadingMessage("Complete");
-      setIsLoading(false);
-      debug('🕐 TimeSeriesPage: Set loading to false');
+      if (!stale()) {
+        setLoadingProgress(100);
+        setLoadingMessage("Complete");
+        setIsLoading(false);
+        debug('🕐 TimeSeriesPage: Set loading to false');
+      }
     }
   };
 
@@ -1601,9 +1626,11 @@ export default function FleetTimeSeriesPage(props: FleetTimeSeriesPageProps) {
 
   onCleanup(() => {
     debug('🕐 TimeSeriesPage: onCleanup called');
+    fleetDataFetchRunId++;
     if (progressCheckInterval) {
       clearInterval(progressCheckInterval);
       progressCheckInterval = null;
+      progressIntervalOwnerRunId = -1;
     }
   });
 
