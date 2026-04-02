@@ -985,6 +985,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
   let lastTimeWindowDebugLog = 0; // Throttle debug logging for time-window effect
   let timeWindowRafId: number | null = null;
   let animationFrameId: number | null = null;
+  let fleetMultiRedrawRafId: number | null = null;
   let isProgrammaticallyUpdatingBrush = false; // Flag to prevent infinite loops when updating brush programmatically
   let shouldSkipBrushRestoreAfterZoom = false; // Flag to skip brush restoration after zooming from brush selection
   let lastBrushCreateTime = 0; // When the current brush was created (ignore "end" with no selection shortly after create)
@@ -1053,6 +1054,11 @@ const TimeSeries = (props: TimeSeriesProps) => {
   const [isDataLoading, setIsDataLoading] = createSignal(false);
 
   let containerRef: HTMLElement | null = null;
+
+  /** Fleet multi-chart (showLegendTable): viewport virtualization observers */
+  let fleetMultiIntersectionObservers: IntersectionObserver[] = [];
+  /** Per-chart index: whether chart is in buffered viewport (near visible) */
+  let fleetMultiChartNearVisible = new Map<number, boolean>();
 
   const requestFleetChartRedraw = () => {
     if (!containerRef) return;
@@ -2012,6 +2018,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
         containerRef.removeEventListener('wheel', wheelHandler, { capture: true });
       }
       wheelHandler = null;
+      fleetMultiIntersectionObservers.forEach((o) => o.disconnect());
+      fleetMultiIntersectionObservers = [];
+      fleetMultiChartNearVisible.clear();
+      if (fleetMultiRedrawRafId != null) {
+        cancelAnimationFrame(fleetMultiRedrawRafId);
+        fleetMultiRedrawRafId = null;
+      }
       chartContainers.forEach((el) => {
         const c = el as HTMLElement;
         const existing = c.querySelector('svg');
@@ -2066,9 +2079,21 @@ const TimeSeries = (props: TimeSeriesProps) => {
         }
       }
       const multiTotalHeight = multiHeight + margin.top + margin.bottom;
-      const allSvgs: d3.Selection<SVGGElement, unknown, null, undefined>[] = [];
-      const selectedTimeLinesMulti: d3.Selection<SVGLineElement, unknown, null, undefined>[] = [];
-      const verticalLinesMulti: d3.Selection<SVGLineElement, unknown, null, undefined>[] = [];
+      const nChartsFleet = chartsData.length;
+      const allSvgs: Array<d3.Selection<SVGGElement, unknown, null, undefined> | null> = Array.from(
+        { length: nChartsFleet },
+        () => null
+      );
+      const selectedTimeLinesMulti: Array<d3.Selection<SVGLineElement, unknown, null, undefined> | null> =
+        Array.from({ length: nChartsFleet }, () => null);
+      const verticalLinesMulti: Array<d3.Selection<SVGLineElement, unknown, null, undefined> | null> = Array.from(
+        { length: nChartsFleet },
+        () => null
+      );
+      const brushGroupsMulti: Array<d3.Selection<SVGGElement, unknown, null, undefined> | null> = Array.from(
+        { length: nChartsFleet },
+        () => null
+      );
 
       /** Shared multi-chart coord conversion: event + hit SVG -> clamped x in scale range. Same formula as mousemove so cursor and click stay aligned under CSS scale (<1620). */
       const multiChartEventToClampedX = (
@@ -2090,21 +2115,316 @@ const TimeSeries = (props: TimeSeriesProps) => {
         return rangeMax > rangeMin ? Math.max(rangeMin, Math.min(rangeMax, rawX)) : rangeMin;
       };
 
-      for (let idx = 0; idx < chartsData.length; idx++) {
+      d3.select(containerRef).selectAll(".tooltip").remove();
+      const tooltipMulti = d3
+        .select(containerRef)
+        .append("div")
+        .attr("class", "tooltip")
+        .style("position", "absolute")
+        .style("background", "#fff")
+        .style("border", "1px solid #ccc")
+        .style("padding", "5px")
+        .style("border-radius", "5px")
+        .style("pointer-events", "none")
+        .style("visibility", "hidden");
+
+      const fleetBrushHolder: { brush: d3.BrushBehavior<unknown> | null } = { brush: null };
+
+      let redrawFleetMultiVisible: () => void = () => {};
+
+      const clearFleetMultiChart = (idx: number) => {
         const chartEl = chartContainers[idx] as HTMLElement;
-        const singleSvg = d3.select(chartEl)
+        if (!chartEl) return;
+        const existing = chartEl.querySelector("svg");
+        if (existing) existing.remove();
+        allSvgs[idx] = null;
+        verticalLinesMulti[idx] = null;
+        selectedTimeLinesMulti[idx] = null;
+        brushGroupsMulti[idx] = null;
+      };
+
+      const updateSelectedTimeLineMulti = () => {
+        const time = selectedTime();
+        if (!time) return;
+        const domain = xZoomMulti.domain();
+        if (!domain || domain.length < 2) return;
+        const isTimeVisible = time >= domain[0] && time <= domain[1];
+        const x = xZoomMulti(time) + multiXOffset;
+        selectedTimeLinesMulti.forEach((line) => {
+          if (!line) return;
+          if (isTimeVisible && !isNaN(x) && isFinite(x)) {
+            line.attr("x1", x).attr("x2", x).attr("visibility", "visible");
+          } else {
+            line.attr("visibility", "hidden");
+          }
+        });
+        const timeThreshold = segmentGapForLayout;
+        const mLo = domain[0];
+        const mHi = domain[1];
+        const dotHighlightNames = fleetLegendHighlightNames();
+        const dotHasHighlight = dotHighlightNames.length > 0;
+        chartsData.forEach((chart, chartIndex) => {
+          const visibleData = chart.series.flatMap((series) =>
+            series.data.filter((d) => d.x >= mLo && d.x <= mHi)
+          );
+          const perSeriesMulti = chart.series.map((s) =>
+            collectFiniteDisplayYValues(s, mLo, mHi, timeThreshold, undefined)
+          );
+          const allYFromT = perSeriesMulti.flat();
+          const supplementMulti = chart.series.flatMap((s, i) =>
+            perSeriesMulti[i].length === 0 ? collectVisibleWindowRawYValues(s, mLo, mHi) : []
+          );
+          const mergedMulti = [...allYFromT, ...supplementMulti];
+          const allYValues =
+            mergedMulti.length > 0
+              ? mergedMulti
+              : chart.series.flatMap((s) =>
+                  s.data
+                    .map((d) => d.y)
+                    .filter((v) => v != null && Number.isFinite(Number(v)))
+                    .map((v) => Number(v))
+                );
+          let yDomain = safeNumericYDomain(allYValues);
+          if (visibleData.length > 0 && yDomain[1] > yDomain[0]) {
+            yDomain = [yDomain[0], yDomain[1] + (yDomain[1] - yDomain[0]) * 0.2];
+          }
+          const yScale = d3.scaleLinear().domain(yDomain).range([multiHeight, 0]);
+          const pointData: Array<{ id: string; x: number; y: number; color: string }> = [];
+          chart.series.forEach((series, seriesIndex) => {
+            if (series.data.length === 0) return;
+            if (dotHasHighlight && !dotHighlightNames.includes(fleetTeamNameFromSeries(series))) {
+              return;
+            }
+            const yDisp = getTransformedValueAtClosestTime(
+              series,
+              time.getTime(),
+              mLo,
+              mHi,
+              timeThreshold,
+              undefined,
+              CLOSEST_SAMPLE_UI_MARKER_MAX_MS
+            );
+            if (yDisp !== undefined) {
+              const xPos = xZoomMulti(time) + multiXOffset;
+              const yPos = yScale(yDisp);
+              if (
+                !isNaN(xPos) &&
+                isFinite(xPos) &&
+                !isNaN(yPos) &&
+                isFinite(yPos) &&
+                yPos >= 0 &&
+                yPos <= multiHeight &&
+                xPos >= 0 &&
+                xPos <= multiWidth + multiXOffset
+              ) {
+                pointData.push({
+                  id: `${chartIndex}-${seriesIndex}`,
+                  x: xPos,
+                  y: yPos,
+                  color: series.color,
+                });
+              }
+            }
+          });
+          const clipId = `clip-${chartIndex}`;
+          const s = allSvgs[chartIndex];
+          if (!s) return;
+          const circles = s.selectAll("circle.time-value-label").data(pointData, (d: { id: string }) => d.id);
+          circles.exit().remove();
+          circles
+            .enter()
+            .append("circle")
+            .attr("class", "time-value-label")
+            .attr("r", 4)
+            .attr("fill", (d) => d.color)
+            .attr("stroke", "white")
+            .attr("stroke-width", 1)
+            .attr("clip-path", `url(#${clipId})`)
+            .attr("cx", (d) => d.x)
+            .attr("cy", (d) => d.y);
+          circles
+            .attr("cx", (d) => d.x)
+            .attr("cy", (d) => d.y)
+            .attr("fill", (d) => d.color)
+            .attr("clip-path", `url(#${clipId})`);
+        });
+      };
+
+      const drawEventOverlaysMulti = () => {
+        allSvgs.forEach((s, i) => {
+          if (!s) return;
+          s.selectAll(".event-overlay").remove();
+          s.selectAll(".cut-overlay").remove();
+          s.selectAll(".event-overlays-group").remove();
+          s.selectAll(".cut-overlays-group").remove();
+          const events = selectedEvents();
+          const ranges = selectedRanges();
+          const currentIsCut = isCut();
+          const currentCutEvents = cutEvents();
+          const clipId = `clip-${i}`;
+          const overlayGroup = s
+            .insert("g", ":first-child")
+            .attr("class", "event-overlays-group")
+            .attr("clip-path", `url(#${clipId})`);
+          if (events?.length && ranges?.length) {
+            ranges.forEach((range) => {
+              if (!range.event_id || !range.start_time || !range.end_time) return;
+              const color = getEventColor(range.event_id, events);
+              const startTime = new Date(range.start_time);
+              const endTime = new Date(range.end_time);
+              const x0 = xZoomMulti(startTime) + multiXOffset;
+              const x1 = xZoomMulti(endTime) + multiXOffset;
+              const domain = xZoomMulti.domain();
+              if (endTime < domain[0] || startTime > domain[1]) return;
+              overlayGroup
+                .append("rect")
+                .attr("class", "event-overlay")
+                .attr("x", Math.min(x0, x1))
+                .attr("y", 0)
+                .attr("width", Math.abs(x1 - x0))
+                .attr("height", multiHeight)
+                .attr("fill", color)
+                .attr("opacity", 0.2)
+                .attr("pointer-events", "none")
+                .style("mix-blend-mode", "multiply");
+            });
+          }
+          if (currentIsCut && currentCutEvents && currentCutEvents.length > 1) {
+            const cutOverlayGroup = s
+              .insert("g", ":first-child")
+              .attr("class", "cut-overlays-group")
+              .attr("clip-path", `url(#${clipId})`);
+            currentCutEvents.forEach((range, index) => {
+              if (typeof range === "number" || !range.start_time || !range.end_time) return;
+              const startTime = new Date(range.start_time);
+              const endTime = new Date(range.end_time);
+              const x0 = xZoomMulti(startTime) + multiXOffset;
+              const x1 = xZoomMulti(endTime) + multiXOffset;
+              const domain = xZoomMulti.domain();
+              if (endTime < domain[0] || startTime > domain[1]) return;
+              cutOverlayGroup
+                .append("rect")
+                .attr("class", "cut-overlay")
+                .attr("x", Math.min(x0, x1))
+                .attr("y", 0)
+                .attr("width", Math.abs(x1 - x0))
+                .attr("height", multiHeight)
+                .attr("fill", getColorByIndex(index))
+                .attr("opacity", 0.2)
+                .attr("pointer-events", "none")
+                .style("mix-blend-mode", "multiply");
+            });
+          }
+        });
+      };
+
+      const brushMulti = d3
+        .brushX()
+        .extent([
+          [multiXOffset, 0],
+          [multiWidth + multiXOffset, multiHeight],
+        ])
+        .on("end", (event) => {
+          if (isProgrammaticallyUpdatingBrush) return;
+          if (event.selection) {
+            const [x0, x1] = event.selection.map((x) => xZoomMulti.invert(x - multiXOffset));
+            const t0 = x0 instanceof Date ? x0.getTime() : typeof x0 === "number" ? x0 : NaN;
+            const t1 = x1 instanceof Date ? x1.getTime() : typeof x1 === "number" ? x1 : NaN;
+            if (!Number.isFinite(t0) || !Number.isFinite(t1)) return;
+            xZoomMulti.domain([x0, x1]);
+            setSelectedRange([{ start_time: new Date(t0).toISOString(), end_time: new Date(t1).toISOString() }]);
+            if (requestTimeControl("timeseries")) setSelectedTime(new Date(t0), "timeseries");
+            setZoom(true);
+            setHasSelection(true);
+            shouldSkipBrushRestoreAfterZoom = true;
+            brushGroupsMulti.forEach((bg) => {
+              if (bg) bg.call(brushMulti.move, null);
+            });
+            const savedScrollTop = containerRef ? containerRef.scrollTop : null;
+            const savedScrollLeft = containerRef ? containerRef.scrollLeft : null;
+            redrawFleetMultiVisible();
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                if (containerRef && savedScrollTop != null && savedScrollLeft != null) {
+                  containerRef.scrollTop = savedScrollTop;
+                  containerRef.scrollLeft = savedScrollLeft;
+                }
+              });
+            });
+          } else {
+            const se = event.sourceEvent as MouseEvent | undefined;
+            if (se) {
+              const targetEl = se.target as Element | null;
+              const hitSvg =
+                targetEl?.closest?.("svg") ??
+                (targetEl as SVGElement | null)?.ownerSVGElement ??
+                chartContainers[0]?.querySelector?.("svg") ??
+                null;
+              const range = xZoomMulti.range() as [number, number];
+              const clampedX = multiChartEventToClampedX(
+                se,
+                hitSvg as SVGElement | null,
+                multiContainerWidth,
+                margin.left,
+                multiXOffset,
+                range
+              );
+              if (clampedX != null) {
+                const time = xZoomMulti.invert(clampedX);
+                const timeMs = time instanceof Date ? time.getTime() : typeof time === "number" ? time : NaN;
+                if (Number.isFinite(timeMs) && requestTimeControl("timeseries")) {
+                  setIsManualTimeChange(true);
+                  setSelectedTime(new Date(timeMs), "timeseries");
+                }
+                updateSelectedTimeLineMulti();
+              }
+            }
+          }
+        });
+      fleetBrushHolder.brush = brushMulti;
+
+      const handleDblclickMulti = () => {
+        debug("🖱️ TimeSeries: Double-click (multi) - clearing selection and resetting zoom");
+        setIsManualTimeChange(false);
+        const currentIsCut = isCut();
+        const currentCutEvents = cutEvents();
+        const hasActiveCuts = currentIsCut && currentCutEvents && currentCutEvents.length > 0;
+        if (hasActiveCuts) {
+          clearActiveSelection();
+        } else {
+          clearSelection();
+        }
+        xZoomMulti.domain(xScaleMulti.domain());
+        redrawFleetMultiVisible();
+        updateSelectedTimeLineMulti();
+      };
+
+      const renderFleetMultiChart = (idx: number) => {
+        const brushBeh = fleetBrushHolder.brush;
+        if (!brushBeh) return;
+        const chartEl = chartContainers[idx] as HTMLElement;
+        if (!chartEl) return;
+        const chart = chartsData[idx];
+        if (!chart) return;
+
+        clearFleetMultiChart(idx);
+
+        const singleSvg = d3
+          .select(chartEl)
           .append("svg")
           .attr("width", multiContainerWidth)
           .attr("height", multiTotalHeight)
           .append("g")
           .attr("transform", `translate(${margin.left},${margin.top})`);
         const clipId = `clip-${idx}`;
-        singleSvg.append("defs").append("clipPath").attr("id", clipId)
+        singleSvg
+          .append("defs")
+          .append("clipPath")
+          .attr("id", clipId)
           .append("rect")
           .attr("width", multiWidth + multiXOffset)
           .attr("height", multiHeight);
         const group = singleSvg.append("g").attr("class", `chart-group chart-group-${idx}`);
-        const chart = chartsData[idx];
         const yOffset = 0;
         const multiDomainLo = xZoomMulti.domain()[0];
         const multiDomainHi = xZoomMulti.domain()[1];
@@ -2119,11 +2439,11 @@ const TimeSeries = (props: TimeSeriesProps) => {
           allYFromTransforms.length > 0
             ? allYFromTransforms
             : chart.series.flatMap((s) =>
-              s.data
-                .map((d) => d.y)
-                .filter((v) => v != null && Number.isFinite(Number(v)))
-                .map((v) => Number(v))
-            );
+                s.data
+                  .map((d) => d.y)
+                  .filter((v) => v != null && Number.isFinite(Number(v)))
+                  .map((v) => Number(v))
+              );
         let yDomain = safeNumericYDomain(allYValues);
         if (visibleData.length > 0 && yDomain[1] > yDomain[0]) {
           yDomain = [yDomain[0], yDomain[1] + (yDomain[1] - yDomain[0]) * 0.2];
@@ -2257,8 +2577,9 @@ const TimeSeries = (props: TimeSeriesProps) => {
         });
         if (chart.series.length > 0) {
           const firstName = seriesDisplayName(chart.series[0]);
-          const channelName = firstName.includes(' - ') ? firstName.split(' - ')[0].trim() : firstName;
-          group.append("text")
+          const channelName = firstName.includes(" - ") ? firstName.split(" - ")[0].trim() : firstName;
+          group
+            .append("text")
             .attr("class", "chart-channel-label")
             .attr("x", 20)
             .attr("y", yOffset + 14)
@@ -2276,19 +2597,27 @@ const TimeSeries = (props: TimeSeriesProps) => {
             .attr("pointer-events", "none")
             .text(fleetChartLineTypeSummary(chart.series));
         }
-        group.append("g")
+        group
+          .append("g")
           .attr("class", "y-axis")
           .attr("transform", `translate(${multiXOffset}, ${yOffset})`)
           .call(d3.axisLeft().scale(yScale).ticks(5));
-        group.append("g")
+        group
+          .append("g")
           .attr("class", "x-axis")
           .attr("transform", `translate(${multiXOffset}, ${yOffset + multiHeight})`)
           .call(
-            d3.axisBottom(xZoomMulti)
+            d3
+              .axisBottom(xZoomMulti)
               .ticks(10)
-              .tickFormat((d) => formatTime(new Date(d), datasetTimezone()) || new Date(d).toLocaleTimeString("en-US", { hour12: false }))
+              .tickFormat(
+                (d) =>
+                  formatTime(new Date(d), datasetTimezone()) ||
+                  new Date(d).toLocaleTimeString("en-US", { hour12: false })
+              )
           );
-        const mouseOverlayRect = singleSvg.insert("rect", ":first-child")
+        const mouseOverlayRect = singleSvg
+          .insert("rect", ":first-child")
           .attr("class", "mouse-overlay")
           .attr("width", multiWidth)
           .attr("height", multiHeight)
@@ -2296,26 +2625,29 @@ const TimeSeries = (props: TimeSeriesProps) => {
           .attr("fill", "none")
           .attr("pointer-events", "all")
           .style("cursor", "pointer");
-        const vertLine = singleSvg.append("line")
+        const vertLine = singleSvg
+          .append("line")
           .attr("class", "vertical-line")
           .attr("visibility", "hidden")
           .attr("y1", 0)
           .attr("y2", multiHeight)
           .attr("pointer-events", "none");
-        const selLine = singleSvg.append("line")
+        const selLine = singleSvg
+          .append("line")
           .attr("class", "selected-time-line")
           .attr("y1", 0)
           .attr("y2", multiHeight)
           .attr("pointer-events", "none")
           .attr("visibility", "hidden");
-        verticalLinesMulti.push(vertLine);
-        selectedTimeLinesMulti.push(selLine);
-        allSvgs.push(singleSvg);
+        verticalLinesMulti[idx] = vertLine;
+        selectedTimeLinesMulti[idx] = selLine;
+        allSvgs[idx] = singleSvg;
         mouseOverlayRect.on("click", function (event: MouseEvent) {
           const svgEl = chartEl.querySelector("svg") as SVGElement | null;
           const range = xZoomMulti.range() as [number, number];
-          const clampedX = multiChartEventToClampedX(event, svgEl, multiContainerWidth, margin.left, multiXOffset, range)
-            ?? (() => {
+          const clampedX =
+            multiChartEventToClampedX(event, svgEl, multiContainerWidth, margin.left, multiXOffset, range) ??
+            (() => {
               const pt = d3.pointer(event, chartEl);
               const rawX = pt[0] - margin.left - multiXOffset;
               const rangeMin = Math.min(range[0], range[1]);
@@ -2323,265 +2655,16 @@ const TimeSeries = (props: TimeSeriesProps) => {
               return rangeMax > rangeMin ? Math.max(rangeMin, Math.min(rangeMax, rawX)) : rangeMin;
             })();
           const time = xZoomMulti.invert(clampedX);
-          const timeMs = time instanceof Date ? time.getTime() : typeof time === 'number' ? time : NaN;
-          if (Number.isFinite(timeMs) && requestTimeControl('timeseries')) {
+          const timeMs = time instanceof Date ? time.getTime() : typeof time === "number" ? time : NaN;
+          if (Number.isFinite(timeMs) && requestTimeControl("timeseries")) {
             setIsManualTimeChange(true);
-            setSelectedTime(new Date(timeMs), 'timeseries');
+            setSelectedTime(new Date(timeMs), "timeseries");
           }
           updateSelectedTimeLineMulti();
         });
-      }
 
-      const updateSelectedTimeLineMulti = () => {
-        const time = selectedTime();
-        if (!time || selectedTimeLinesMulti.length === 0) return;
-        const domain = xZoomMulti.domain();
-        if (!domain || domain.length < 2) return;
-        const isTimeVisible = time >= domain[0] && time <= domain[1];
-        const x = xZoomMulti(time) + multiXOffset;
-        selectedTimeLinesMulti.forEach((line) => {
-          if (isTimeVisible && !isNaN(x) && isFinite(x)) {
-            line.attr("x1", x).attr("x2", x).attr("visibility", "visible");
-          } else {
-            line.attr("visibility", "hidden");
-          }
-        });
-        const timeThreshold = segmentGapForLayout;
-        const mLo = domain[0];
-        const mHi = domain[1];
-        const dotHighlightNames = fleetLegendHighlightNames();
-        const dotHasHighlight = dotHighlightNames.length > 0;
-        chartsData.forEach((chart, chartIndex) => {
-          const visibleData = chart.series.flatMap((series) =>
-            series.data.filter((d) => d.x >= mLo && d.x <= mHi)
-          );
-          const perSeriesMulti = chart.series.map((s) =>
-            collectFiniteDisplayYValues(s, mLo, mHi, timeThreshold, undefined)
-          );
-          const allYFromT = perSeriesMulti.flat();
-          const supplementMulti = chart.series.flatMap((s, i) =>
-            perSeriesMulti[i].length === 0 ? collectVisibleWindowRawYValues(s, mLo, mHi) : []
-          );
-          const mergedMulti = [...allYFromT, ...supplementMulti];
-          const allYValues =
-            mergedMulti.length > 0
-              ? mergedMulti
-              : chart.series.flatMap((s) =>
-                s.data
-                  .map((d) => d.y)
-                  .filter((v) => v != null && Number.isFinite(Number(v)))
-                  .map((v) => Number(v))
-              );
-          let yDomain = safeNumericYDomain(allYValues);
-          if (visibleData.length > 0 && yDomain[1] > yDomain[0]) {
-            yDomain = [yDomain[0], yDomain[1] + (yDomain[1] - yDomain[0]) * 0.2];
-          }
-          const yScale = d3.scaleLinear().domain(yDomain).range([multiHeight, 0]);
-          const pointData: Array<{ id: string; x: number; y: number; color: string }> = [];
-          chart.series.forEach((series, seriesIndex) => {
-            if (series.data.length === 0) return;
-            if (dotHasHighlight && !dotHighlightNames.includes(fleetTeamNameFromSeries(series))) {
-              return;
-            }
-            const yDisp = getTransformedValueAtClosestTime(
-              series,
-              time.getTime(),
-              mLo,
-              mHi,
-              timeThreshold,
-              undefined,
-              CLOSEST_SAMPLE_UI_MARKER_MAX_MS
-            );
-            if (yDisp !== undefined) {
-              const xPos = xZoomMulti(time) + multiXOffset;
-              const yPos = yScale(yDisp);
-              if (
-                !isNaN(xPos) && isFinite(xPos) && !isNaN(yPos) && isFinite(yPos) &&
-                yPos >= 0 && yPos <= multiHeight && xPos >= 0 && xPos <= multiWidth + multiXOffset
-              ) {
-                pointData.push({
-                  id: `${chartIndex}-${seriesIndex}`,
-                  x: xPos,
-                  y: yPos,
-                  color: series.color
-                });
-              }
-            }
-          });
-          const clipId = `clip-${chartIndex}`;
-          const s = allSvgs[chartIndex];
-          if (!s) return;
-          const circles = s.selectAll("circle.time-value-label").data(pointData, (d: { id: string }) => d.id);
-          circles.exit().remove();
-          circles
-            .enter()
-            .append("circle")
-            .attr("class", "time-value-label")
-            .attr("r", 4)
-            .attr("fill", (d) => d.color)
-            .attr("stroke", "white")
-            .attr("stroke-width", 1)
-            .attr("clip-path", `url(#${clipId})`)
-            .attr("cx", (d) => d.x)
-            .attr("cy", (d) => d.y);
-          circles.attr("cx", (d) => d.x).attr("cy", (d) => d.y).attr("fill", (d) => d.color).attr("clip-path", `url(#${clipId})`);
-        });
-      };
-
-      const drawEventOverlaysMulti = () => {
-        allSvgs.forEach((s, i) => {
-          s.selectAll(".event-overlay").remove();
-          s.selectAll(".cut-overlay").remove();
-          s.selectAll(".event-overlays-group").remove();
-          s.selectAll(".cut-overlays-group").remove();
-          const events = selectedEvents();
-          const ranges = selectedRanges();
-          const currentIsCut = isCut();
-          const currentCutEvents = cutEvents();
-          const clipId = `clip-${i}`;
-          const overlayGroup = s.insert("g", ":first-child")
-            .attr("class", "event-overlays-group")
-            .attr("clip-path", `url(#${clipId})`);
-          if (events?.length && ranges?.length) {
-            ranges.forEach((range) => {
-              if (!range.event_id || !range.start_time || !range.end_time) return;
-              const color = getEventColor(range.event_id, events);
-              const startTime = new Date(range.start_time);
-              const endTime = new Date(range.end_time);
-              const x0 = xZoomMulti(startTime) + multiXOffset;
-              const x1 = xZoomMulti(endTime) + multiXOffset;
-              const domain = xZoomMulti.domain();
-              if (endTime < domain[0] || startTime > domain[1]) return;
-              overlayGroup.append("rect")
-                .attr("class", "event-overlay")
-                .attr("x", Math.min(x0, x1))
-                .attr("y", 0)
-                .attr("width", Math.abs(x1 - x0))
-                .attr("height", multiHeight)
-                .attr("fill", color)
-                .attr("opacity", 0.2)
-                .attr("pointer-events", "none")
-                .style("mix-blend-mode", "multiply");
-            });
-          }
-          if (currentIsCut && currentCutEvents && currentCutEvents.length > 1) {
-            const cutOverlayGroup = s.insert("g", ":first-child")
-              .attr("class", "cut-overlays-group")
-              .attr("clip-path", `url(#${clipId})`);
-            currentCutEvents.forEach((range, index) => {
-              if (typeof range === 'number' || !range.start_time || !range.end_time) return;
-              const startTime = new Date(range.start_time);
-              const endTime = new Date(range.end_time);
-              const x0 = xZoomMulti(startTime) + multiXOffset;
-              const x1 = xZoomMulti(endTime) + multiXOffset;
-              const domain = xZoomMulti.domain();
-              if (endTime < domain[0] || startTime > domain[1]) return;
-              cutOverlayGroup.append("rect")
-                .attr("class", "cut-overlay")
-                .attr("x", Math.min(x0, x1))
-                .attr("y", 0)
-                .attr("width", Math.abs(x1 - x0))
-                .attr("height", multiHeight)
-                .attr("fill", getColorByIndex(index))
-                .attr("opacity", 0.2)
-                .attr("pointer-events", "none")
-                .style("mix-blend-mode", "multiply");
-            });
-          }
-        });
-      };
-
-      const brushMulti = d3.brushX()
-        .extent([[multiXOffset, 0], [multiWidth + multiXOffset, multiHeight]])
-        .on("end", (event) => {
-          if (isProgrammaticallyUpdatingBrush) return;
-          if (event.selection) {
-            const [x0, x1] = event.selection.map((x) => xZoomMulti.invert(x - multiXOffset));
-            const t0 = x0 instanceof Date ? x0.getTime() : typeof x0 === 'number' ? x0 : NaN;
-            const t1 = x1 instanceof Date ? x1.getTime() : typeof x1 === 'number' ? x1 : NaN;
-            if (!Number.isFinite(t0) || !Number.isFinite(t1)) return;
-            xZoomMulti.domain([x0, x1]);
-            setSelectedRange([{ start_time: new Date(t0).toISOString(), end_time: new Date(t1).toISOString() }]);
-            if (requestTimeControl('timeseries')) setSelectedTime(new Date(t0), 'timeseries');
-            setZoom(true);
-            setHasSelection(true);
-            shouldSkipBrushRestoreAfterZoom = true;
-            brushGroupsMulti.forEach((bg) => { bg.call(brushMulti.move, null); });
-            const savedScrollTop = containerRef ? containerRef.scrollTop : null;
-            const savedScrollLeft = containerRef ? containerRef.scrollLeft : null;
-            redrawMulti();
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                if (containerRef && savedScrollTop != null && savedScrollLeft != null) {
-                  containerRef.scrollTop = savedScrollTop;
-                  containerRef.scrollLeft = savedScrollLeft;
-                }
-              });
-            });
-          } else {
-            // Single click (no drag): set selectedTime from click position (same conversion as mousemove/overlay so cursor and click align under <1620)
-            const se = event.sourceEvent as MouseEvent | undefined;
-            if (se) {
-              const targetEl = se.target as Element | null;
-              const hitSvg = targetEl?.closest?.('svg') ?? (targetEl as SVGElement | null)?.ownerSVGElement ?? chartContainers[0]?.querySelector?.('svg') ?? null;
-              const range = xZoomMulti.range() as [number, number];
-              const clampedX = multiChartEventToClampedX(se, hitSvg as SVGElement | null, multiContainerWidth, margin.left, multiXOffset, range);
-              if (clampedX != null) {
-                const time = xZoomMulti.invert(clampedX);
-                const timeMs = time instanceof Date ? time.getTime() : typeof time === 'number' ? time : NaN;
-                if (Number.isFinite(timeMs) && requestTimeControl('timeseries')) {
-                  setIsManualTimeChange(true);
-                  setSelectedTime(new Date(timeMs), 'timeseries');
-                }
-                updateSelectedTimeLineMulti();
-              }
-            }
-          }
-        });
-      const brushGroupsMulti: d3.Selection<SVGGElement, unknown, null, undefined>[] = [];
-      allSvgs.forEach((s) => {
-        const bg = s.append("g").attr("class", "brush").attr("pointer-events", "all").call(brushMulti);
-        brushGroupsMulti.push(bg);
-      });
-      const firstSvg = allSvgs[0];
-      lastBrushCreateTime = Date.now();
-      const handleDblclickMulti = () => {
-        debug('🖱️ TimeSeries: Double-click (multi) - clearing selection and resetting zoom');
-        setIsManualTimeChange(false);
-        const currentIsCut = isCut();
-        const currentCutEvents = cutEvents();
-        const hasActiveCuts = currentIsCut && currentCutEvents && currentCutEvents.length > 0;
-        if (hasActiveCuts) {
-          clearActiveSelection();
-        } else {
-          clearSelection();
-        }
-        xZoomMulti.domain(xScaleMulti.domain());
-        redrawMulti();
-        updateSelectedTimeLineMulti();
-      };
-      allSvgs.forEach((s) => s.on("dblclick", handleDblclickMulti));
-      updateSelectedTimeLineMulti();
-      drawEventOverlaysMulti();
-      d3.select(containerRef).select(".timeseries-scroll-spacer").remove();
-      d3.select(containerRef)
-        .append("div")
-        .attr("class", "timeseries-scroll-spacer")
-        .style("height", `${multiHeight * 1.5}px`)
-        .style("width", "100%")
-        .style("flex-shrink", "0");
-      const redrawMulti = () => {
-        drawPlots();
-      };
-      d3.select(containerRef).selectAll(".tooltip").remove();
-      const tooltipMulti = d3.select(containerRef).append("div").attr("class", "tooltip")
-        .style("position", "absolute").style("background", "#fff").style("border", "1px solid #ccc")
-        .style("padding", "5px").style("border-radius", "5px").style("pointer-events", "none").style("visibility", "hidden");
-      allSvgs.forEach((s, i) => {
-        s.on("mousemove", function (event: MouseEvent) {
-          // When window is narrow the media-container is CSS-scaled (e.g. <1620px). Use SVG's
-          // getBoundingClientRect() so client coords are converted to chart logical coords correctly.
-          const svgEl = (s.node() as SVGElement).ownerSVGElement;
+        singleSvg.on("mousemove", function (event: MouseEvent) {
+          const svgEl = (singleSvg.node() as SVGElement).ownerSVGElement;
           const rect = svgEl?.getBoundingClientRect();
           let lineXInG: number;
           if (rect && rect.width > 0) {
@@ -2591,14 +2674,16 @@ const TimeSeries = (props: TimeSeriesProps) => {
             const pt = d3.pointer(event);
             lineXInG = pt[0];
           }
-          const rawX = lineXInG - multiXOffset; // position in scale range [0, multiWidth]
+          const rawX = lineXInG - multiXOffset;
           const range = xZoomMulti.range();
           const rangeMin = Math.min(range[0], range[1]);
           const rangeMax = Math.max(range[0], range[1]);
           const clampedX = rangeMax > rangeMin ? Math.max(rangeMin, Math.min(rangeMax, rawX)) : rangeMin;
           const xValueDate = xZoomMulti.invert(clampedX);
-          const timeMs = xValueDate instanceof Date ? xValueDate.getTime() : typeof xValueDate === 'number' ? xValueDate : NaN;
-          verticalLinesMulti[i].attr("x1", lineXInG).attr("x2", lineXInG).attr("visibility", "visible");
+          const timeMs =
+            xValueDate instanceof Date ? xValueDate.getTime() : typeof xValueDate === "number" ? xValueDate : NaN;
+          const vLine = verticalLinesMulti[idx];
+          if (vLine) vLine.attr("x1", lineXInG).attr("x2", lineXInG).attr("visibility", "visible");
           if (!Number.isFinite(timeMs)) {
             tooltipMulti.style("visibility", "hidden");
             return;
@@ -2606,7 +2691,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
           let content = `Time: ${formatTime(xValueDate, datasetTimezone()) || xValueDate.toLocaleTimeString()}`;
           const tipD0 = xZoomMulti.domain()[0];
           const tipD1 = xZoomMulti.domain()[1];
-          chartsData[i].series.forEach((series) => {
+          chartsData[idx].series.forEach((series) => {
             if (series.data.length === 0) return;
             const tipY = getTransformedValueAtClosestTime(
               series,
@@ -2621,16 +2706,106 @@ const TimeSeries = (props: TimeSeriesProps) => {
               content += `<br>${seriesDisplayName(series)}: ${Round(tipY, 2)}`;
             }
           });
-          tooltipMulti.style("top", `${event.clientY}px`).style("left", `${event.clientX}px`).style("visibility", "visible").html(content);
+          tooltipMulti
+            .style("top", `${event.clientY}px`)
+            .style("left", `${event.clientX}px`)
+            .style("visibility", "visible")
+            .html(content);
         });
-        s.on("mouseout", function () {
-          if (!isPlaying()) verticalLinesMulti[i].attr("visibility", "hidden");
+        singleSvg.on("mouseout", function () {
+          if (!isPlaying()) {
+            const vLine = verticalLinesMulti[idx];
+            if (vLine) vLine.attr("visibility", "hidden");
+          }
           tooltipMulti.style("visibility", "hidden");
         });
+
+        singleSvg.on("dblclick", handleDblclickMulti);
+
+        const bg = singleSvg
+          .append("g")
+          .attr("class", "brush")
+          .attr("pointer-events", "all")
+          .call(brushBeh);
+        brushGroupsMulti[idx] = bg;
+      };
+
+      redrawFleetMultiVisible = () => {
+        if (fleetMultiRedrawRafId != null) return;
+        fleetMultiRedrawRafId = requestAnimationFrame(() => {
+          fleetMultiRedrawRafId = null;
+          isProgrammaticallyUpdatingBrush = true;
+          fleetMultiChartNearVisible.forEach((visible, chartIdx) => {
+            if (visible) renderFleetMultiChart(chartIdx);
+          });
+          updateSelectedTimeLineMulti();
+          drawEventOverlaysMulti();
+          bumpFleetLegendTableEpoch((n) => n + 1);
+          setTimeout(() => {
+            isProgrammaticallyUpdatingBrush = false;
+          }, 150);
+        });
+      };
+
+      const fleetIoMarginPx = Math.max(Math.round(multiTotalHeight * 3), 120);
+      const applyFleetMultiIoEntry = (entry: IntersectionObserverEntry): boolean => {
+        const el = entry.target as HTMLElement;
+        const raw = el.getAttribute("data-chart-index") ?? el.dataset.chartIndex;
+        const idx = raw !== null && raw !== "" ? Number(raw) : NaN;
+        if (!Number.isFinite(idx) || idx < 0 || idx >= chartsData.length) return false;
+        const prev = fleetMultiChartNearVisible.get(idx) ?? false;
+        const nowVis = entry.isIntersecting;
+        if (prev === nowVis) return false;
+        fleetMultiChartNearVisible.set(idx, nowVis);
+        if (nowVis && !prev) {
+          renderFleetMultiChart(idx);
+        } else if (!nowVis && prev) {
+          clearFleetMultiChart(idx);
+        }
+        return true;
+      };
+      const fleetIo = new IntersectionObserver((entries) => {
+        let changed = false;
+        entries.forEach((entry) => {
+          if (applyFleetMultiIoEntry(entry)) changed = true;
+        });
+        if (changed) {
+          updateSelectedTimeLineMulti();
+          drawEventOverlaysMulti();
+        }
+      }, {
+        root: null,
+        rootMargin: `${fleetIoMarginPx}px 0px ${fleetIoMarginPx}px 0px`,
+        threshold: 0.01,
       });
+      chartContainers.forEach((el) => fleetIo.observe(el));
+      fleetMultiIntersectionObservers.push(fleetIo);
+      const initialRecords = fleetIo.takeRecords();
+      let initialChanged = false;
+      initialRecords.forEach((entry) => {
+        if (applyFleetMultiIoEntry(entry)) initialChanged = true;
+      });
+      if (initialChanged) {
+        updateSelectedTimeLineMulti();
+        drawEventOverlaysMulti();
+      }
+
+      lastBrushCreateTime = Date.now();
+
+      d3.select(containerRef).select(".timeseries-scroll-spacer").remove();
+      d3.select(containerRef)
+        .append("div")
+        .attr("class", "timeseries-scroll-spacer")
+        .style("height", `${multiHeight * 1.5}px`)
+        .style("width", "100%")
+        .style("flex-shrink", "0");
+      const redrawMulti = redrawFleetMultiVisible;
+      const firstSvg = allSvgs.find((g) => g != null) ?? null;
+      const firstVerticalLine = verticalLinesMulti.find((l) => l != null) ?? null;
+      const firstSelectedTimeLine = selectedTimeLinesMulti.find((l) => l != null) ?? null;
       d3.select(containerRef).property("__timeSeriesRefs", {
-        verticalLine: verticalLinesMulti[0],
-        selectedTimeLine: selectedTimeLinesMulti[0],
+        verticalLine: firstVerticalLine,
+        selectedTimeLine: firstSelectedTimeLine,
         selectedTimeLines: selectedTimeLinesMulti,
         verticalLines: verticalLinesMulti,
         xZoom: xZoomMulti,
@@ -5110,13 +5285,28 @@ const TimeSeries = (props: TimeSeriesProps) => {
                 }
                 // Also clear brush via refs if available (after drawPlots completes)
                 setTimeout(() => {
-                  const refs = d3.select(containerRef).property("__timeSeriesRefs");
-                  if (refs && refs.svg && refs.brush) {
+                  const refs = d3.select(containerRef).property("__timeSeriesRefs") as {
+                    svg?: d3.Selection<SVGGElement, unknown, null, undefined> | null;
+                    brush?: d3.BrushBehavior<unknown>;
+                    allSvgs?: Array<d3.Selection<SVGGElement, unknown, null, undefined> | null>;
+                    isMultiContainer?: boolean;
+                  } | null;
+                  if (refs?.brush && refs.isMultiContainer && Array.isArray(refs.allSvgs)) {
+                    refs.allSvgs.forEach((g) => {
+                      if (!g) return;
+                      const brushGroup = g.select(".brush");
+                      if (!brushGroup.empty()) {
+                        brushGroup.call(refs.brush!.move, null);
+                        brushGroup.attr("pointer-events", "none");
+                      }
+                    });
+                    debug("🔄 TimeSeries: Brush cleared after cuts applied (fleet multi)");
+                  } else if (refs?.svg && refs.brush) {
                     const brushGroup = refs.svg.select(".brush");
                     if (!brushGroup.empty()) {
                       brushGroup.call(refs.brush.move, null);
                       brushGroup.attr("pointer-events", "none");
-                      debug('🔄 TimeSeries: Brush cleared after cuts applied');
+                      debug("🔄 TimeSeries: Brush cleared after cuts applied");
                     }
                   }
                 }, 150); // Wait for drawPlots to complete
@@ -5351,7 +5541,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
       clearTimeout(resizeTimeout);
       resizeTimeout = setTimeout(() => {
         debug('TimeSeries: Triggering chart resize');
-        d3.select(containerRef).select("svg").remove();
+        if (containerRef && props.showLegendTable) {
+          containerRef.querySelectorAll('.time-series-single-chart').forEach((el) => {
+            const svg = (el as HTMLElement).querySelector('svg');
+            if (svg) svg.remove();
+          });
+        } else {
+          d3.select(containerRef).select("svg").remove();
+        }
         drawPlots();
       }, 100); // Shorter debounce for better responsiveness
     };
@@ -5492,6 +5689,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
         resizeTimeout = null;
       }
 
+      fleetMultiIntersectionObservers.forEach((o) => o.disconnect());
+      fleetMultiIntersectionObservers = [];
+      fleetMultiChartNearVisible.clear();
+      if (fleetMultiRedrawRafId != null) {
+        cancelAnimationFrame(fleetMultiRedrawRafId);
+        fleetMultiRedrawRafId = null;
+      }
       if (containerRef) {
         const chartContainers = containerRef.querySelectorAll('.time-series-single-chart');
         if (chartContainers.length > 0) {
@@ -5531,7 +5735,15 @@ const TimeSeries = (props: TimeSeriesProps) => {
         return;
       }
 
-      const { selectedTimeLine, xZoom, xOffset, updateSelectedTimeLine, redraw } = refs;
+      const { selectedTimeLine, selectedTimeLines, xZoom, xOffset, updateSelectedTimeLine, redraw, isMultiContainer } = refs as {
+        selectedTimeLine?: d3.Selection<SVGLineElement, unknown, null, undefined> | null;
+        selectedTimeLines?: Array<d3.Selection<SVGLineElement, unknown, null, undefined> | null> | null;
+        xZoom?: d3.ScaleTime<number, number>;
+        xOffset?: number;
+        updateSelectedTimeLine?: () => void;
+        redraw?: () => void;
+        isMultiContainer?: boolean;
+      };
 
       // Check if xZoom is properly initialized
       if (!xZoom || !xZoom.domain || xZoom.domain().length === 0) {
@@ -5557,13 +5769,20 @@ const TimeSeries = (props: TimeSeriesProps) => {
       // The timeline may be off-screen until playback advances into the visible window.
 
       // Calculate position for the vertical line
-      const xPos = xZoom(time) + xOffset;
+      const xPos = xZoom(time) + (xOffset ?? 0);
 
       debug('⏰ TimeSeries: Timeline position calculated', {
         xPos,
         xOffset,
         time: time.toISOString()
       });
+
+      const linesToAnimate =
+        isMultiContainer && Array.isArray(selectedTimeLines)
+          ? selectedTimeLines.filter((l): l is d3.Selection<SVGLineElement, unknown, null, undefined> => l != null)
+          : selectedTimeLine
+            ? [selectedTimeLine]
+            : [];
 
       // Determine behavior based on playback state and speed
       if (isPlaying()) {
@@ -5651,21 +5870,21 @@ const TimeSeries = (props: TimeSeriesProps) => {
         // Move the timeline - immediate update for faster playback
         if (useTransitions) {
           debug('⏰ TimeSeries: Using transition for timeline update');
-          selectedTimeLine
-            .interrupt()
-            .transition()
-            .duration(500)
-            .ease(d3.easeLinear)
-            .attr("x1", xPos)
-            .attr("x2", xPos)
-            .attr("visibility", "visible");
+          linesToAnimate.forEach((line) => {
+            line
+              .interrupt()
+              .transition()
+              .duration(500)
+              .ease(d3.easeLinear)
+              .attr("x1", xPos)
+              .attr("x2", xPos)
+              .attr("visibility", "visible");
+          });
         } else {
           debug('⏰ TimeSeries: Using immediate timeline update');
-          selectedTimeLine
-            .interrupt()
-            .attr("x1", xPos)
-            .attr("x2", xPos)
-            .attr("visibility", "visible");
+          linesToAnimate.forEach((line) => {
+            line.interrupt().attr("x1", xPos).attr("x2", xPos).attr("visibility", "visible");
+          });
         }
 
         // Adjust update interval based on playback speed
@@ -5698,11 +5917,9 @@ const TimeSeries = (props: TimeSeriesProps) => {
         lastUpdateTime = 0;
 
         // Immediate update when not playing
-        selectedTimeLine
-          .interrupt()
-          .attr("x1", xPos)
-          .attr("x2", xPos)
-          .attr("visibility", "visible");
+        linesToAnimate.forEach((line) => {
+          line.interrupt().attr("x1", xPos).attr("x2", xPos).attr("visibility", "visible");
+        });
 
         // Update the data points and labels without animation
         if (updateSelectedTimeLine && typeof updateSelectedTimeLine === 'function') {

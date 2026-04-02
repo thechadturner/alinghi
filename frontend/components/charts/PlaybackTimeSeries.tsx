@@ -320,6 +320,9 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
   const [chartExtents, setChartExtents] = createSignal<{ u: uPlot; minX: number; maxX: number; chartIndex: number }[]>([]);
   /** Plot bbox as fraction of chart width (0–1), per chart index. Used so playhead overlay matches x-axis. */
   const [plotFrac, setPlotFrac] = createSignal<Record<number, { left: number; width: number }>>({});
+  /** Viewport observers: charts mount uPlot when near visible, destroy when far. */
+  let playbackIntersectionObservers: IntersectionObserver[] = [];
+  const resizeObserverByChartIndex: Map<number, ResizeObserver> = new Map();
 
   // Local signal for playback time (ms). Updated from store effect and from playbackStoreUpdate
   // event so the scale effect reliably re-runs when selectedTime changes (same-window or
@@ -351,8 +354,6 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
     });
   });
 
-  const resizeObserversRef: { current: ResizeObserver[] } = { current: [] };
-
   onMount(() => {
     if (!containerRef || charts().length === 0) return;
 
@@ -369,22 +370,15 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
         b.data.map((series) => (series as number[]).slice()) as uPlot.AlignedData
       ) as uPlot.AlignedData[];
 
-      built.forEach((builtChart, idx) => {
-        const el = chartDivs[idx] as HTMLElement;
-        const fullData = fullAlignedDataRef.current?.[idx] ?? (builtChart.data as uPlot.AlignedData);
-        const xArrForCheck = fullData?.[0];
-        const hasX = Array.isArray(xArrForCheck) && (xArrForCheck as number[]).length > 0;
-        if (!el || !fullData?.length || !hasX) return;
-        if (builtChart.seriesMeta.length === 0) return;
+      const maxChartPx = Math.max(
+        CHART_HEIGHT,
+        ...built.map((b) => chartHeightForSeriesCount(b.seriesMeta.length))
+      );
+      const ioMarginPx = Math.max(Math.round(maxChartPx * 3), 120);
 
-      const seriesCount = builtChart.seriesMeta.length;
-      const computedHeight = chartHeightForSeriesCount(seriesCount);
-      const chartWidth = Math.max(el.offsetWidth || 400, 100);
-      const chartHeight = Math.max(el.offsetHeight || computedHeight, 100);
-
+      const syncXWindowFromPlaybackHead = (fullData: uPlot.AlignedData) => {
         const xArr = fullData[0] as number[];
         const minX = xArr[0];
-        const maxX = xArr[xArr.length - 1];
         const windowMinSec = timeWindowMin() * 60;
         const refTime = props.selectedTime ?? selectedTime();
         const refSec =
@@ -395,11 +389,61 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
         const startSec = endSec - windowMinSec;
         xWindowRef.min = startSec;
         xWindowRef.max = endSec > startSec ? endSec : startSec + 60;
+      };
+
+      const unmountPlaybackChartAt = (idx: number, el: HTMLElement) => {
+        setChartExtents((prev) => {
+          const victim = prev.find((e) => e.chartIndex === idx);
+          if (victim) {
+            try {
+              victim.u.destroy();
+            } catch (_) {
+              /* noop */
+            }
+          }
+          return prev.filter((e) => e.chartIndex !== idx);
+        });
+        const ro = resizeObserverByChartIndex.get(idx);
+        if (ro) {
+          ro.disconnect();
+          resizeObserverByChartIndex.delete(idx);
+        }
+        setPlotFrac((prev) => {
+          const next = { ...prev };
+          delete next[idx];
+          return next;
+        });
+        while (el.firstChild) {
+          el.removeChild(el.firstChild);
+        }
+      };
+
+      const mountPlaybackChartAt = (idx: number, el: HTMLElement) => {
+        if (el.querySelector("canvas")) return;
+
+        const builtChart = built[idx];
+        const fullData = fullAlignedDataRef.current?.[idx] ?? (builtChart.data as uPlot.AlignedData);
+        const xArrForCheck = fullData?.[0];
+        const hasX = Array.isArray(xArrForCheck) && (xArrForCheck as number[]).length > 0;
+        if (!fullData?.length || !hasX) return;
+        if (builtChart.seriesMeta.length === 0) return;
+
+        const seriesCount = builtChart.seriesMeta.length;
+        const computedHeight = chartHeightForSeriesCount(seriesCount);
+        const chartWidth = Math.max(el.offsetWidth || 400, 100);
+        const chartHeight = Math.max(el.offsetHeight || computedHeight, 100);
+
+        const xArr = fullData[0] as number[];
+        const minX = xArr[0];
+        const maxX = xArr[xArr.length - 1];
+        syncXWindowFromPlaybackHead(fullData);
+        const startSec = xWindowRef.min;
+        const endSec = xWindowRef.max;
         const initialFiltered = filterAlignedDataToWindow(fullData, startSec, endSec);
 
-      const opts: uPlot.Options = {
-        width: chartWidth,
-        height: chartHeight,
+        const opts: uPlot.Options = {
+          width: chartWidth,
+          height: chartHeight,
           series: [
             { label: "Time" },
             ...builtChart.seriesMeta.map((m) => ({
@@ -415,7 +459,7 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
           scales: {
             x: {
               time: true,
-              range: (u, dataMin, dataMax) => {
+              range: (_u, dataMin, dataMax) => {
                 const min = xWindowRef.min;
                 const max = xWindowRef.max;
                 if (max > min) return [min, max];
@@ -425,7 +469,7 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
               },
             },
             y: {
-              range: (u, dataMin, dataMax) => {
+              range: (_u, dataMin, dataMax) => {
                 const min = dataMin ?? 0;
                 const max = dataMax ?? 100;
                 const pad = (max - min) * 0.05 || 1;
@@ -441,7 +485,7 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
               grid: { show: false },
               ticks: { show: true },
               incrs: [1, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600],
-              values: (u, vals) => vals.map((v) => formatTime(v, tz)),
+              values: (_u, vals) => vals.map((v) => formatTime(v, tz)),
               space: 80,
               side: 2,
               size: 40,
@@ -504,15 +548,15 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
                 ctx.lineTo(left, top + height);
                 ctx.moveTo(left, top + height);
                 ctx.lineTo(left + width, top + height);
-              ctx.stroke();
-              ctx.restore();
+                ctx.stroke();
+                ctx.restore();
               },
-            (u) => {
-              const full = u.ctx.canvas?.width ?? u.bbox.left + u.bbox.width;
-              const left = full > 0 ? u.bbox.left / full : 0;
-              const width = full > 0 ? u.bbox.width / full : 1;
-              setPlotFrac((prev) => ({ ...prev, [idx]: { left, width } }));
-            },
+              (u) => {
+                const full = u.ctx.canvas?.width ?? u.bbox.left + u.bbox.width;
+                const left = full > 0 ? u.bbox.left / full : 0;
+                const width = full > 0 ? u.bbox.width / full : 1;
+                setPlotFrac((prev) => ({ ...prev, [idx]: { left, width } }));
+              },
             ],
           },
         };
@@ -524,26 +568,54 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
           u.setScale("x", { min: xMin, max: xMax });
           u.redraw();
 
-        const ro = new ResizeObserver(() => {
-          const w = el.offsetWidth;
-          const h = el.offsetHeight;
-          if (w > 0 && h > 0) {
-            try {
-              u.setSize({ width: w, height: h });
-              u.redraw();
-            } catch (_) {
-              // chart may be destroyed
+          const ro = new ResizeObserver(() => {
+            const w = el.offsetWidth;
+            const h = el.offsetHeight;
+            if (w > 0 && h > 0) {
+              try {
+                u.setSize({ width: w, height: h });
+                u.redraw();
+              } catch (_) {
+                /* chart may be destroyed */
+              }
             }
-          }
-        });
-        ro.observe(el);
-        resizeObserversRef.current.push(ro);
+          });
+          ro.observe(el);
+          resizeObserverByChartIndex.set(idx, ro);
 
-        setChartExtents((prev) => [...prev, { u, minX, maxX, chartIndex: idx }]);
-      } catch (e) {
-        debug("PlaybackTimeSeries: uPlot create error", e);
-      }
+          setChartExtents((prev) => [...prev.filter((e) => e.chartIndex !== idx), { u, minX, maxX, chartIndex: idx }]);
+        } catch (e) {
+          debug("PlaybackTimeSeries: uPlot create error", e);
+        }
+      };
+
+      const applyIo = (entry: IntersectionObserverEntry) => {
+        const el = entry.target as HTMLElement;
+        const raw = el.getAttribute("data-chart-index") ?? el.dataset.chartIndex;
+        const idx = raw !== null && raw !== "" ? Number(raw) : NaN;
+        if (!Number.isFinite(idx) || idx < 0 || idx >= built.length) return;
+        if (entry.isIntersecting) {
+          mountPlaybackChartAt(idx, el);
+        } else {
+          unmountPlaybackChartAt(idx, el);
+        }
+      };
+
+      const io = new IntersectionObserver(
+        (entries) => {
+          entries.forEach(applyIo);
+        },
+        { root: null, rootMargin: `${ioMarginPx}px 0px ${ioMarginPx}px 0px`, threshold: 0.01 }
+      );
+
+      chartDivs.forEach((node) => io.observe(node));
+      playbackIntersectionObservers.push(io);
+      io.takeRecords().forEach(applyIo);
     });
+
+    onCleanup(() => {
+      playbackIntersectionObservers.forEach((o) => o.disconnect());
+      playbackIntersectionObservers = [];
     });
   });
 
@@ -605,12 +677,16 @@ export default function PlaybackTimeSeries(props: PlaybackTimeSeriesProps) {
       cancelAnimationFrame(applyScaleRafId);
       applyScaleRafId = null;
     }
-    resizeObserversRef.current.forEach((ro) => ro.disconnect());
-    resizeObserversRef.current = [];
+    playbackIntersectionObservers.forEach((o) => o.disconnect());
+    playbackIntersectionObservers = [];
+    resizeObserverByChartIndex.forEach((ro) => ro.disconnect());
+    resizeObserverByChartIndex.clear();
     chartExtents().forEach(({ u }) => {
       try {
         u.destroy();
-      } catch (_) { }
+      } catch (_) {
+        /* noop */
+      }
     });
     setChartExtents([]);
   });
