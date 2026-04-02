@@ -96,8 +96,8 @@ The servers use file paths for storing uploads and media files. By default, thes
 
 When running in Docker, the media server automatically converts Windows file paths to container paths:
 
-- **Windows paths** (from database): `C:\MyApps\RaceSight\Uploads\Media\System\1\ac75\20240905\youtube\{res}\video1.mp4`
-- **Container paths** (actual file access): `/media/System/1/ac75/20240905/youtube/high_res/video1.mp4`
+- **Windows paths** (from database): `C:\MyApps\RaceSight\Uploads\Media\system\1\ac75\20240905\youtube\{res}\video1.mp4`
+- **Container paths** (actual file access): `/media/system/1/ac75/20240905/youtube/high_res/video1.mp4`
 
 The conversion:
 1. Detects Windows paths (drive letters like `C:`)

@@ -219,7 +219,7 @@ function processVideoMulti(inputPath, options = {}) {
   const subPath = options.subPath || '';
   const mediaSource = options.mediaSource || 'default';
 
-  const systemDir = path.join(baseOutDir, 'Media', 'System');
+  const systemDir = path.join(baseOutDir, 'Media', 'system');
   const outBase = path.join(systemDir, subPath, mediaSource);
   const outLow = path.join(outBase, 'low_res');
   const outMed = path.join(outBase, 'med_res');

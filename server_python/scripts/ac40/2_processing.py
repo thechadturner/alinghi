@@ -52,34 +52,45 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
         channels = [
             {'name': 'Datetime', 'type': 'datetime'},
             {'name': 'ts', 'type': 'float'},
-            {'name': 'Lat_dd', 'type': 'float'},
-            {'name': 'Lng_dd', 'type': 'float'},
-            {'name': 'Tws_kts', 'type': 'float'},
-            {'name': 'Hdg_deg', 'type': 'angle360'},
-            {'name': 'Twd_deg', 'type': 'angle360'},
-            {'name': 'Bsp_kts', 'type': 'float'},
-            {'name': 'Sog_kts', 'type': 'float'},
-            {'name': 'Twa_deg', 'type': 'angle180'},
-            {'name': 'Twa_n_deg', 'type': 'angle180'},
-            {'name': 'Vmg_kts', 'type': 'float'},
-            {'name': 'Aws_kph', 'type': 'float'},
-            {'name': 'Awa_deg', 'type': 'angle180'},
-            {'name': 'Cog_deg', 'type': 'angle360'},
-            {'name': 'Lwy_deg', 'type': 'angle180'},
-            {'name': 'RH_lwd_mm', 'type': 'float'},
-            {'name': 'Foiling_state', 'type': 'int'},
-            {'name': 'Accel_rate_mps2', 'type': 'float'},
-            {'name': 'Yaw_rate_dps', 'type': 'float'},
-            {'name': 'CA1_ang_deg', 'type': 'float'},
-            {'name': 'DB_ext_stbd_mm', 'type': 'float'},
-            {'name': 'DB_ext_port_mm', 'type': 'float'},
-            {'name': 'Race_number', 'type': 'int'},
-            {'name': 'Leg_number', 'type': 'int'}
+            {'name': 'AC40_Latitude', 'type': 'float'},
+            {'name': 'AC40_Longitude', 'type': 'float'},
+            {'name': 'AC40_BowWand_TWS_kts', 'type': 'float'},
+            {'name': 'AC40_HDG', 'type': 'angle360'},
+            {'name': 'AC40_BowWand_TWD', 'type': 'angle360'},
+            {'name': 'AC40_Speed_kts', 'type': 'float'},
+            {'name': 'AC40_TWA', 'type': 'angle180'},
+            {'name': 'AC40_TWA_n', 'type': 'angle180'},
+            {'name': 'AC40_VMG_kts', 'type': 'float'},
+            {'name': 'AC40_COG', 'type': 'angle360'},
+            {'name': 'AC40_HullAltitude', 'type': 'int'},
+            {'name': 'AC40_Loads_MainSheetLoad', 'type': 'float'},
+            {'name': 'AC40_FoilPort_Cant', 'type': 'float'},
+            {'name': 'AC40_FoilStbd_Cant', 'type': 'float'}
         ]
 
         dfi = u.get_channel_values(api_token, class_name, project_id, date, source_name, channels, '100ms', start_ts, end_ts, 'UTC')
 
         if dfi is not None and len(dfi) > 0:
+            dfi.rename(
+                columns={
+                    'AC40_Latitude': 'Lat_dd',
+                    'AC40_Longitude': 'Lng_dd',
+                    'AC40_BowWand_TWS_kts': 'Tws_kts',
+                    'AC40_HDG': 'Hdg_deg',
+                    'AC40_BowWand_TWD': 'Twd_deg',
+                    'AC40_Speed_kts': 'Bsp_kts',
+                    'AC40_TWA': 'Twa_deg',
+                    'AC40_TWA_n': 'Twa_n_deg',
+                    'AC40_VMG_kts': 'Vmg_kts',
+                    'AC40_COG': 'Cog_deg',
+                    'AC40_HullAltitude': 'Hull_altitude',
+                    'AC40_Loads_MainSheetLoad': 'Main_sheet_load',
+                    'AC40_FoilPort_Cant': 'Foil_port_cant',
+                    'AC40_FoilStbd_Cant': 'Foil_stbd_cant',
+                },
+                inplace=True,
+            )
+
             u.log(api_token, "2_processing.py", "info", "get_data", str(len(dfi))+" records found!")
 
             if dfi['ts'].dtype == 'Float64':
@@ -103,14 +114,33 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
                 dfo[non_datetime_cols] = dfo[non_datetime_cols].fillna(0)
             dfo.replace(np.nan, 0, inplace=True)
             dfo.replace('NA', 0, inplace=True)
-            
-            # Ensure integer columns are properly converted (handle 'NA' that might have been missed)
-            for col in ['Race_number', 'Leg_number']:
-                if col in dfo.columns:
-                    dfo[col] = pd.to_numeric(dfo[col], errors='coerce').fillna(0).astype('int64')
+
+            # BASIC CALCULATIONS
+            dfo['Foiling_state'] = np.select(
+                [
+                    (dfo['Bsp_kts'] > 15) & (dfo['Hull_altitude'] > 0),  # H0
+                    (dfo['Bsp_kts'] > 15) & (dfo['Hull_altitude'] < 0),  # H1
+                    (dfo['Bsp_kts'] < 15) & (dfo['Hull_altitude'] < 0),  # H2
+                ],
+                [0, 1, 2],
+                default=1,
+            )
+
+            # Longitudinal acceleration (m/s²): d/dt of boat speed, Bsp_kts → m/s then gradient vs ts (s).
+            _kn_to_ms = 1852.0 / 3600.0
+            _ts = dfo['ts'].to_numpy(dtype=np.float64, copy=False)
+            _v_ms = dfo['Bsp_kts'].to_numpy(dtype=np.float64, copy=False) * _kn_to_ms
+            dfo['Accel_rate_mps2'] = np.gradient(_v_ms, _ts, edge_order=1)
+
+            # Yaw rate (deg/s): d/dt of heading; unwrap 0–360° discontinuities before differentiating.
+            _hdg_rad = np.deg2rad(dfo['Hdg_deg'].to_numpy(dtype=np.float64, copy=False))
+            _hdg_u = np.unwrap(_hdg_rad)
+            dfo['Yaw_rate_dps'] = np.rad2deg(np.gradient(_hdg_u, _ts, edge_order=1))
 
             dfo['Foiling_state'] = pd.to_numeric(dfo['Foiling_state'], errors='coerce').fillna(2).astype('int64')
-            dfo['Sog_kph'] = dfo['Sog_kts'] * 1.852
+
+            dfo['Race_number'] = -1
+            dfo['Leg_number'] = -1
 
             return dfo
         else:
@@ -309,27 +339,20 @@ def insertDatasetEvent(event):
             tags['Count'] = 0
         jsondata = {"class_name": str(class_name),"project_id": int(project_id), "dataset_id": int(dataset_id), "event_type": "CREW", "start_time": start_str, "end_time": end_str, "tags": json.dumps(tags)}
     elif et == 'Headsail':
-        # Normalize headsail codes: HA1/HA2 -> HW1/HW2, LW1 -> LA1
-        HEADSAIL_RENAME = {'HA1': 'HW1', 'HA2': 'HW2', 'LW1': 'LA1'}
-        # Headsail_code to Headsail_Id mapping (string code -> id)
-        HEADSAIL_CODE_TO_ID = {'LA1': 1, 'AP1': 2, 'AP2': 3, 'HW1': 4, 'HW2': 5}
-
-        # Apply rename then use normalized code for storage and ID
-        code = HEADSAIL_RENAME.get(value, value) if value and isinstance(value, str) else value
-        tags['Headsail_code'] = code
+        HEADSAIL_CODE_TO_ID = {'J1': 1, 'J2': 2, 'J3': 3}
+        tags['Headsail_code'] = value
 
         # Handle 'NA' and invalid values
-        if code and code != 'NA' and isinstance(code, str):
-            # Use mapping for known string codes (LA1, AP1, AP2, HW1, HW2)
-            if code in HEADSAIL_CODE_TO_ID:
-                tags['Headsail_Id'] = float(HEADSAIL_CODE_TO_ID[code])
+        if value and value != 'NA' and isinstance(value, str):
+            if value in HEADSAIL_CODE_TO_ID:
+                tags['Headsail_Id'] = float(HEADSAIL_CODE_TO_ID[value])
             else:
                 try:
                     # Remove 'J' prefix and '.' characters for legacy/numeric codes
-                    cleaned_value = code.replace('J','').replace('.','')
+                    cleaned_value = value.replace('J', '').replace('.', '')
                     # Check if cleaned value is numeric
                     if cleaned_value and cleaned_value.isdigit():
-                        if code.find('.') > 0:
+                        if value.find('.') > 0:
                             tags['Headsail_Id'] = float(int(cleaned_value)) + 0.1
                         else:
                             tags['Headsail_Id'] = float(int(cleaned_value) * 10) + 0.1
@@ -399,16 +422,16 @@ def _fill_df_from_events(df, events, tag_key, column, value_normalizer=None):
 def apply_high_speed_twin_board_grade_zero(df, min_duration_sec=60):
     """
     Set Grade to 0 for sustained periods where Bsp_kts > 10 and both
-    DB_ext_stbd_mm and DB_ext_port_mm > 1000, when the period lasts more than min_duration_sec.
+    Foil_stbd_cant and Foil_port_cant < 65, when the period lasts more than min_duration_sec.
     Assumes 'ts' is a monotonically increasing timestamp column (seconds).
     """
-    required = ['ts', 'Bsp_kts', 'DB_ext_stbd_mm', 'DB_ext_port_mm', 'Grade']
+    required = ['ts', 'Bsp_kts', 'Foil_stbd_cant', 'Foil_port_cant', 'Grade']
     if not all(c in df.columns for c in required):
         return df
     mask = (
         (df['Bsp_kts'] > 10) &
-        (df['DB_ext_stbd_mm'] > 1000) &
-        (df['DB_ext_port_mm'] > 1000)
+        (df['Foil_stbd_cant'] < 65) &
+        (df['Foil_port_cant'] < 65)
     )
     mask = mask.fillna(False)
     df = df.copy()
@@ -842,9 +865,8 @@ def getConfiguration(df, preserve_events=True):
                     }
                     insertDatasetEvent(crew_event)
 
-            HEADSAIL_RENAME = {'HA1': 'HW1', 'HA2': 'HW2', 'LW1': 'LA1'}
             if existing_headsail:
-                _fill_df_from_events(df, existing_headsail, 'Headsail_code', 'Headsail_code', value_normalizer=lambda v: HEADSAIL_RENAME.get(v, v) if v and isinstance(v, str) else v)
+                _fill_df_from_events(df, existing_headsail, 'Headsail_code', 'Headsail_code')
             else:
                 config_headsail = (config.get('headsail') or '').strip() if config.get('headsail') is not None else ''
                 if config_headsail:
@@ -863,17 +885,17 @@ def getConfiguration(df, preserve_events=True):
             avg_tws = df[df['Race_number'] == race_number]['Tws_kts'].mean()
 
             if avg_tws <= 8:
-                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'LA1'  
+                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'J1'  
             elif avg_tws > 8 and avg_tws <= 10:
-                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'AP1'
+                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'J2'
             elif avg_tws > 10 and avg_tws <= 13:
-                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'AP1'
+                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'J2'
             elif avg_tws > 13 and avg_tws <= 16:
-                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'AP2'
+                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'J3'
             elif avg_tws > 16 and avg_tws <= 20:
-                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'HA1'
+                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'J3'
             elif avg_tws > 20:
-                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'HA2'
+                df.loc[(df['Race_number'] == race_number), 'Headsail_code'] = 'J3'
 
         # Dataset-level Crew and Headsail when no config: preserve existing if user-edited in Events.tsx
         start_ts = df['ts'].min()
@@ -886,8 +908,7 @@ def getConfiguration(df, preserve_events=True):
             # Do not insert CREW when crew count would be zero
             pass
         if existing_headsail:
-            HEADSAIL_RENAME = {'HA1': 'HW1', 'HA2': 'HW2', 'LW1': 'LA1'}
-            _fill_df_from_events(df, existing_headsail, 'Headsail_code', 'Headsail_code', value_normalizer=lambda v: HEADSAIL_RENAME.get(v, v) if v and isinstance(v, str) else v)
+            _fill_df_from_events(df, existing_headsail, 'Headsail_code', 'Headsail_code')
         else:
             # Fallback headsail: first non-NA value in df or 'NA'
             headsail_codes = df['Headsail_code'].dropna()
@@ -1225,46 +1246,48 @@ def apply_race_status_channel(df):
 
 if __name__ == "__main__":
     try:
-        parameters_str = sys.argv[1]
-        parameters_json = json.loads(parameters_str)
+        # parameters_str = sys.argv[1]
+        # parameters_json = json.loads(parameters_str)
 
-        #LOG
-        u.log(api_token, "2_processing.py", "info", "parameters", parameters_str)
+        # #LOG
+        # u.log(api_token, "2_processing.py", "info", "parameters", parameters_str)
 
-        class_name = parameters_json.get('class_name')
-        project_id = parameters_json.get('project_id')
-        dataset_id = parameters_json.get('dataset_id')
-        date = parameters_json.get('date')
-        source_name = parameters_json.get('source_name')
-        start_time = parameters_json.get('start_time')
-        end_time = parameters_json.get('end_time')
-        if start_time == '':
-            start_time = None
-        if end_time == '':
-            end_time = None
-        events_json = parameters_json.get('events', [])
-        batch = parameters_json.get('batch', False)
-        verbose = parameters_json.get('verbose', False)
-        preserve_events = parameters_json.get('preserve_events', True)
+        # class_name = parameters_json.get('class_name')
+        # project_id = parameters_json.get('project_id')
+        # dataset_id = parameters_json.get('dataset_id')
+        # date = parameters_json.get('date')
+        # source_name = parameters_json.get('source_name')
+        # start_time = parameters_json.get('start_time')
+        # end_time = parameters_json.get('end_time')
+        # if start_time == '':
+        #     start_time = None
+        # if end_time == '':
+        #     end_time = None
+        # events_json = parameters_json.get('events', [])
+        # batch = parameters_json.get('batch', False)
+        # verbose = parameters_json.get('verbose', False)
+        # preserve_events = parameters_json.get('preserve_events', True)
 
-        day_type = parameters_json.get('day_type', ['TRAINING', 'RACING'])
-        if not isinstance(day_type, list):
-            day_type = [day_type] if day_type is not None else ['TRAINING', 'RACING']
-        race_type = parameters_json.get('race_type', ['INSHORE', 'COASTAL', 'OFFSHORE'])
-        if not isinstance(race_type, list):
-            race_type = [race_type] if race_type is not None else ['INSHORE', 'COASTAL', 'OFFSHORE']
+        # day_type = parameters_json.get('day_type', ['TRAINING', 'RACING'])
+        # if not isinstance(day_type, list):
+        #     day_type = [day_type] if day_type is not None else ['TRAINING', 'RACING']
+        # race_type = parameters_json.get('race_type', ['INSHORE', 'COASTAL', 'OFFSHORE'])
+        # if not isinstance(race_type, list):
+        #     race_type = [race_type] if race_type is not None else ['INSHORE', 'COASTAL', 'OFFSHORE']
 
-        # class_name = "AC40"
-        # project_id = 1
-        # dataset_id = 100
-        # date = "20260301"
-        # source_name = "GER"
-        # start_time = None
-        # end_time = None
-        # events_json = [{"Event": "Active", "Start": "2026-03-01T01:20:40.000Z", "End": "2026-03-01T20:58:18.000Z", "EventType": "Dataset"}]
-        # batch = False
-        # verbose = True
-        # preserve_events = True
+        class_name = "AC40"
+        project_id = 2
+        dataset_id = 1
+        date = "20260328"
+        source_name = "AC40-SUI1"
+        start_time = None
+        end_time = None
+        events_json = [{"Event": "Active", "Start": "2026-03-28T01:20:40.000Z", "End": "2026-03-28T20:58:18.000Z", "EventType": "Dataset"}]
+        batch = False
+        verbose = True
+        preserve_events = True
+        day_type = 'TRAINING'
+        race_type = 'INSHORE'
 
         s.set_item('class_name', class_name)
         s.set_item('project_id', project_id)
@@ -1455,7 +1478,7 @@ if __name__ == "__main__":
                         # Get data directory from environment variable
                         data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
                         
-                        event_file_path = os.path.join(data_dir, 'System', str(project_id), class_name, date, source_name, 'processed_data_racesight.parquet')
+                        event_file_path = os.path.join(data_dir, 'system', str(project_id), class_name, date, source_name, 'processed_data_racesight.parquet')
 
                         if os.path.exists(event_file_path):
                             os.remove(event_file_path)

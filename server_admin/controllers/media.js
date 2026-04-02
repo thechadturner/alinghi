@@ -268,7 +268,7 @@ exports.removeMediaByDate = async (req, res) => {
         const dateYyyyMmdd = normalizedDate.replace(/-/g, '');
 
         for (const dateSegment of [dateYyyyMmdd, dateYyyyMmDd]) {
-            const dateDir = path.join(mediaBase, 'System', String(project_id), classLower, dateSegment);
+            const dateDir = path.join(mediaBase, 'system', String(project_id), classLower, dateSegment);
             try {
                 if (fs.existsSync(dateDir)) {
                     fs.rmSync(dateDir, { recursive: true, force: true });

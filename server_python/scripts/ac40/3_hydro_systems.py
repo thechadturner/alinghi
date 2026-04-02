@@ -425,14 +425,14 @@ def build_hydraulic_export_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _filesystem_class_dir(class_name: str) -> str:
-    """Lowercase class folder under DATA_DIRECTORY/System/... (matches file server paths)."""
+    """Lowercase class folder under DATA_DIRECTORY/system/... (matches file server paths)."""
     return str(class_name or '').strip().lower()
 
 
 def _write_hydraulic_parquet(df_export, class_name, project_id, date, source_name):
     data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
     out_dir = os.path.join(
-        data_dir, 'System', str(project_id), _filesystem_class_dir(class_name), date, source_name,
+        data_dir, 'system', str(project_id), _filesystem_class_dir(class_name), date, source_name,
     )
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, 'hydraulic_systems_data_racesight.parquet')

@@ -40,6 +40,7 @@ export default function SelectionLayer(props: SelectionLayerProps) {
   } = useMapInteractions();
 
   let selectionOverlay: d3.Selection<SVGGElement, unknown, null, undefined> | null = null;
+  let overlayContainer: HTMLElement | null = null;
   let isMouseDown = false;
   let dragStartPoint: TrackPoint | null = null;
 
@@ -47,11 +48,26 @@ export default function SelectionLayer(props: SelectionLayerProps) {
   const createSelectionOverlay = () => {
     if (!props.map) return;
 
-    // Remove existing overlay
-    d3.select(".selection-overlay").remove();
+    // Remove existing overlay only within this map instance
+    let container: HTMLElement | null = null;
+    try {
+      container = props.map.getCanvasContainer() as HTMLElement;
+    } catch (_) {
+      container = null;
+    }
+    if (!container) {
+      try {
+        container = props.map.getContainer() as HTMLElement;
+      } catch (_) {
+        container = null;
+      }
+    }
+    if (!container) return;
+    overlayContainer = container;
+    d3.select(container).selectAll(".selection-overlay").remove();
     
     // Create SVG overlay
-    const svg = d3.select(".map")
+    const svg = d3.select(container)
       .append("svg")
       .attr("class", "selection-overlay")
       .style("position", "absolute")
@@ -267,6 +283,10 @@ export default function SelectionLayer(props: SelectionLayerProps) {
   onCleanup(() => {
     if (selectionOverlay) {
       selectionOverlay.remove();
+    }
+    if (overlayContainer) {
+      d3.select(overlayContainer).selectAll(".selection-overlay").remove();
+      overlayContainer = null;
     }
   });
 

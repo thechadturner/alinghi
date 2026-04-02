@@ -1497,6 +1497,46 @@ const normalizeFile = async (auth_token, filename, date, project_id, class_name,
   }
 };
 
+/** AC40 training .db → system/*.parquet via server_python/scripts/ac40/0_parse_db.py */
+const parseTrainingDbFile = async (auth_token, filename, date, project_id, class_name, source_name) => {
+  const controller = new AbortController();
+  const sanitizedDate = date.replace(/[-/]/g, '');
+
+  const parameters = {
+    project_id,
+    class_name,
+    dataset_id: 0,
+    date: sanitizedDate,
+    source_name,
+    file_name: filename,
+  };
+
+  const payload = {
+    project_id,
+    class_name,
+    script_name: '0_parse_db.py',
+    parameters,
+  };
+
+  try {
+    const response_json = await postData(auth_token, apiEndpoints.python.execute_script, payload, controller.signal);
+    if (response_json.success) {
+      logMessage('0.0.0.0', '0', 'parseTrainingDbFile', 'info', 'Training .db parsed to parquet successfully', { filePath: filename });
+      return true;
+    }
+    logMessage('0.0.0.0', '0', 'parseTrainingDbFile', 'error', 'Training .db parse failed', { filePath: filename, response: response_json });
+    return false;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      logMessage('0.0.0.0', '0', 'parseTrainingDbFile', 'warn', 'Training .db parse was cancelled', { filePath: filename });
+      return false;
+    }
+    error('Error parsing training .db:', err);
+    logMessage('0.0.0.0', '0', 'parseTrainingDbFile', 'error', `Error parsing training .db: ${err.message}`, { filePath: filename, error: err.stack });
+    throw err;
+  }
+};
+
 const parseXML = async (auth_token, date, project_id, class_name, file_path) => {
   const controller = new AbortController();
   const sanitizedDate = date.replace(/[-/]/g, "");
@@ -1608,6 +1648,7 @@ module.exports = {
   polartoJSON,
   groupChannelsByFilename,
   normalizeFile,
+  parseTrainingDbFile,
   parseXML,
   updateDatasetDateModified,
   verifyFileComplete

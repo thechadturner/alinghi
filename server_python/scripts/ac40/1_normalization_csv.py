@@ -217,7 +217,7 @@ if __name__ == "__main__":
         # project_id = 2
         # date = '20250314'
         # source_name = 'GER'
-        # file_name = r'C:\MyApps\Hunico\Uploads\Data\Raw\2\ac40\20250314\GER\log_GER_2025-03-14_10Hz.csv'
+        # file_name = r'C:\MyApps\Alinghi\uploads\data\raw\2\ac40\20250314\GER\log_GER_2025-03-14_10Hz.csv'
         # batch = False
 
         filename_only = os.path.basename(file_name)
@@ -634,7 +634,7 @@ if __name__ == "__main__":
             class_lower = class_name.lower() if class_name else ''
             
             # Ensure directory exists
-            output_dir = os.path.join(data_dir, 'System', str(project_id), class_lower, date, source_name)
+            output_dir = os.path.join(data_dir, 'system', str(project_id), class_lower, date, source_name)
             os.makedirs(output_dir, exist_ok=True)
             
             print("Saving files split into 1-hour chunks...", flush=True)

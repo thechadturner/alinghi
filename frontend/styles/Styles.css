@@ -2774,6 +2774,32 @@ input.form-input[readonly="readonly"],
   flex: 1;
 }
 
+.upload-files-dates-summary {
+  margin: 0 0 10px 0;
+  padding: 0 0 0 1.1rem;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+.upload-files-dates-summary-unparsed,
+.upload-files-dates-summary-warn {
+  color: var(--color-text-error);
+}
+
+.upload-file-parsed-date {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+  min-width: 6.5rem;
+  text-align: right;
+  margin-right: 8px;
+}
+
+.upload-file-parsed-date--missing {
+  color: var(--color-text-error);
+}
+
 .file-icon {
   color: #6b7280;
   flex-shrink: 0;

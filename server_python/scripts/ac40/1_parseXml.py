@@ -322,7 +322,7 @@ def main():
         # class_name = 'ac40'
         # project_id = 2
         # date = '20250817'
-        # file_path = r'C:\MyApps\Hunico\Uploads\Data\Raw\2\ac40\20250817'
+        # file_path = r'C:\MyApps\Alinghi\uploads\data\raw\2\ac40\20250817'
         
         # Check if file_path exists
         if not file_path:

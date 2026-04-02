@@ -367,11 +367,15 @@ export default function MultiTrackLayer(props: MultiTrackLayerProps) {
       return;
     }
 
-    // Remove existing overlay if present
-    d3.select(".track-overlay").remove();
+    // Remove existing overlay for this map instance only
+    if (container) {
+      d3.select(container).selectAll(".track-overlay").remove();
+    } else if (props.map?.getCanvasContainer) {
+      d3.select(props.map.getCanvasContainer()).selectAll(".track-overlay").remove();
+    }
 
     // Use the same approach as TrackLayer - attach to mapboxgl-canvas-container
-    let container: HTMLElement | null = null;
+    container = null;
     
     // Try getCanvasContainer first (preferred method)
     if (props.map && typeof props.map.getCanvasContainer === 'function') {
@@ -394,9 +398,13 @@ export default function MultiTrackLayer(props: MultiTrackLayerProps) {
       }
     }
     
-    // Fallback 2: Use .map element directly
+    // Fallback 2: Use map root container directly
     if (!container) {
-      container = d3.select(".map").node() as HTMLElement;
+      try {
+        container = props.map.getContainer() as HTMLElement;
+      } catch (e) {
+        // Keep null and retry below
+      }
     }
     
     if (!container) {
@@ -821,7 +829,7 @@ export default function MultiTrackLayer(props: MultiTrackLayerProps) {
     // Also listen for resize to update SVG dimensions
     props.map.on('resize', () => {
       if (svgOverlay && d3) {
-        const mapElement = d3.select(".map").node() as HTMLElement;
+        const mapElement = container || (props.map.getCanvasContainer?.() as HTMLElement) || (props.map.getContainer?.() as HTMLElement);
         if (mapElement) {
           const mapRect = mapElement.getBoundingClientRect();
           const containerWidth = mapRect.width || 0;

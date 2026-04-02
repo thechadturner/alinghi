@@ -36,7 +36,7 @@ const safeJoin = (...paths) => path.join(...paths);
 /**
  * Resolve source directory with case-insensitive match so parquet is found
  * when frontend sends "GER" but disk has "ger" (or vice versa).
- * @param {string} parentDir - e.g. DATA_DIRECTORY/System/project_id/class_name/date
+ * @param {string} parentDir - e.g. DATA_DIRECTORY/system/project_id/class_name/date
  * @param {string} sourceName - requested source name (e.g. "GER" or "ger")
  * @returns {string} Resolved path (exact match if exists, else case-insensitive match, else parentDir/sourceName)
  */
@@ -330,8 +330,8 @@ exports.getClasses = async (req, res) => {
   }
 
   try {
-    const classes = fs.readdirSync(safeJoin(env.DATA_DIRECTORY, "System", project_id)).filter((dir) =>
-      fs.statSync(safeJoin(env.DATA_DIRECTORY, "System", project_id, dir)).isDirectory()
+    const classes = fs.readdirSync(safeJoin(env.DATA_DIRECTORY, "system", project_id)).filter((dir) =>
+      fs.statSync(safeJoin(env.DATA_DIRECTORY, "system", project_id, dir)).isDirectory()
     );
 
     return sendResponse(res, info, 200, true, classes.length+" records found", classes);
@@ -365,7 +365,7 @@ exports.getDates = async (req, res) => {
     return sendResponse(res, info, 403, false, 'Forbidden - read permission required', null);
   }
 
-  const classPath = safeJoin(env.DATA_DIRECTORY, "System", project_id, classLower);
+  const classPath = safeJoin(env.DATA_DIRECTORY, "system", project_id, classLower);
 
   if (!fs.existsSync(classPath))
     return res.status(404).json({ success: false, message: 'Class not found' });
@@ -434,7 +434,7 @@ exports.getSources = async (req, res) => {
   // Normalize class_name to lowercase for consistent directory structure
   const classLower = String(class_name || '').toLowerCase();
 
-  const datePath = safeJoin(env.DATA_DIRECTORY, "System", project_id, classLower, dateYyyyMmDd);
+  const datePath = safeJoin(env.DATA_DIRECTORY, "system", project_id, classLower, dateYyyyMmDd);
 
   if (!fs.existsSync(datePath))
     return res.status(404).json({ success: false, message: 'Date not found' });
@@ -499,7 +499,7 @@ exports.getChannelList = async (req, res) => {
         (async () => {
           try {
             const classLower = String(class_name || '').toLowerCase();
-            const sourcePath = safeJoin(env.DATA_DIRECTORY, "System", project_id, classLower, dateYyyyMmDd, actualSourceName);
+            const sourcePath = safeJoin(env.DATA_DIRECTORY, "system", project_id, classLower, dateYyyyMmDd, actualSourceName);
             
             if (!fs.existsSync(sourcePath)) {
               log(`[getChannelList] FILE source path does not exist: ${sourcePath} - returning empty array`);
@@ -617,7 +617,7 @@ exports.getChannelList = async (req, res) => {
     const actualSourceName = (sourceNameUpper === 'ALL' || sourceNameUpper === 'ALL_INFLUX') ? 'GER' : source_name;
     
     // Normal case: single source (or GER when ALL is specified); resolve case-insensitively so parquet is found
-    const parentDir = safeJoin(env.DATA_DIRECTORY, "System", project_id, classLower, dateYyyyMmDd);
+    const parentDir = safeJoin(env.DATA_DIRECTORY, "system", project_id, classLower, dateYyyyMmDd);
     const sourcePath = resolveSourcePath(parentDir, actualSourceName);
 
     // Return empty array instead of 404 if source doesn't exist - allows unified discovery to continue
@@ -835,7 +835,7 @@ exports.getChannelValues = async (req, res) => {
           }
         }
       }
-      const parentDir = safeJoin(env.DATA_DIRECTORY, "System", project_id, classLower, pathDateYyyyMmDd);
+      const parentDir = safeJoin(env.DATA_DIRECTORY, "system", project_id, classLower, pathDateYyyyMmDd);
       const sourcePath = resolveSourcePath(parentDir, source_name);
 
       // Resolve timezone from dataset so Influx full-day range matches normalization (local date).
@@ -1044,7 +1044,7 @@ exports.getChannelValues = async (req, res) => {
   }
 
   // Resolve source path case-insensitively so parquet is found when frontend sends "GER" but disk has "ger"
-  const parentDir = safeJoin(env.DATA_DIRECTORY, "System", project_id, classLower, dateYyyyMmDd);
+  const parentDir = safeJoin(env.DATA_DIRECTORY, "system", project_id, classLower, dateYyyyMmDd);
   const sourcePath = resolveSourcePath(parentDir, source_name);
 
   if (!fs.existsSync(sourcePath))
@@ -1297,7 +1297,7 @@ exports.getChannelGroups = async (req, res) => {
   }
 
   // Resolve source path case-insensitively so parquet is found when frontend sends "GER" but disk has "ger"
-  const parentDirForGroup = safeJoin(env.DATA_DIRECTORY, "System", project_id, classLower, dateYyyyMmDd);
+  const parentDirForGroup = safeJoin(env.DATA_DIRECTORY, "system", project_id, classLower, dateYyyyMmDd);
   const sourcePath = resolveSourcePath(parentDirForGroup, source_name);
 
   if (!fs.existsSync(sourcePath))
@@ -1409,7 +1409,7 @@ exports.editChannelData = async (req, res) => {
   }
 
   // Resolve source path
-  const parentDir = safeJoin(env.DATA_DIRECTORY, "System", project_id, classLower, dateYyyyMmDd);
+  const parentDir = safeJoin(env.DATA_DIRECTORY, "system", project_id, classLower, dateYyyyMmDd);
   const sourcePath = resolveSourcePath(parentDir, source_name);
 
   if (!fs.existsSync(sourcePath)) {

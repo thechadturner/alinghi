@@ -42,7 +42,11 @@ const sendResponse = (res, info, status, success, message, data = null, log = fa
 
     // Send response immediately without waiting for logging
     if (data != null) {
-        res.status(status).json({ "success": success, "data": data });
+        const body = { success, data };
+        if (message != null && message !== '') {
+            body.message = message;
+        }
+        res.status(status).json(body);
     } else {
         res.status(status).json({ "success": success, "message": message });
     }

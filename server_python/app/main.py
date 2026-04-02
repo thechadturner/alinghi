@@ -713,7 +713,7 @@ async def sse_endpoint(request: Request, token: str = Query(None)):
     summary="Health Check",
     description="Check if the service is running and healthy",
     response_description="Service health status",
-    tags=["System"]
+    tags=["system"]
 )
 async def health_check():
     """
@@ -746,7 +746,7 @@ async def health_check():
     summary="SSE Connection Statistics",
     description="Get statistics about current SSE connections for monitoring and debugging",
     response_description="SSE connection statistics",
-    tags=["System"],
+    tags=["system"],
     dependencies=[Depends(authenticate)]
 )
 async def sse_stats():

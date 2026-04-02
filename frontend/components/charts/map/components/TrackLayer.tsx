@@ -99,6 +99,7 @@ export default function TrackLayer(props: TrackLayerProps) {
   
   let trackOverlay: d3.Selection<SVGGElement, unknown, HTMLElement, any> | null = null;
   let svg: d3.Selection<SVGSVGElement, unknown, HTMLElement, any> | null = null;
+  let overlayContainer: HTMLElement | null = null;
   let isDrawing = false;
   let currentFilteredData: TrackPoint[] = [];
   let isInitialized = false; // Flag to prevent premature renders during initialization
@@ -167,7 +168,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     const twdField = twdName();
     const twaField = twaName();
 
-    if (selectedClassName() === 'ac40') {
+    if (selectedClassName() === 'gp50') {
       return `<table class='table-striped'>
         <tr><td>TIME</td><td>${formatTime(point.Datetime, timezone)}</td></tr>
         <tr><td>TWS</td><td>${point[twsField] || ''}</td></tr>
@@ -211,8 +212,11 @@ export default function TrackLayer(props: TrackLayerProps) {
       });
       return;
     }
-    // Remove existing overlay
-    d3.select(".track-overlay").remove();
+    // Remove only this map instance's overlay
+    const existingContainer = overlayContainer || props.map.getCanvasContainer?.();
+    if (existingContainer) {
+      d3.select(existingContainer).selectAll(".track-overlay").remove();
+    }
     
     // Create SVG overlay - attach to mapboxgl-canvas-container like RaceCourseLayer
     let container: HTMLElement | null = null;
@@ -223,8 +227,11 @@ export default function TrackLayer(props: TrackLayerProps) {
     }
     
     if (!container) {
-      // Fallback to .map element
-      container = d3.select(".map").node() as HTMLElement;
+      try {
+        container = props.map.getContainer() as HTMLElement;
+      } catch (e) {
+        debug('TrackLayer: getContainer fallback failed', e);
+      }
     }
     
     if (!container) {
@@ -238,6 +245,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     const width = mapRect.width || clientWidth || 0;
     const height = mapRect.height || clientHeight || 0;
     
+    overlayContainer = container;
     svg = d3.select(container)
       .append("svg")
       .attr("class", "track-overlay")
@@ -1244,6 +1252,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     if (svg) {
       svg.remove();
     }
+    overlayContainer = null;
     if ((window as any).trackLayerResizeHandler) {
       window.removeEventListener('resize', (window as any).trackLayerResizeHandler);
       delete (window as any).trackLayerResizeHandler;

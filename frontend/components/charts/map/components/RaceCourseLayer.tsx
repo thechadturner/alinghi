@@ -42,6 +42,7 @@ export default function RaceCourseLayer(props: RaceCourseLayerProps) {
   
   let svg: d3.Selection<SVGSVGElement, unknown, HTMLElement, any> | null = null;
   let raceCourseOverlay: d3.Selection<SVGGElement, unknown, HTMLElement, any> | null = null;
+  let overlayContainer: HTMLElement | null = null;
   let isDrawing = false;
   let boundaryData: BoundaryData[] = [];
   let marksData: MarkData[] = [];
@@ -544,8 +545,11 @@ export default function RaceCourseLayer(props: RaceCourseLayerProps) {
         return;
       }
 
-      // Remove existing overlay
-      d3.select(".race-course-overlay").remove();
+      // Remove existing overlay only within this map instance
+      const existingContainer = overlayContainer || props.map.getCanvasContainer?.();
+      if (existingContainer) {
+        d3.select(existingContainer).selectAll(".race-course-overlay").remove();
+      }
 
       // Create SVG overlay - use map.getCanvasContainer() like the old code
       let container: HTMLElement | null = null;
@@ -556,8 +560,11 @@ export default function RaceCourseLayer(props: RaceCourseLayerProps) {
       }
       
       if (!container) {
-        // Fallback to .map element
-        container = d3.select(".map").node() as HTMLElement;
+        try {
+          container = props.map.getContainer() as HTMLElement;
+        } catch (e) {
+          // Keep null and retry below
+        }
       }
       
       if (!container) {
@@ -631,6 +638,7 @@ export default function RaceCourseLayer(props: RaceCourseLayerProps) {
       // Remove existing overlay
       d3.select(container).select(".race-course-overlay").remove();
 
+      overlayContainer = container;
       svg = d3.select(container)
         .append("svg")
         .attr("class", "race-course-overlay")
@@ -2094,8 +2102,11 @@ export default function RaceCourseLayer(props: RaceCourseLayerProps) {
       delete (window as any).raceCourseLayerResizeHandler;
     }
 
-    // Clean up D3 overlays
-    d3.select(".race-course-overlay").remove();
+    // Clean up D3 overlays for this map instance only
+    if (overlayContainer) {
+      d3.select(overlayContainer).selectAll(".race-course-overlay").remove();
+      overlayContainer = null;
+    }
   });
 
   return null; // This component doesn't render JSX, it uses D3

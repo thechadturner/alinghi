@@ -743,7 +743,7 @@ def get_channel_groups(api_token: str, class_name: str, project_id: str, date: s
         log_error(f"Response: {response.text[:200]}")
         log_error(
             "If message is 'Source not found', ensure the file server has parquet under "
-            f"DATA_DIRECTORY/System/{project_id}/{str(class_name).lower()}/{date}/{source_name}/ "
+            f"DATA_DIRECTORY/system/{project_id}/{str(class_name).lower()}/{date}/{source_name}/ "
             "(folder name must match source_name; case is resolved case-insensitively on the server)."
         )
         return []
@@ -855,6 +855,167 @@ def _execute_influx_query_chunk(query_api, influx_bucket: str, influx_database: 
 IOX_TABLE = '"iox"."universalized_logs"'
 
 
+def _influx_v3_iox_table_sql() -> str:
+    """SQL FROM fragment for Influx v3 / IOx wide table (hardcoded until multi-table support is needed)."""
+    return IOX_TABLE
+
+
+def _influx_v3_requests_verify():
+    """TLS verification for query_sql requests (self-signed / internal clusters)."""
+    ca = (os.getenv("INFLUX_SSL_CA_CERT") or "").strip()
+    if ca and os.path.isfile(ca):
+        return ca
+    v = (os.getenv("INFLUX_VERIFY_SSL") or "true").strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+def _influx_v3_iox_boat_column() -> str:
+    """IOx wide table uses quoted identifiers (e.g. \"BoatId\"), not Influx 2 tag names (boat)."""
+    return (os.getenv("INFLUX_V3_SQL_COL_BOAT") or "BoatId").strip()
+
+
+def _influx_v3_iox_level_column() -> Optional[str]:
+    """IOx column for strm/log filter; None = omit (wide universalized_logs often has no level column)."""
+    raw = os.getenv("INFLUX_V3_SQL_COL_LEVEL")
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s == "" or s.lower() in ("none", "-", "omit", "false", "0"):
+        return None
+    return s
+
+
+def _influx_v3_sql_boat_literal_for_filter(source_boat: str) -> str:
+    """Value compared to IOx ``BoatId``: same as ``get_channel_values_influx(..., source_name=...)`` unless ``INFLUX_V3_SQL_BOAT_LITERAL`` is set."""
+    o = (os.getenv("INFLUX_V3_SQL_BOAT_LITERAL") or "").strip()
+    return o if o else str(source_boat).strip()
+
+
+def _influx_v3_sql_boat_predicate_sql(boat_col_quoted: str, boat_for_sql: str) -> str:
+    lit = _influx_v3_sql_string_literal(boat_for_sql)
+    ci = (os.getenv("INFLUX_V3_SQL_BOAT_CI") or "").strip().lower() in ("1", "true", "yes", "on")
+    if ci:
+        return (
+            f"LOWER(TRIM(CAST({boat_col_quoted} AS VARCHAR))) = "
+            f"LOWER(TRIM({lit}))"
+        )
+    return f"{boat_col_quoted} = {lit}"
+
+
+def _influx_v3_sql_boat_level_predicate_expr(boat: str, level: str) -> str:
+    """Predicate fragment for boat (and optional level column), no leading AND."""
+    b = _influx_v3_sql_quote_ident(_influx_v3_iox_boat_column())
+    boat_lit = _influx_v3_sql_boat_literal_for_filter(boat)
+    line = _influx_v3_sql_boat_predicate_sql(b, boat_lit)
+    lc = _influx_v3_iox_level_column()
+    if lc is not None:
+        l = _influx_v3_sql_quote_ident(lc)
+        line += f" AND {l} = {_influx_v3_sql_string_literal(level)}"
+    return line
+
+
+def _influx_v3_sql_boat_level_where(boat: str, level: str) -> str:
+    return f"  AND {_influx_v3_sql_boat_level_predicate_expr(boat, level)}\n"
+
+
+def _influx_v3_sql_day_predicate_expr(formatted_date: str) -> str:
+    """
+    Optional ``Day`` (or configured column) equality, without leading ``AND``.
+    Empty string when ``INFLUX_V3_SQL_COL_DAY`` is unset.
+    """
+    col = (os.getenv("INFLUX_V3_SQL_COL_DAY") or "").strip()
+    if not col:
+        return ""
+    val = (os.getenv("INFLUX_V3_SQL_DAY_VALUE") or "").strip()
+    if not val:
+        fmt = (os.getenv("INFLUX_V3_SQL_DAY_FORMAT") or "iso").strip().lower()
+        if fmt == "compact":
+            val = formatted_date.replace("-", "")
+        else:
+            val = formatted_date
+    cq = _influx_v3_sql_quote_ident(col)
+    as_int = (os.getenv("INFLUX_V3_SQL_DAY_AS_INTEGER") or "").strip().lower() in ("1", "true", "yes", "on")
+    if as_int:
+        try:
+            n = int(str(val).replace("-", ""))
+            return f"{cq} = {n}"
+        except ValueError:
+            pass
+    return f"{cq} = {_influx_v3_sql_string_literal(val)}"
+
+
+def _influx_v3_sql_day_predicate(formatted_date: str) -> str:
+    """
+    Optional filter on a calendar/partition column (often ex-Influx \"tag\" materialized as ``Day``).
+    Helps IOx prune files when the table is partitioned by day.
+
+    - ``INFLUX_V3_SQL_COL_DAY``: column name (e.g. ``Day``); unset = no extra predicate.
+    - ``INFLUX_V3_SQL_DAY_FORMAT``: ``iso`` (YYYY-MM-DD, default) or ``compact`` (YYYYMMDD).
+    - ``INFLUX_V3_SQL_DAY_VALUE``: if set, use this literal instead of deriving from the query date.
+    - ``INFLUX_V3_SQL_DAY_AS_INTEGER``: if ``1``/``true``, compare as numeric (e.g. ``Day`` = 20260327).
+    """
+    ex = _influx_v3_sql_day_predicate_expr(formatted_date)
+    return f"  AND {ex}\n" if ex else ""
+
+
+_influx_v3_where_order_log_once: Optional[str] = None
+
+
+def _influx_v3_sql_where_block(time_range_sql: str, formatted_date: str, boat: str, level: str) -> str:
+    """
+    Full ``WHERE`` clause (multiline) for IOx wide-table channel queries.
+
+    ``INFLUX_V3_SQL_WHERE_ORDER`` (default ``time_day_boat``):
+      - ``time_day_boat``: ``time`` range, then optional ``Day``, then ``BoatId`` (good for time-partitioned data).
+      - ``boat_day_time``: ``BoatId``, optional ``Day``, then ``time`` (try if stats suggest boat/day prune first).
+      - ``day_boat_time``: optional ``Day``, ``BoatId``, then ``time``.
+
+    The planner may reorder predicates; this mainly controls SQL text order for possible hints and debugging.
+    """
+    global _influx_v3_where_order_log_once
+    primary = (os.getenv("INFLUX_V3_SQL_WHERE_ORDER") or "").strip().lower()
+    alias = (os.getenv("INFLUX_V3_SQL_FILTER_ORDER") or "").strip().lower()
+    if primary:
+        raw_order = primary
+    elif alias in ("boat_day_time", "boat_first"):
+        raw_order = "boat_day_time"
+    elif alias == "day_boat_time":
+        raw_order = "day_boat_time"
+    elif alias in ("time_day_boat", "standard", ""):
+        raw_order = "time_day_boat"
+    elif alias:
+        raw_order = alias
+    else:
+        raw_order = "time_day_boat"
+    t = time_range_sql.strip()
+    day_ex = _influx_v3_sql_day_predicate_expr(formatted_date)
+    boat_ex = _influx_v3_sql_boat_level_predicate_expr(boat, level)
+    if raw_order in ("boat_day_time", "boat_first"):
+        parts = [p for p in (boat_ex, day_ex, t) if p]
+    elif raw_order in ("day_boat_time",):
+        parts = [p for p in (day_ex, boat_ex, t) if p]
+    else:
+        if raw_order not in ("time_day_boat", "standard", "time_first", ""):
+            log_warning(
+                f"[InfluxDB v3] Unknown INFLUX_V3_SQL_WHERE_ORDER={raw_order!r}; using time_day_boat"
+            )
+        parts = [p for p in (t, day_ex, boat_ex) if p]
+    if not parts:
+        return "WHERE 1=1\n"
+    _default_where_orders = ("time_day_boat", "standard", "time_first", "")
+    if raw_order not in _default_where_orders and _influx_v3_where_order_log_once != raw_order:
+        _influx_v3_where_order_log_once = raw_order
+        log_info(
+            f"[InfluxDB v3] WHERE predicate order: {raw_order} "
+            "(INFLUX_V3_SQL_WHERE_ORDER / INFLUX_V3_SQL_FILTER_ORDER; planner may still reorder)"
+        )
+    lines = ["WHERE " + parts[0]]
+    lines.extend(f"  AND {p}" for p in parts[1:])
+    return "\n".join(lines) + "\n"
+
+
 def _resolve_influx_query_version(explicit: Optional[str]) -> Literal["2", "3"]:
     if explicit is not None:
         v = str(explicit).strip().lower()
@@ -882,7 +1043,8 @@ def _influx_v3_origin_from_host(influx_host: str) -> str:
     if not raw.startswith(("http://", "https://")):
         raw = f"http://{raw}"
     parsed = urlparse(raw)
-    port_env = (os.getenv("INFLUX_PORT") or "").strip()
+    # Standard: INFLUX_PORT (e.g. 8181 for v3 query_sql). INFLUX_QUERY_PORT is an optional legacy alias.
+    port_env = (os.getenv("INFLUX_PORT") or os.getenv("INFLUX_QUERY_PORT") or "").strip()
     host = parsed.hostname or ""
     scheme = parsed.scheme or "http"
     if parsed.port:
@@ -944,7 +1106,13 @@ def _influx_v3_query_sql(origin: str, token: str, database: str, sql: str, timeo
     last_err: Optional[Exception] = None
     for attempt in (1, 2):
         try:
-            r = requests.post(url, data=payload.encode("utf-8"), headers=headers, timeout=timeout_sec)
+            r = requests.post(
+                url,
+                data=payload.encode("utf-8"),
+                headers=headers,
+                timeout=timeout_sec,
+                verify=_influx_v3_requests_verify(),
+            )
             if r.status_code == 504 and attempt == 1:
                 log_warning(
                     "[InfluxDB v3] Gateway timeout (504); retrying once in 3s..."
@@ -970,7 +1138,18 @@ def _influx_v3_query_sql(origin: str, token: str, database: str, sql: str, timeo
 
 def _influx_v3_normalize_row(record: Dict[str, Any], _idx: int) -> Dict[str, Any]:
     result = dict(record)
-    meta_keys = {"_time", "time", "ts", "result", "table", "boat", "level"}
+    meta_keys = {
+        "_time",
+        "time",
+        "ts",
+        "result",
+        "table",
+        "boat",
+        "level",
+        "BoatId",
+        "Level",
+        "level",
+    }
     for key in list(result.keys()):
         if key in meta_keys:
             continue
@@ -1005,7 +1184,19 @@ def _influx_v3_raw_rows_to_dataframe(raw_results: List[Dict[str, Any]], measurem
     if "ts" not in df.columns:
         log_error("[InfluxDB v3] No time/ts in query results")
         return pd.DataFrame()
-    drop_cols = [c for c in ("boat", "level", "result", "table") if c in df.columns]
+    drop_cols = [
+        c
+        for c in (
+            "boat",
+            "level",
+            "BoatId",
+            "Level",
+            "level",
+            "result",
+            "table",
+        )
+        if c in df.columns
+    ]
     if drop_cols:
         df = df.drop(columns=drop_cols, errors="ignore")
     min_valid_ts = datetime(2020, 1, 1).timestamp()
@@ -1064,8 +1255,8 @@ def _fetch_influx_v3_dataframe(
 ) -> Tuple[pd.DataFrame, str, str]:
     """Returns (df, start_time_desc, stop_time_desc) for logging."""
     token = _normalize_influx_token(os.getenv("INFLUX_TOKEN"))
-    influx_host = os.getenv("INFLUX_HOST")
-    influx_database = os.getenv("INFLUX_DATABASE")
+    influx_host = (os.getenv("INFLUX_HOST") or os.getenv("INFLUX_URL") or "").strip()
+    influx_database = (os.getenv("INFLUX_DATABASE") or "").strip()
     if not token or not influx_host or not influx_database:
         log_error("[InfluxDB v3] INFLUX_TOKEN, INFLUX_HOST, INFLUX_DATABASE required")
         return pd.DataFrame(), "(n/a)", "(n/a)"
@@ -1090,7 +1281,15 @@ def _fetch_influx_v3_dataframe(
 
     CHUNK_THRESHOLD_SECONDS = 900
     MEASUREMENT_CHUNK_THRESHOLD = 50
-    BATCH_SIZE = 30
+    try:
+        batch_size = int(os.getenv("INFLUX_V3_MEASUREMENT_BATCH_SIZE") or "30")
+    except ValueError:
+        batch_size = 30
+    BATCH_SIZE = max(5, min(200, batch_size))
+    try:
+        time_chunk_seconds = int(os.getenv("INFLUX_V3_TIME_CHUNK_SECONDS") or "0")
+    except ValueError:
+        time_chunk_seconds = 0
     try:
         query_limit = max(10000, int(os.getenv("INFLUX_QUERY_LIMIT") or "500000"))
     except ValueError:
@@ -1103,6 +1302,13 @@ def _fetch_influx_v3_dataframe(
 
     use_chunking = (not had_explicit_range) or (end_ts_num - start_ts_num > CHUNK_THRESHOLD_SECONDS)
     use_measurement_chunking = len(measurements) > MEASUREMENT_CHUNK_THRESHOLD
+
+    day_col = (os.getenv("INFLUX_V3_SQL_COL_DAY") or "").strip()
+    if day_col:
+        log_info(
+            f"[InfluxDB v3] Partition-style filter enabled: {_influx_v3_sql_quote_ident(day_col)} "
+            "(INFLUX_V3_SQL_COL_DAY); v3 wide tables use columns, not Flux tag indexes."
+        )
 
     start_time_log = "(n/a)"
     stop_time_log = "(n/a)"
@@ -1130,10 +1336,24 @@ def _fetch_influx_v3_dataframe(
 
         time_ranges: List[Tuple[float, float]] = []
         if use_chunking and chunk_start_ts is not None and chunk_end_ts is not None:
-            time_ranges = _build_influx_v3_time_ranges_hour_aligned(chunk_start_ts, chunk_end_ts)
-            log_info(
-                f"[InfluxDB v3] Time chunking: {len(time_ranges)} hour-aligned segment(s)"
-            )
+            if time_chunk_seconds > 0:
+                time_ranges = []
+                cur = float(chunk_start_ts)
+                end_c = float(chunk_end_ts)
+                step = float(time_chunk_seconds)
+                while cur < end_c:
+                    nxt = min(cur + step, end_c)
+                    time_ranges.append((cur, nxt))
+                    cur = nxt
+                log_info(
+                    f"[InfluxDB v3] Time chunking: {len(time_ranges)} segment(s) of ~{time_chunk_seconds}s "
+                    "(INFLUX_V3_TIME_CHUNK_SECONDS)"
+                )
+            else:
+                time_ranges = _build_influx_v3_time_ranges_hour_aligned(chunk_start_ts, chunk_end_ts)
+                log_info(
+                    f"[InfluxDB v3] Time chunking: {len(time_ranges)} hour-aligned segment(s)"
+                )
         else:
             time_ranges = _build_influx_v3_time_ranges_fixed_hour_slices(start_ts_num, end_ts_num)
 
@@ -1150,10 +1370,11 @@ def _fetch_influx_v3_dataframe(
             (t0, t1), batch = job
             time_pred = _influx_v3_sql_time_chunk_predicate(t0, t1, end_ts_num)
             cols = build_select_cols(batch)
+            iox_tbl = _influx_v3_iox_table_sql()
+            where_blk = _influx_v3_sql_where_block(time_pred, formatted_date, boat, level)
             chunk_sql = (
-                f"SELECT {cols} FROM {IOX_TABLE}\n"
-                f"WHERE {time_pred}\n"
-                f"  AND boat = {_influx_v3_sql_string_literal(boat)} AND level = {_influx_v3_sql_string_literal(level)}\n"
+                f"SELECT {cols} FROM {iox_tbl}\n"
+                f"{where_blk}"
                 f"ORDER BY time\n"
                 f"LIMIT {query_limit}"
             )
@@ -1202,15 +1423,22 @@ def _fetch_influx_v3_dataframe(
         start_time_log = start_iso
         stop_time_log = stop_iso
         cols = build_select_cols(measurements)
+        iox_tbl = _influx_v3_iox_table_sql()
+        time_rng = (
+            f"time >= {_influx_v3_sql_string_literal(start_iso)} "
+            f"AND time <= {_influx_v3_sql_string_literal(stop_iso)}"
+        )
+        where_blk = _influx_v3_sql_where_block(time_rng, formatted_date, boat, level)
         sql_query = (
-            f"SELECT {cols} FROM {IOX_TABLE}\n"
-            f"WHERE time >= {_influx_v3_sql_string_literal(start_iso)} AND time <= {_influx_v3_sql_string_literal(stop_iso)}\n"
-            f"  AND boat = {_influx_v3_sql_string_literal(boat)} AND level = {_influx_v3_sql_string_literal(level)}\n"
+            f"SELECT {cols} FROM {iox_tbl}\n"
+            f"{where_blk}"
             f"ORDER BY time\n"
             f"LIMIT {query_limit}"
         )
+        lc_log = _influx_v3_iox_level_column()
+        lvl_log = f", level={level!r}" if lc_log is not None else ""
         log_info(
-            f"[InfluxDB v3] SQL: db={influx_database}, boat={boat}, date={formatted_date}, level={level}, "
+            f"[InfluxDB v3] SQL: db={influx_database}, boat={boat}, date={formatted_date}{lvl_log}, "
             f"measurements={len(measurements)}, range={start_iso} to {stop_iso}"
         )
         try:
@@ -1221,6 +1449,38 @@ def _fetch_influx_v3_dataframe(
         if len(raw_results) >= query_limit:
             log_warning(
                 f"[InfluxDB v3] Single query hit row limit ({query_limit}); result may be truncated"
+            )
+
+    if not raw_results:
+        bc = _influx_v3_iox_boat_column()
+        bq = _influx_v3_sql_quote_ident(bc)
+        bval = _influx_v3_sql_boat_literal_for_filter(boat)
+        lc = _influx_v3_iox_level_column()
+        level_sql = ""
+        if lc is not None:
+            lq = _influx_v3_sql_quote_ident(lc)
+            level_sql = f" AND {lq} = {_influx_v3_sql_string_literal(level)}"
+        day_sql = _influx_v3_sql_day_predicate(formatted_date).replace("\n", " ").strip()
+        if day_sql:
+            day_sql = f" {day_sql}"
+        t0 = datetime.fromtimestamp(start_ts_num, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%SZ")
+        t1 = datetime.fromtimestamp(end_ts_num, tz=tz.tzutc()).strftime("%Y-%m-%dT%H:%M:%SZ")
+        iox_tbl = _influx_v3_iox_table_sql()
+        log_warning(
+            "[InfluxDB v3] 0 rows: verify "
+            f"{bq} matches stored values (query used {bval!r}; try INFLUX_V3_SQL_BOAT_LITERAL or "
+            "INFLUX_V3_SQL_BOAT_CI=1). Confirm data exists in UTC window. "
+            f"Sample: SELECT DISTINCT {bq} FROM {iox_tbl} WHERE time >= {_influx_v3_sql_string_literal(t0)} "
+            f"AND time <= {_influx_v3_sql_string_literal(t1)}{day_sql}{level_sql} LIMIT 50"
+        )
+        if (os.getenv("INFLUX_V3_SQL_COL_DAY") or "").strip():
+            dq = _influx_v3_sql_quote_ident((os.getenv("INFLUX_V3_SQL_COL_DAY") or "").strip())
+            log_warning(
+                "[InfluxDB v3] If ``Day`` format/type is wrong, all rows are filtered out. "
+                "Try INFLUX_V3_SQL_DAY_FORMAT=compact, INFLUX_V3_SQL_DAY_AS_INTEGER=1, or "
+                "INFLUX_V3_SQL_DAY_VALUE=<exact>. Inspect stored values: "
+                f"SELECT DISTINCT {dq} FROM {iox_tbl} WHERE time >= {_influx_v3_sql_string_literal(t0)} "
+                f"AND time <= {_influx_v3_sql_string_literal(t1)} LIMIT 20"
             )
 
     df = _influx_v3_raw_rows_to_dataframe(raw_results, measurements)
@@ -1466,7 +1726,7 @@ def get_channel_values_influx(
     start_ts: Optional[float] = None,
     end_ts: Optional[float] = None,
     timezone: Optional[str] = None,
-    level: str = 'strm',
+    level: Optional[str] = None,
     skipMissing: bool = True,
     influx_version: Optional[Literal["2", "3"]] = None,
 ) -> pd.DataFrame:
@@ -1482,9 +1742,19 @@ def get_channel_values_influx(
         end_ts: Optional end timestamp in seconds
         timezone: For implicit full-day query: non-UTC defines local midnight–end-of-day converted to UTC
             for Flux; None or UTC uses UTC calendar day (with warning). Also used for ``Datetime`` tz_convert.
-        level: Data level filter ('strm' or 'log'). Defaults to 'strm'.
+        level: Influx **v2 only**: Flux tag filter (e.g. ``strm``, ``log``, ``mdss``). Defaults to ``strm`` when
+            ``None``. Influx **v3** wide tables usually have no level column; v3 ignores this unless
+            ``INFLUX_V3_SQL_COL_LEVEL`` names a column to filter.
         skipMissing: If True (default), skip channels with no data. If False, include missing channels filled with np.nan.
         influx_version: ``'2'`` (Flux + bucket) or ``'3'`` (HTTP SQL). If omitted, uses env ``INFLUX_QUERY_VERSION`` (default ``3``).
+
+    Influx **v3** (IOx wide table) performance notes — there are no Flux-style tag indexes; dimensions such as
+    ``BoatId`` are normal columns. Optional env tuning: ``INFLUX_V3_SQL_COL_DAY`` (+ ``INFLUX_V3_SQL_DAY_FORMAT``)
+    to add a ``Day`` equality filter for partition pruning; ``INFLUX_V3_MEASUREMENT_BATCH_SIZE`` (default 30) to
+    trade fewer HTTP calls vs larger responses; ``INFLUX_V3_TIME_CHUNK_SECONDS`` (default 0 = hour-aligned chunks)
+    for coarser time slicing; ``INFLUX_CHUNK_CONCURRENCY`` for parallel chunk requests.
+    ``INFLUX_V3_SQL_WHERE_ORDER`` (default ``time_day_boat``) can reorder ``WHERE`` clauses; try ``boat_day_time``
+    if you want ``BoatId``/``Day`` listed before the time range (DataFusion may still reorder at plan time).
 
     Returns:
         DataFrame with channel data
@@ -1494,6 +1764,8 @@ def get_channel_values_influx(
     except ValueError as e:
         log_error(str(e))
         return pd.DataFrame()
+
+    level_flux = level if level is not None else "strm"
 
     if not rs or (isinstance(rs, str) and rs.strip() == ''):
         rs = '1s'
@@ -1562,7 +1834,7 @@ def get_channel_values_influx(
             df, boat, start_time, stop_time, influx_host, influx_database, influx_bucket = _get_channel_values_influx_v2(
                 date,
                 source_name,
-                level,
+                level_flux,
                 eff_start,
                 eff_end,
                 formatted_date,
@@ -1572,7 +1844,7 @@ def get_channel_values_influx(
             df, start_time, stop_time = _fetch_influx_v3_dataframe(
                 formatted_date,
                 boat,
-                level,
+                level_flux,
                 measurements,
                 eff_start,
                 eff_end,
@@ -1714,10 +1986,17 @@ def get_channel_values_influx(
             return dff
         else:
             # Query succeeded but returned no data - log diagnostic info
-            warning_msg = (
-                f"No data returned from InfluxDB v{ver} query for boat={boat_log}, "
-                f"level={level}, date={formatted_date}"
-            )
+            if ver == "3":
+                warning_msg = (
+                    f"No data returned from InfluxDB v3 query for boat={boat_log}, date={formatted_date}"
+                )
+                if _influx_v3_iox_level_column() is not None:
+                    warning_msg += f", level={level_flux!r}"
+            else:
+                warning_msg = (
+                    f"No data returned from InfluxDB v2 query for boat={boat_log}, "
+                    f"level={level_flux}, date={formatted_date}"
+                )
             print(f"WARNING: {warning_msg}", flush=True)
             log_warning(warning_msg)
 
@@ -1737,6 +2016,13 @@ def get_channel_values_influx(
                 conn_info = (
                     f"Connection: host={influx_host}, database={influx_database} (Influx v3)"
                 )
+                v3_hint = (
+                    " If logs show 0 rows: compare source_name to IOx \"BoatId\" "
+                    "(see earlier [InfluxDB v3] diagnostic SQL). Try INFLUX_V3_SQL_BOAT_CI=1 "
+                    "or INFLUX_V3_SQL_BOAT_LITERAL=<exact BoatId>."
+                )
+                print(f"WARNING:{v3_hint}", flush=True)
+                log_warning(v3_hint.strip())
             print(f"WARNING: {query_params}", flush=True)
             log_warning(query_params)
             print(f"WARNING: {conn_info}", flush=True)
@@ -1819,7 +2105,7 @@ def get_channel_values(
             log_error(f"No channel groups returned for class_name={class_name}, project_id={project_id}, date={date}, source_name={source_name}")
             log_error(
                 "Check file server: directory must exist with .parquet files at "
-                f"System/{project_id}/{str(class_name).lower()}/{date}/{source_name}/ "
+                f"system/{project_id}/{str(class_name).lower()}/{date}/{source_name}/ "
                 "(see channel-groups / channel-values API and DATA_DIRECTORY)."
             )
             return dff
@@ -2032,7 +2318,6 @@ def get_channel_values(
                         start_ts=start_ts,
                         end_ts=end_ts,
                         timezone=influx_timezone,
-                        level='strm',  # Use 'strm' level by default
                         influx_version=influx_version,
                     )
                     
@@ -2082,7 +2367,6 @@ def get_channel_values(
                 start_ts=start_ts,
                 end_ts=end_ts,
                 timezone=influx_timezone,
-                level='strm',  # Use 'strm' level by default
                 influx_version=influx_version,
             )
             

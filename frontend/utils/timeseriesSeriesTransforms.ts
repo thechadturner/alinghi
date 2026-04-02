@@ -146,11 +146,27 @@ export function groupChannelsByApiResolution(
 type ChartLikeForResample = {
   series?: Array<{
     dataResample?: unknown;
+    lineType?: unknown;
     xaxis?: { name?: string };
     yaxis?: { name?: string };
     colorChannel?: { name?: string };
   }>;
 };
+
+function chartHasRawSeriesForY(
+  chart: ChartLikeForResample,
+  yBase: string
+): boolean {
+  for (const ser of chart.series ?? []) {
+    const yn = ser?.yaxis?.name;
+    if (!yn) continue;
+    if (stripFleetChannelSuffix(yn) !== yBase) continue;
+    if (normalizeTimeseriesDataResample(ser.dataResample) === "RAW") {
+      return true;
+    }
+  }
+  return false;
+}
 
 export function stripFleetChannelSuffix(s: string): string {
   return s.split(" - ")[0].trim();
@@ -351,6 +367,21 @@ export function buildExploreResampleFetchPlan(charts: ChartLikeForResample[]): E
     });
   });
 
+  // Cumulative-style line types need native RAW samples; fetch RAW for Y when the chart has no explicit RAW series for that channel (avoids bucket means on merged frame).
+  charts.forEach((chart) => {
+    for (const ser of chart.series || []) {
+      if (!ser.yaxis?.name) continue;
+      const y = stripFleetChannelSuffix(ser.yaxis.name);
+      const mode = normalizeTimeseriesDataResample(ser.dataResample);
+      if (!useRawReadingsForCumulativeLineTypes(ser.lineType)) continue;
+      if (mode === "RAW") continue;
+      if (chartHasRawSeriesForY(chart, y)) continue;
+      const rawG = ensureGroup(null);
+      rawG.channelSet.add(y);
+      addMeta(rawG);
+    }
+  });
+
   /** Multiple channel-values resolutions in one plan → same API column name on both responses; must rename before merge or first grid wins and the other is lost. */
   const needsMultiResolutionPlotKeys = groupMap.size > 1;
 
@@ -368,6 +399,27 @@ export function buildExploreResampleFetchPlan(charts: ChartLikeForResample[]): E
       const g = ensureGroup(apiRes);
       if (plotKey !== y) g.rename[y] = plotKey;
     });
+  });
+
+  // Ensure merged column `y__rs__RAW` exists for cumulative-style series that rely on `rawReadingPlotKeyForExploreChannel` fallback (no same-chart RAW series).
+  charts.forEach((chart) => {
+    for (const ser of chart.series || []) {
+      if (!ser.yaxis?.name) continue;
+      const y = stripFleetChannelSuffix(ser.yaxis.name);
+      const mode = normalizeTimeseriesDataResample(ser.dataResample);
+      if (!useRawReadingsForCumulativeLineTypes(ser.lineType)) continue;
+      if (mode === "RAW") continue;
+      if (chartHasRawSeriesForY(chart, y)) continue;
+      const mergedKey = `${y}${EXPLORE_Y_RESAMPLE_INFIX}RAW`;
+      mergedYKeysSet.add(mergedKey);
+      const rawIg = groupMap.get(null);
+      if (rawIg) {
+        const existing = rawIg.rename[y];
+        if (existing === undefined || existing === y) {
+          rawIg.rename[y] = mergedKey;
+        }
+      }
+    }
   });
 
   const groups: ExploreResampleFetchGroup[] = [...groupMap.entries()].map(([resolution, ig]) => ({

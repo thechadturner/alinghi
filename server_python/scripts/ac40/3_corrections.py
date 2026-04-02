@@ -185,7 +185,7 @@ def get_processed_data_ts_range(class_name, project_id, date, source_name):
     """Load processed_data_racesight.parquet and return (ts_min, ts_max, ts_series)."""
     data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
     date_str = str(date).replace('-', '').replace('/', '')
-    dir_path = os.path.join(data_dir, 'System', str(project_id), class_name, date_str, source_name)
+    dir_path = os.path.join(data_dir, 'system', str(project_id), class_name, date_str, source_name)
     path = os.path.join(dir_path, 'processed_data_racesight.parquet')
     if not os.path.exists(path):
         return None, None, None
@@ -211,7 +211,7 @@ def get_canonical_ts_for_fusion(class_name, project_id, date, source_name):
         return proc_min, proc_max, proc_ts
     data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
     date_str = str(date).replace('-', '').replace('/', '')
-    dir_path = os.path.join(data_dir, 'System', str(project_id), class_name, date_str, source_name)
+    dir_path = os.path.join(data_dir, 'system', str(project_id), class_name, date_str, source_name)
     influx_path = None
     for fname in (
         'influx_data.parquet',
@@ -872,7 +872,7 @@ def save_corrections_parquet(df_out, class_name, project_id, date, source_name):
     """
     data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
     date_str = str(date).replace('-', '').replace('/', '')
-    dir_path = os.path.join(data_dir, 'System', str(project_id), class_name, date_str, source_name)
+    dir_path = os.path.join(data_dir, 'system', str(project_id), class_name, date_str, source_name)
     os.makedirs(dir_path, exist_ok=True)
     path = os.path.join(dir_path, 'fusion_corrections_racesight.parquet')
     tmp_path = path + '.tmp'

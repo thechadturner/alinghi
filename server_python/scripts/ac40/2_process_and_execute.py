@@ -208,7 +208,7 @@ if __name__ == "__main__":
                 # This ensures the file is fully written and flushed to disk
                 data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
                 date_str_clean = date.replace('-', '') if date and '-' in date else date
-                parquet_path = os.path.join(data_dir, 'System', str(project_id), class_name, date_str_clean, source_name, 'processed_data_racesight.parquet')
+                parquet_path = os.path.join(data_dir, 'system', str(project_id), class_name, date_str_clean, source_name, 'processed_data_racesight.parquet')
                 
                 max_wait_time = 10  # Maximum 10 seconds to wait for file
                 wait_interval = 0.5  # Check every 0.5 seconds

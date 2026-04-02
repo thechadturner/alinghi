@@ -28,6 +28,7 @@ export default function LiveTrackLayer(props: LiveTrackLayerProps) {
   
   let svg: any = null;
   let trackOverlay: any = null;
+  let overlayContainer: HTMLElement | null = null;
   // Use signals to track SVG/trackOverlay state so effects can react to changes
   const [svgReady, setSvgReady] = createSignal(false);
   const [trackOverlayReady, setTrackOverlayReady] = createSignal(false);
@@ -190,8 +191,11 @@ export default function LiveTrackLayer(props: LiveTrackLayerProps) {
       return;
     }
     
-    // Remove existing overlay
-    d3.select(".live-track-overlay").remove();
+    // Remove only this map instance's overlay
+    const existingContainer = overlayContainer || props.map.getCanvasContainer();
+    if (existingContainer) {
+      d3.select(existingContainer).selectAll(".live-track-overlay").remove();
+    }
     
     // Create SVG overlay - attach to map canvas container
     let container: HTMLElement | null = null;
@@ -202,8 +206,11 @@ export default function LiveTrackLayer(props: LiveTrackLayerProps) {
     }
     
     if (!container) {
-      // Fallback to .map element
-      container = d3.select(".map").node() as HTMLElement;
+      try {
+        container = props.map.getContainer() as HTMLElement;
+      } catch (e) {
+        debug('[LiveTrackLayer] getContainer fallback failed', e);
+      }
     }
     
     if (!container) {
@@ -217,6 +224,7 @@ export default function LiveTrackLayer(props: LiveTrackLayerProps) {
     const width = mapRect.width || clientWidth || 0;
     const height = mapRect.height || clientHeight || 0;
     
+    overlayContainer = container;
     svg = d3.select(container)
       .append("svg")
       .attr("class", "live-track-overlay")
@@ -1041,10 +1049,11 @@ export default function LiveTrackLayer(props: LiveTrackLayerProps) {
   // Cleanup on unmount
   onCleanup(() => {
     // Remove SVG overlay
-    if (svg && d3) {
-      d3.select(".live-track-overlay").remove();
+    if (d3 && overlayContainer) {
+      d3.select(overlayContainer).selectAll(".live-track-overlay").remove();
       svg = null;
       trackOverlay = null;
+      overlayContainer = null;
     }
     
     // Remove map event listeners

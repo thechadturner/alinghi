@@ -31,7 +31,7 @@ function mergePortIntoOrigin(baseUrl) {
     influxUrl = `http://${influxUrl}`;
   }
   const u = new URL(influxUrl);
-  const p = (env.INFLUX_PORT || '').trim();
+  const p = (env.INFLUX_PORT || env.INFLUX_QUERY_PORT || '').trim();
   if (p && !u.port) {
     u.port = p;
   }
@@ -106,6 +106,181 @@ function sqlStringLiteral(s) {
  */
 function sqlQuoteIdent(name) {
   return `"${String(name).replace(/"/g, '""')}"`;
+}
+
+/** IOx wide table uses quoted identifiers (e.g. "BoatId"), not Influx 2 tag names (boat). */
+function ioxSqlBoatColumnName() {
+  return (process.env.INFLUX_V3_SQL_COL_BOAT || 'BoatId').trim();
+}
+
+function ioxSqlBoatLiteralForFilter(sourceBoat) {
+  const o = (process.env.INFLUX_V3_SQL_BOAT_LITERAL || '').trim();
+  return o || String(sourceBoat).trim();
+}
+
+/**
+ * @param {string} boatColQuoted
+ * @param {string} boatForSql
+ * @returns {string}
+ */
+function ioxSqlBoatPredicateSql(boatColQuoted, boatForSql) {
+  const lit = sqlStringLiteral(boatForSql);
+  const ci = ['1', 'true', 'yes', 'on'].includes((process.env.INFLUX_V3_SQL_BOAT_CI || '').trim().toLowerCase());
+  if (ci) {
+    return `LOWER(TRIM(CAST(${boatColQuoted} AS VARCHAR))) = LOWER(TRIM(${lit}))`;
+  }
+  return `${boatColQuoted} = ${lit}`;
+}
+
+/**
+ * IOx column for strm/log filter; null = omit (wide universalized_logs often has no level column).
+ * Set INFLUX_V3_SQL_COL_LEVEL=level (or real column name) when the table has that field.
+ * @returns {string | null}
+ */
+function ioxSqlLevelColumnNameOrNull() {
+  const raw = process.env.INFLUX_V3_SQL_COL_LEVEL;
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  const s = String(raw).trim();
+  if (s === '' || ['none', '-', 'omit', 'false', '0'].includes(s.toLowerCase())) {
+    return null;
+  }
+  return s;
+}
+
+/**
+ * Boat (+ optional level) predicate without leading AND.
+ * @param {string} boat
+ * @param {string} level
+ * @returns {string}
+ */
+function ioxSqlBoatLevelPredicateExpr(boat, level) {
+  const b = sqlQuoteIdent(ioxSqlBoatColumnName());
+  const boatLit = ioxSqlBoatLiteralForFilter(boat);
+  let line = ioxSqlBoatPredicateSql(b, boatLit);
+  const lc = ioxSqlLevelColumnNameOrNull();
+  if (lc !== null) {
+    line += ` AND ${sqlQuoteIdent(lc)} = ${sqlStringLiteral(level)}`;
+  }
+  return line;
+}
+
+/**
+ * @param {string} boat
+ * @param {string} level
+ * @returns {string}
+ */
+function ioxSqlBoatLevelWhereClause(boat, level) {
+  return `  AND ${ioxSqlBoatLevelPredicateExpr(boat, level)}\n`;
+}
+
+/**
+ * Optional Day (or configured column) equality without leading AND.
+ * @param {string} formattedDate YYYY-MM-DD
+ * @returns {string}
+ */
+function ioxSqlDayPredicateExpr(formattedDate) {
+  const col = (env.INFLUX_V3_SQL_COL_DAY || '').trim();
+  if (!col) return '';
+  let val = (env.INFLUX_V3_SQL_DAY_VALUE || '').trim();
+  if (!val) {
+    const fmt = (env.INFLUX_V3_SQL_DAY_FORMAT || 'iso').trim().toLowerCase();
+    val = fmt === 'compact' ? formattedDate.replace(/-/g, '') : formattedDate;
+  }
+  const asInt = ['1', 'true', 'yes', 'on'].includes((env.INFLUX_V3_SQL_DAY_AS_INTEGER || '').trim().toLowerCase());
+  if (asInt) {
+    const n = parseInt(String(val).replace(/-/g, ''), 10);
+    if (!isNaN(n)) {
+      return `${sqlQuoteIdent(col)} = ${n}`;
+    }
+  }
+  return `${sqlQuoteIdent(col)} = ${sqlStringLiteral(val)}`;
+}
+
+/** @type {string | null} */
+let ioxSqlWhereOrderLogged = null;
+
+/**
+ * Multiline WHERE for IOx channel queries. Matches Python ``INFLUX_V3_SQL_WHERE_ORDER``.
+ * @param {string} timeRangeSql e.g. time >= '...' AND time <= '...'
+ * @param {string} formattedDate
+ * @param {string} boat
+ * @param {string} level
+ * @returns {string}
+ */
+function ioxSqlWhereBlock(timeRangeSql, formattedDate, boat, level) {
+  const primary = (env.INFLUX_V3_SQL_WHERE_ORDER || '').trim().toLowerCase();
+  const alias = (env.INFLUX_V3_SQL_FILTER_ORDER || '').trim().toLowerCase();
+  let rawOrder;
+  if (primary) {
+    rawOrder = primary;
+  } else if (alias === 'boat_day_time' || alias === 'boat_first') {
+    rawOrder = 'boat_day_time';
+  } else if (alias === 'day_boat_time') {
+    rawOrder = 'day_boat_time';
+  } else if (alias === 'time_day_boat' || alias === 'standard' || alias === '') {
+    rawOrder = 'time_day_boat';
+  } else {
+    rawOrder = alias;
+  }
+  const t = timeRangeSql.trim();
+  const dayEx = ioxSqlDayPredicateExpr(formattedDate);
+  const boatEx = ioxSqlBoatLevelPredicateExpr(boat, level);
+  /** @type {string[]} */
+  let parts;
+  if (rawOrder === 'boat_day_time' || rawOrder === 'boat_first') {
+    parts = [boatEx, dayEx, t].filter(Boolean);
+  } else if (rawOrder === 'day_boat_time') {
+    parts = [dayEx, boatEx, t].filter(Boolean);
+  } else {
+    if (!['time_day_boat', 'standard', 'time_first', ''].includes(rawOrder)) {
+      warn(`[influxdb_utils_v3] Unknown INFLUX_V3_SQL_WHERE_ORDER=${rawOrder}; using time_day_boat`);
+    }
+    parts = [t, dayEx, boatEx].filter(Boolean);
+  }
+  if (parts.length === 0) {
+    return 'WHERE 1=1\n';
+  }
+  const defaultOrders = new Set(['time_day_boat', 'standard', 'time_first', '']);
+  if (!defaultOrders.has(rawOrder) && ioxSqlWhereOrderLogged !== rawOrder) {
+    ioxSqlWhereOrderLogged = rawOrder;
+    log(`[influxdb_utils_v3] WHERE predicate order: ${rawOrder} (planner may still reorder)`);
+  }
+  const lines = [`WHERE ${parts[0]}`];
+  for (let i = 1; i < parts.length; i++) {
+    lines.push(`  AND ${parts[i]}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Optional partition-style filter on a calendar column (e.g. Day). Matches Python api_utils INFLUX_V3_SQL_COL_DAY.
+ * @param {string} formattedDate YYYY-MM-DD
+ * @returns {string}
+ */
+function ioxSqlDayPredicate(formattedDate) {
+  const ex = ioxSqlDayPredicateExpr(formattedDate);
+  return ex ? `  AND ${ex}\n` : '';
+}
+
+/**
+ * Lowercase names to exclude from channel discovery (time + boat/level aliases).
+ * @returns {string}
+ */
+function ioxSchemaMetaLowerNotInList() {
+  const boat = ioxSqlBoatColumnName().toLowerCase();
+  const lc = ioxSqlLevelColumnNameOrNull();
+  const parts = ['time', 'boat', 'level', boat];
+  const dayCol = (env.INFLUX_V3_SQL_COL_DAY || '').trim();
+  if (dayCol) {
+    parts.push(dayCol.toLowerCase());
+  }
+  if (lc !== null) {
+    parts.push(lc.toLowerCase());
+  }
+  const uniq = [...new Set(parts)];
+  return uniq.map((c) => sqlStringLiteral(c)).join(', ');
 }
 
 /**
@@ -313,13 +488,19 @@ async function getSourcesFromInfluxDB(date, level = 'strm') {
   const startTime = `${formattedDate}T00:00:00Z`;
   const stopTime = `${formattedDate}T23:59:59Z`;
 
-  const sql = `SELECT DISTINCT boat FROM ${IOX_TABLE}
-WHERE time >= ${sqlStringLiteral(startTime)} AND time <= ${sqlStringLiteral(stopTime)} AND level = ${sqlStringLiteral(level)}
-ORDER BY boat`;
+  const boatCol = ioxSqlBoatColumnName();
+  const levelCol = ioxSqlLevelColumnNameOrNull();
+  let whereTime = `time >= ${sqlStringLiteral(startTime)} AND time <= ${sqlStringLiteral(stopTime)}`;
+  if (levelCol !== null) {
+    whereTime += ` AND ${sqlQuoteIdent(levelCol)} = ${sqlStringLiteral(level)}`;
+  }
+  const sql = `SELECT DISTINCT ${sqlQuoteIdent(boatCol)} FROM ${IOX_TABLE}
+WHERE ${whereTime}
+ORDER BY ${sqlQuoteIdent(boatCol)}`;
 
   try {
     const results = await queryInfluxV3(sql);
-    const boats = [...new Set(results.map((r) => r.boat).filter(Boolean))];
+    const boats = [...new Set(results.map((r) => r[boatCol]).filter(Boolean))];
     return boats.sort();
   } catch (err) {
     error('[influxdb_utils_v3] Error getting sources from InfluxDB:', err);
@@ -519,7 +700,7 @@ async function getChannelsFromInfluxDB(date, sourceName, level = 'strm', checkHe
   try {
     // Wide table: channel names are columns on iox.universalized_logs (see plan / information_schema).
     log(`[influxdb_utils_v3] Querying InfluxDB v3 for channels (information_schema.universalized_logs)`);
-    const schemaSql = `SELECT column_name FROM information_schema.columns WHERE table_schema = 'iox' AND table_name = 'universalized_logs' AND column_name NOT IN ('time', 'boat', 'level') ORDER BY column_name`;
+    const schemaSql = `SELECT column_name FROM information_schema.columns WHERE table_schema = 'iox' AND table_name = 'universalized_logs' AND LOWER(column_name) NOT IN (${ioxSchemaMetaLowerNotInList()}) ORDER BY column_name`;
 
     const queryStartTime = Date.now();
     debug(`[influxdb_utils_v3] SQL: ${schemaSql}`);
@@ -887,7 +1068,9 @@ async function getChannelValuesFromInfluxDB(
     // If chunking by measurements, split measurements into batches
     let measurementBatches = [];
     if (useMeasurementChunking) {
-      const BATCH_SIZE = 30; // Process 30 measurements at a time
+      let batchRaw = parseInt(env.INFLUX_V3_MEASUREMENT_BATCH_SIZE || '30', 10);
+      if (isNaN(batchRaw)) batchRaw = 30;
+      const BATCH_SIZE = Math.max(5, Math.min(200, batchRaw));
       for (let i = 0; i < measurements.length; i += BATCH_SIZE) {
         measurementBatches.push(measurements.slice(i, i + BATCH_SIZE));
       }
@@ -900,27 +1083,35 @@ async function getChannelValuesFromInfluxDB(
     // If not time-chunking, create a single time range
     const timeRanges = [];
     if (useChunking && chunkStartTs !== null && chunkEndTs !== null) {
-      let currentStart = chunkStartTs;
-      while (currentStart < chunkEndTs) {
-        // Calculate the start of the next hour for this chunk
-        const currentDate = new Date(currentStart * 1000);
-        let currentEnd;
-        
-        // If we're not already at the start of an hour, align to the next hour
-        if (currentDate.getMinutes() !== 0 || currentDate.getSeconds() !== 0 || currentDate.getMilliseconds() !== 0) {
-          // Move to the start of the next hour
-          const nextHour = new Date(currentDate);
-          nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
-          currentEnd = Math.min(nextHour.getTime() / 1000, chunkEndTs);
-        } else {
-          // Already at hour boundary, go to next hour
-          const nextHour = new Date(currentDate);
-          nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
-          currentEnd = Math.min(nextHour.getTime() / 1000, chunkEndTs);
+      const timeChunkSec = parseInt(env.INFLUX_V3_TIME_CHUNK_SECONDS || '0', 10) || 0;
+      if (timeChunkSec > 0) {
+        let cur = chunkStartTs;
+        while (cur < chunkEndTs) {
+          const nxt = Math.min(cur + timeChunkSec, chunkEndTs);
+          timeRanges.push({ start: cur, end: nxt });
+          cur = nxt;
         }
-        
-        timeRanges.push({ start: currentStart, end: currentEnd });
-        currentStart = currentEnd;
+        log(`[influxdb_utils_v3] Time chunking: ${timeRanges.length} segment(s) of ~${timeChunkSec}s (INFLUX_V3_TIME_CHUNK_SECONDS)`);
+      } else {
+        let currentStart = chunkStartTs;
+        while (currentStart < chunkEndTs) {
+          const currentDate = new Date(currentStart * 1000);
+          let currentEnd;
+
+          if (currentDate.getMinutes() !== 0 || currentDate.getSeconds() !== 0 || currentDate.getMilliseconds() !== 0) {
+            const nextHour = new Date(currentDate);
+            nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
+            currentEnd = Math.min(nextHour.getTime() / 1000, chunkEndTs);
+          } else {
+            const nextHour = new Date(currentDate);
+            nextHour.setHours(nextHour.getHours() + 1, 0, 0, 0);
+            currentEnd = Math.min(nextHour.getTime() / 1000, chunkEndTs);
+          }
+
+          timeRanges.push({ start: currentStart, end: currentEnd });
+          currentStart = currentEnd;
+        }
+        log(`[influxdb_utils_v3] Time chunking: ${timeRanges.length} hour-aligned segment(s)`);
       }
     } else {
       // Single time range - use provided timestamps or full day; cap at 1 hour per range to avoid timeouts
@@ -964,10 +1155,9 @@ async function getChannelValuesFromInfluxDB(
             : Math.floor(new Date(`${formattedDate}T23:59:59Z`).getTime() / 1000);
       const timePred = sqlTimeChunkPredicate(timeRange.start, timeRange.end, windowEndSec);
       const cols = buildSelectColumnsForMeasurements(measurementBatch);
+      const whereBlk = ioxSqlWhereBlock(timePred, formattedDate, boat, level);
       const chunkSql = `SELECT ${cols} FROM ${IOX_TABLE}
-WHERE ${timePred}
-  AND boat = ${sqlStringLiteral(boat)} AND level = ${sqlStringLiteral(level)}
-ORDER BY time
+${whereBlk}ORDER BY time
 LIMIT ${queryLimit}`;
       debug(`[influxdb_utils_v3] Chunk SQL: ${chunkStartTime} to ${chunkStopTime}, measurements=${measurementBatch.length}`);
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1089,10 +1279,10 @@ LIMIT ${queryLimit}`;
     }
     
     const cols = buildSelectColumnsForMeasurements(measurements);
+    const timeRng = `time >= ${sqlStringLiteral(startTime)} AND time <= ${sqlStringLiteral(stopTime)}`;
+    const whereBlk = ioxSqlWhereBlock(timeRng, formattedDate, boat, level);
     const sqlQuery = `SELECT ${cols} FROM ${IOX_TABLE}
-WHERE time >= ${sqlStringLiteral(startTime)} AND time <= ${sqlStringLiteral(stopTime)}
-  AND boat = ${sqlStringLiteral(boat)} AND level = ${sqlStringLiteral(level)}
-ORDER BY time
+${whereBlk}ORDER BY time
 LIMIT ${queryLimit}`;
 
     log(`[influxdb_utils_v3] Executing SQL: db=${influxDatabase}, boat=${boat}, date=${formattedDate}, level=${level}, measurements=${measurements.length}, time_range=${startTime} to ${stopTime}`);
@@ -1126,6 +1316,9 @@ LIMIT ${queryLimit}`;
     }
     
     log(`[influxdb_utils_v3] Retrieved ${rawResults.length} raw rows from InfluxDB`);
+
+    const metaBoatCol = ioxSqlBoatColumnName();
+    const metaLevelCol = ioxSqlLevelColumnNameOrNull();
     
     // Debug: Check for binary data before processing
     let binaryFieldsFound = new Set();
@@ -1195,7 +1388,19 @@ LIMIT ${queryLimit}`;
       // Only convert LATITUDE_GPS_unk and LONGITUDE_GPS_unk - all other channels should remain unchanged
       Object.keys(result).forEach(key => {
         // Skip metadata fields
-        if (key === '_time' || key === 'time' || key === 'ts' || key === 'result' || key === 'table' || key === 'boat' || key === 'level') {
+        if (
+          key === '_time' ||
+          key === 'time' ||
+          key === 'ts' ||
+          key === 'result' ||
+          key === 'table' ||
+          key === 'boat' ||
+          key === 'level' ||
+          key === 'BoatId' ||
+          key === 'Level' ||
+          key === metaBoatCol ||
+          (metaLevelCol !== null && key === metaLevelCol)
+        ) {
           return;
         }
         
@@ -1754,7 +1959,7 @@ async function saveInfluxDataToParquet(data, projectId, className, date, sourceN
     const basename = influxParquetBasenameFromApiResolution(apiResolution);
     const filePath = path.join(
       env.DATA_DIRECTORY,
-      'System',
+      'system',
       String(projectId),
       classLower,
       date,

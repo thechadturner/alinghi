@@ -332,7 +332,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     const groups = groupedData();
     if (groups.length === 0) return [0, 100];
     
-    // Use default channel name for Bsp (Bsp_kph for AC40, Bsp_kts for AC75)
+    // Use default channel name for Bsp (Bsp_kph for GP50, Bsp_kts for AC75)
     const bspFieldName = defaultChannelsStore.bspName() || 'Bsp_kph';
     
     let minVal = Infinity;
@@ -856,7 +856,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       return gap > gapThresholdMs;
     };
     
-    // Use default channel name for Bsp (Bsp_kph for AC40, Bsp_kts for AC75)
+    // Use default channel name for Bsp (Bsp_kph for GP50, Bsp_kts for AC75)
     const bspFieldName = defaultChannelsStore.bspName() || 'Bsp_kph';
     
     // Line generator with gap detection

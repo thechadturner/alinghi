@@ -1847,7 +1847,7 @@ async function saveInfluxDataToParquet(data, projectId, className, date, sourceN
     const basename = influxParquetBasenameFromApiResolution(apiResolution);
     const filePath = path.join(
       env.DATA_DIRECTORY,
-      'System',
+      'system',
       String(projectId),
       classLower,
       date,

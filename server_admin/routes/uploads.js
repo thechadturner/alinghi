@@ -3,6 +3,7 @@ const { body, query } = require('express-validator');
 const { authenticate } = require('../middleware/auth_jwt');
 const { isValidateName } = require('../middleware/helpers');
 const { uploadFiles, uploadData, uploadTargets, uploadPolars, uploadVideo, listCsvFiles, checkFileExists } = require('../controllers/uploads');
+const { ALLOWED_UPLOAD_PROFILE_IDS } = require('../middleware/upload_raw_profiles');
 const router = express.Router();
 const { requirePatScopesIfPat } = require('../middleware/pat');
 const { handleValidation } = require('../../shared/middleware/validation');
@@ -33,6 +34,31 @@ router.post(
             .trim()
             .isLength({ min: 1, max: 128 }).withMessage('source_name must be 1-128 chars')
             .matches(/^[\w\-\s]+$/).withMessage('source_name may contain letters, numbers, spaces, _ and -'),
+        body('upload_date')
+            .optional()
+            .isString().withMessage('upload_date must be a string')
+            .bail()
+            .trim()
+            .custom((value) => {
+                if (value === '' || value == null) return true;
+                const compact = String(value).replace(/[-/]/g, '');
+                if (!/^\d{8}$/.test(compact)) {
+                    throw new Error('upload_date must be YYYYMMDD or YYYY-MM-DD');
+                }
+                return true;
+            }),
+        body('upload_profile')
+            .optional()
+            .isString().withMessage('upload_profile must be a string')
+            .bail()
+            .trim()
+            .custom((value) => {
+                if (value === '' || value == null) return true;
+                if (!ALLOWED_UPLOAD_PROFILE_IDS.includes(value)) {
+                    throw new Error(`upload_profile must be one of: ${ALLOWED_UPLOAD_PROFILE_IDS.join(', ')}`);
+                }
+                return true;
+            }),
     ],
     handleValidation,
     uploadData

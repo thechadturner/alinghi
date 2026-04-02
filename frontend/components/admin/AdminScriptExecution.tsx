@@ -419,7 +419,7 @@ export default function AdminScriptExecution() {
       try {
         const sanitizedDate = dataset.date.replace(/[-/]/g, "");
 
-        // Source name must match the folder under the file server (System/.../date/<source>/). Prefer name from
+        // Source name must match the folder under the file server (system/.../date/<source>/). Prefer name from
         // the fetched dataset row, then project sources list — empty string causes channel-groups 404 / script failure.
         const sourceFromStore = sources().find((s) => s.source_id === dataset.source_id);
         const sourceName = (

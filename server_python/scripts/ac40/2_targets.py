@@ -279,7 +279,7 @@ def main():
     data_dir = os.getenv("DATA_DIRECTORY", "C:/MyApps/Hunico/Uploads/Data")
     class_lower = (class_name or "").lower()
     date_clean = (date or "").replace("-", "").replace("/", "")
-    folder_path = os.path.join(data_dir, "System", str(project_id), class_lower, date_clean, source_name or "")
+    folder_path = os.path.join(data_dir, "system", str(project_id), class_lower, date_clean, source_name or "")
 
     if verbose:
         print(f"Applying target to parquet folder: {folder_path}", flush=True)

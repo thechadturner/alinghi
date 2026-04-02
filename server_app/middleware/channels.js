@@ -61,7 +61,7 @@ async function getFileChannels(class_name, project_id, date, source_name) {
     const sourceNameUpper = source_name ? source_name.toUpperCase() : '';
     const actualSourceName = (sourceNameUpper === 'ALL' || sourceNameUpper === 'ALL_INFLUX') ? 'GER' : source_name;
     
-    const sourcePath = safeJoin(env.DATA_DIRECTORY, "System", String(project_id), classLower, date, actualSourceName);
+    const sourcePath = safeJoin(env.DATA_DIRECTORY, "system", String(project_id), classLower, date, actualSourceName);
     
     log(`[getFileChannels] Using file server logic: source_name=${source_name}, date=${date}`);
     

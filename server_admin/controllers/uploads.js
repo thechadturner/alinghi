@@ -11,6 +11,7 @@ const { logMessage } = require('../middleware/logging');
 const db = require('../../server_app/middleware/db');
 const { check_permissions } = require('../../server_app/middleware/auth_jwt');
 const { log } = require('../../shared');
+const { getProfile, validateFilesForProfile } = require('../middleware/upload_raw_profiles');
 
 /** Get dataset timezone for (class_name, project_id, date) for video start/end local→UTC conversion. */
 async function getDatasetTimezoneForDate(class_name, project_id, dateStr) {
@@ -92,7 +93,7 @@ const uploadFiles = multer({
     try {
       const ext = path.extname(file.originalname).toLowerCase();
       // Allow .plr files for polar uploads (will be validated in uploadPolars function)
-      const allowed = new Set(['.csv', '.txt', '.parquet', '.json', '.arrow', '.mp4', '.xml', '.plr']);
+      const allowed = new Set(['.csv', '.txt', '.parquet', '.json', '.jsonl', '.arrow', '.mp4', '.xml', '.plr', '.db']);
       if (!allowed.has(ext)) {
         return cb(new Error(`Invalid file type: ${ext}`));
       }
@@ -279,17 +280,68 @@ const uploadData = async (req, res) => {
     // Enforce allowed types for data upload
     for (const f of files) {
       const ext = path.extname(f.originalname).toLowerCase();
-      if (!['.csv', '.parquet', '.json', '.xml'].includes(ext)) {
+      if (!['.csv', '.parquet', '.json', '.xml', '.db', '.jsonl'].includes(ext)) {
         logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', `Unsupported file type in uploadData: ${ext}`, { fileName: f.originalname });
         return sendResponse(res, info, 415, false, `Unsupported file type for data upload: ${ext}`, null);
       }
     }
-    const { class_name, project_id, source_name, skip_normalization, timezone } = req.body;
+    const { class_name, project_id, source_name, skip_normalization, timezone, upload_date, upload_profile } = req.body;
+
+    const parseUploadDateBody = (raw) => {
+      if (raw == null || raw === '') return null;
+      const s = String(raw).trim();
+      const compact = s.replace(/[-/]/g, '');
+      if (!/^\d{8}$/.test(compact)) return null;
+      const y = compact.slice(0, 4);
+      const m = compact.slice(4, 6);
+      const d = compact.slice(6, 8);
+      const mo = parseInt(m, 10);
+      const day = parseInt(d, 10);
+      if (mo < 1 || mo > 12 || day < 1 || day > 31) return null;
+      const date = `${y}-${m}-${d}`;
+      return { date, formattedDate: compact };
+    };
+
+    const hasDbFile = files.some((f) => path.extname(f.originalname).toLowerCase() === '.db');
+    const hasJsonlFile = files.some((f) => path.extname(f.originalname).toLowerCase() === '.jsonl');
+    const parsedUploadDate = parseUploadDateBody(upload_date);
+    if (hasDbFile && !parsedUploadDate) {
+      logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', 'upload_date required for .db uploads', {});
+      return sendResponse(res, info, 400, false, 'upload_date is required for .db uploads (YYYYMMDD or YYYY-MM-DD)', null);
+    }
+    if (hasJsonlFile && !parsedUploadDate) {
+      logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', 'upload_date required for .jsonl uploads', {});
+      return sendResponse(res, info, 400, false, 'upload_date is required for .jsonl uploads (YYYYMMDD or YYYY-MM-DD)', null);
+    }
 
     // Validate required parameters
     if (!class_name || !project_id || !source_name) {
       logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', 'Missing required parameters in uploadData', { class_name, project_id, source_name });
       return sendResponse(res, info, 400, false, 'Missing required parameters: class_name, project_id, and source_name are required', null);
+    }
+
+    const classLowerEarly = String(class_name || '').toLowerCase();
+    const activeProfile = getProfile(classLowerEarly, upload_profile);
+    if (upload_profile != null && String(upload_profile).trim() !== '' && !activeProfile) {
+      logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', 'Unknown upload_profile', { upload_profile, class_name });
+      return sendResponse(res, info, 400, false, `Unknown upload_profile for this class: ${upload_profile}`, null);
+    }
+    if (activeProfile) {
+      const profileFileErr = validateFilesForProfile(files, activeProfile);
+      if (profileFileErr) {
+        return sendResponse(res, info, 400, false, profileFileErr, null);
+      }
+      if (activeProfile.requiresUploadDate && !parsedUploadDate) {
+        return sendResponse(res, info, 400, false, 'upload_date is required for this upload profile (YYYYMMDD or YYYY-MM-DD)', null);
+      }
+    }
+
+    let pathSourceName = String(source_name || '').trim();
+    if (activeProfile) {
+      pathSourceName = activeProfile.resolveSourceName(req);
+      if (!pathSourceName) {
+        return sendResponse(res, info, 400, false, 'source_name could not be resolved for this upload profile', null);
+      }
     }
 
     // Parse skip_normalization flag (can be string "true"/"false" or boolean)
@@ -330,6 +382,7 @@ const uploadData = async (req, res) => {
     for (const file of dataFiles) {
       const filePath = path.join(uploadPath, file.originalname);
       const fileName = file.originalname;
+      const dataFileExt = path.extname(fileName).toLowerCase();
   
       try {
         if (!fs.existsSync(filePath)) {
@@ -351,6 +404,17 @@ const uploadData = async (req, res) => {
             error: verifyError.message 
           });
           throw new Error(`File ${fileName} is not fully downloaded. Please wait for download to complete and try again.`);
+        }
+
+        if ((dataFileExt === '.db' || dataFileExt === '.jsonl') && parsedUploadDate) {
+          const { date: dbDate, formattedDate: dbFormatted } = parsedUploadDate;
+          fileDateMap.set(fileName, { date: dbDate, formattedDate: dbFormatted });
+          if (!targetDate) {
+            targetDate = dbDate;
+            targetFormattedDate = dbFormatted;
+          }
+          dates.push(dbDate);
+          continue;
         }
   
         // Wrap extractDatetimeColumn in additional error handling with timeout
@@ -519,7 +583,10 @@ const uploadData = async (req, res) => {
           } else {
             // Use stored date if available, otherwise extract (shouldn't happen but safety check)
             const storedDate = fileDateMap.get(fileName);
-            if (storedDate) {
+            if ((fileExt === '.db' || fileExt === '.jsonl') && parsedUploadDate) {
+              date = parsedUploadDate.date;
+              formattedDate = parsedUploadDate.formattedDate;
+            } else if (storedDate) {
               date = storedDate.date;
               formattedDate = storedDate.formattedDate;
             } else {
@@ -568,23 +635,23 @@ const uploadData = async (req, res) => {
         const classLower = String(class_name || '').toLowerCase();
         let pathComponents;
         if (isMetadataFile && fileExt === '.xml') {
-          // XML files go to: Raw/project_id/class_name/date/
+          // XML files go to: raw/project_id/class_name/date/
           pathComponents = [
             dataDirectory,
-            "Raw", 
+            "raw", 
             String(project_id), 
             classLower,
             String(formattedDate)
           ];
         } else {
-          // Data files go to: Raw/project_id/class_name/date/source_name/
+          // Data files go to: raw/project_id/class_name/date/source_name/
           pathComponents = [
             dataDirectory,
-            "Raw", 
+            "raw", 
             String(project_id), 
             classLower,
             String(formattedDate),
-            String(source_name)
+            String(pathSourceName)
           ];
         }
         
@@ -594,90 +661,39 @@ const uploadData = async (req, res) => {
           fs.mkdirSync(saveDir, { recursive: true });
         }
 
-        // Save the file to the specified directory
+        // Save the file to the specified directory (always overwrite if same name exists)
         const savePath = path.join(saveDir, file.originalname);
-        
-        // Check if file with same name and size already exists
         const uploadedFileSize = stats.size;
         if (fs.existsSync(savePath)) {
-          const existingFileStats = fs.statSync(savePath);
-          if (existingFileStats.size === uploadedFileSize) {
-            // File with same name and size already exists - skip upload
-            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'info', `File already exists with same name and size, skipping upload: ${savePath}`, { 
-              project_id, 
-              class_name, 
-              source_name, 
-              savePath, 
-              fileSize: uploadedFileSize 
-            });
-            
-            // Mark as success but indicate it was skipped
-            if (!isMetadataFile) {
-              if (shouldSkipNormalization) {
-                results.push({ 
-                  fileName, 
-                  success: true, 
-                  date,
-                  savePath,
-                  skipped: true,
-                  message: 'File already exists with same name and size',
-                  needsNormalization: true
-                });
-              } else {
-                // Check if normalization is needed (file exists but may need re-normalization)
-                // For now, we'll skip normalization too since file already exists
-                results.push({ 
-                  fileName, 
-                  success: true, 
-                  date,
-                  skipped: true,
-                  message: 'File already exists with same name and size'
-                });
-              }
-            } else {
-              if (fileExt === '.xml') {
-                xmlFiles.push({ fileName, savePath, saveDir });
-              }
-              results.push({ 
-                fileName, 
-                success: true, 
-                skipped: true,
-                message: 'File already exists with same name and size (no normalization needed)' 
-              });
-            }
-            
-            // Clean up temporary file
-            if (fs.existsSync(filePath)) {
-              fs.unlinkSync(filePath);
-            }
-            continue; // Skip to next file
-          } else {
-            // File exists but size is different - log warning but proceed with upload (will overwrite)
-            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'warn', `File exists with different size, will overwrite: ${savePath}`, { 
-              project_id, 
-              class_name, 
-              source_name, 
-              savePath, 
+          try {
+            const existingFileStats = fs.statSync(savePath);
+            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'info', `Overwriting existing file: ${savePath}`, {
+              project_id,
+              class_name,
+              source_name,
+              savePath,
               existingSize: existingFileStats.size,
-              newSize: uploadedFileSize 
+              newSize: uploadedFileSize,
             });
+          } catch (statErr) {
+            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'warn', `Could not stat existing file before overwrite: ${savePath}`, { error: statErr.message });
           }
         }
-        
+
         moveFileSync(filePath, savePath);
 
         logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'info', `File saved to: ${savePath}`, { project_id, class_name, source_name, savePath });
 
         // Collect normalization tasks instead of processing immediately
         if (!isMetadataFile) {
-          if (shouldSkipNormalization) {
-            // Skip normalization, but track file info for later processing
+          if (shouldSkipNormalization || fileExt === '.db' || fileExt === '.jsonl') {
+            // Skip normalization; .db / .jsonl raw profiles are never normalized here
             results.push({ 
               fileName, 
               success: true, 
               date,
               savePath, // Include savePath so frontend can normalize later
-              needsNormalization: true
+              needsNormalization: fileExt !== '.db' && fileExt !== '.jsonl'
             });
           } else {
             // Collect task for parallel processing
@@ -782,6 +798,32 @@ const uploadData = async (req, res) => {
     }
 
     if (allSucceeded) {
+      if (activeProfile) {
+        const savedPaths = results.filter((r) => r.success && r.savePath).map((r) => r.savePath);
+        try {
+          await activeProfile.afterRawUpload({
+            savedPaths,
+            class_name,
+            project_id,
+            profileId: activeProfile.id,
+            req,
+            auth_token,
+            formattedDate: targetFormattedDate,
+            sourceName: pathSourceName,
+          });
+        } catch (hookErr) {
+          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', `afterRawUpload: ${hookErr.message}`, { error: hookErr.stack });
+          return sendResponse(
+            res,
+            info,
+            500,
+            false,
+            `Post-upload processing failed: ${hookErr.message}`,
+            responseData,
+            false,
+          );
+        }
+      }
       return sendResponse(res, info, 200, true, 'All files uploaded and processed successfully', responseData, false);
     } else {
       const successCount = results.filter(r => r.success).length;
@@ -1111,7 +1153,7 @@ const uploadVideo = async (req, res) => {
           // Bypass: save directly to MEDIA_DIRECTORY (not DATA_DIRECTORY) so file lands under Uploads/Media
           let mediaBase = env?.MEDIA_DIRECTORY || 'C:/MyApps/Hunico/Uploads/Media';
           mediaBase = path.normalize(mediaBase).replace(/[\\/]+$/, '');
-          const medResDir = path.join(mediaBase, 'System', String(project_id), classLower, date, sanitizedMediaSource, 'med_res');
+          const medResDir = path.join(mediaBase, 'system', String(project_id), classLower, date, sanitizedMediaSource, 'med_res');
           const medResPath = path.join(medResDir, fileName);
           if (!fs.existsSync(medResDir)) fs.mkdirSync(medResDir, { recursive: true });
           moveFileSync(filePath, medResPath);
@@ -1121,7 +1163,7 @@ const uploadVideo = async (req, res) => {
             try {
               const tz = uploadTimezone || await getDatasetTimezoneForDate(class_name, project_id, dbDate);
               const { startIso, endIso, durationSeconds } = await computeStartEndFromMetadata(medResPath, dbDate, { timezone: tz || undefined, db, useDefaultStartTime: !useFileDatetime });
-              const systemBase = path.join(mediaBase, 'System', String(project_id), classLower, date);
+              const systemBase = path.join(mediaBase, 'system', String(project_id), classLower, date);
               const fileTemplate = path.join(systemBase, sanitizedMediaSource, '{res}', fileName);
               const payload = {
                 class_name,
@@ -1209,8 +1251,8 @@ const uploadVideo = async (req, res) => {
           continue;
         }
 
-        // Normal path: move to Raw then run ffmpeg
-        const rawDir = path.join(dataRoot, 'Raw', subPath);
+        // Normal path: move to raw then run ffmpeg
+        const rawDir = path.join(dataRoot, 'raw', subPath);
         if (!fs.existsSync(rawDir)) fs.mkdirSync(rawDir, { recursive: true });
         const rawPath = path.join(rawDir, fileName);
         moveFileSync(filePath, rawPath);
@@ -1220,7 +1262,7 @@ const uploadVideo = async (req, res) => {
           try {
             const tz = uploadTimezone || await getDatasetTimezoneForDate(class_name, project_id, dbDate);
             const { startIso, endIso, durationSeconds } = await computeStartEndFromMetadata(rawPath, dbDate, { timezone: tz || undefined, db, useDefaultStartTime: !useFileDatetime });
-            const systemBase = path.join(dataRoot, 'Media', 'System', String(project_id), classLower, date);
+            const systemBase = path.join(dataRoot, 'Media', 'system', String(project_id), classLower, date);
             const fileTemplate = path.join(systemBase, sanitizedMediaSource, '{res}', fileName); // {res} = low_res|med_res|high_res
             
             const payload = {
@@ -1300,9 +1342,9 @@ const uploadVideo = async (req, res) => {
                   batchCtx.outputs.push({ 
                     file: fileName, 
                     renditions: [
-                      { name: 'low_res', file: path.join(dataRoot, 'Media', 'System', String(project_id), classLower, date, sanitizedMediaSource, 'low_res', fileName) },
-                      { name: 'med_res', file: path.join(dataRoot, 'Media', 'System', String(project_id), classLower, date, sanitizedMediaSource, 'med_res', fileName) },
-                      { name: 'high_res', file: path.join(dataRoot, 'Media', 'System', String(project_id), classLower, date, sanitizedMediaSource, 'high_res', fileName) }
+                      { name: 'low_res', file: path.join(dataRoot, 'Media', 'system', String(project_id), classLower, date, sanitizedMediaSource, 'low_res', fileName) },
+                      { name: 'med_res', file: path.join(dataRoot, 'Media', 'system', String(project_id), classLower, date, sanitizedMediaSource, 'med_res', fileName) },
+                      { name: 'high_res', file: path.join(dataRoot, 'Media', 'system', String(project_id), classLower, date, sanitizedMediaSource, 'high_res', fileName) }
                     ]
                   });
                   batchCtx.completed += 1;
@@ -1472,7 +1514,7 @@ const uploadVideo = async (req, res) => {
       } catch (error) {
         results.push({ fileName, success: false, error: error.message });
       } finally {
-        // temp file already moved to Raw or cleaned on error path
+        // temp file already moved to raw or cleaned on error path
         try {
           if (fs.existsSync(filePath)) {
             logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Removing temporary file: ${filePath}`, info.function+": "+fileName);
@@ -1539,19 +1581,19 @@ const checkFileExists = async (req, res) => {
     // Build path components (same logic as uploadData)
     let pathComponents;
     if (isXml && fileExt === '.xml') {
-      // XML files go to: Raw/project_id/class_name/date/
+      // XML files go to: raw/project_id/class_name/date/
       pathComponents = [
         dataDirectory,
-        'Raw',
+        'raw',
         String(project_id),
         classLower,
         String(sanitizedDate)
       ];
     } else {
-      // Data files go to: Raw/project_id/class_name/date/source_name/
+      // Data files go to: raw/project_id/class_name/date/source_name/
       pathComponents = [
         dataDirectory,
-        'Raw',
+        'raw',
         String(project_id),
         classLower,
         String(sanitizedDate),
@@ -1643,10 +1685,10 @@ const listCsvFiles = async (req, res) => {
     const sanitizedDate = String(date).replace(/[-/]/g, '');
     const classLower = String(class_name || '').toLowerCase();
 
-    // Build path: Raw/project_id/class_name/date/source_name/
+    // Build path: raw/project_id/class_name/date/source_name/
     const dirPath = path.join(
       dataDirectory,
-      'Raw',
+      'raw',
       String(project_id),
       classLower,
       sanitizedDate,
