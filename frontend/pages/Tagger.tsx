@@ -651,6 +651,25 @@ function localDateYmd(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+const TAGGER_YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Local calendar day for an event (for feed filtering). Prefer stored `date`, else from focus/start instant. */
+function taggerEventCalendarYmd(row: TaggerStoredEvent): string | null {
+  const raw = row.date?.trim();
+  if (raw && TAGGER_YMD_RE.test(raw)) {
+    return raw;
+  }
+  const instant = (row.focus_time?.trim() || row.start_time?.trim()) ?? '';
+  if (instant === '') {
+    return null;
+  }
+  const parsed = new Date(instant);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return localDateYmd(parsed);
+}
+
 /**
  * Comment / flag / nice / good moment / job: press time T → focus = T−5s, start = focus−5s, end = focus+5s.
  */
@@ -1376,6 +1395,8 @@ export default function Tagger() {
 
   const [projectId, setProjectId] = createSignal<number | null>(null);
   const [events, setEvents] = createSignal<TaggerStoredEvent[]>([]);
+  /** Local YYYY-MM-DD for Session Tags feed; refreshed on an interval so the list rolls over at midnight. */
+  const [taggerFeedTodayYmd, setTaggerFeedTodayYmd] = createSignal(localDateYmd(new Date()));
   const [eventType, setEventType] = createSignal<string>('COMMENT');
   const [comment, setComment] = createSignal<string>('');
   const [editingClientId, setEditingClientId] = createSignal<string | null>(null);
@@ -1516,7 +1537,14 @@ export default function Tagger() {
 
   /** Expand completed TEST rows to two bubbles; WhatsApp-style author grouping. */
   const feedDisplayItems = createMemo((): FeedDisplayItem[] => {
-    const list = events();
+    const pid = projectId();
+    const today = taggerFeedTodayYmd();
+    const list =
+      pid == null
+        ? []
+        : events().filter(
+            (e) => e.projectId === pid && taggerEventCalendarYmd(e) === today
+          );
     const me = user() as Record<string, unknown> | null;
     const sorted = sortEventsChronoAsc(list);
     const expanded: Omit<FeedDisplayItem, 'isGroupStart'>[] = [];
@@ -1746,6 +1774,7 @@ export default function Tagger() {
 
   createEffect(() => {
     events();
+    taggerFeedTodayYmd();
     taggerHideSessionFeed();
     if (taggerHideSessionFeed()) {
       return;
@@ -1824,8 +1853,16 @@ export default function Tagger() {
     onDesktopMq();
     desktopMq.addEventListener('change', onDesktopMq);
 
+    const syncFeedTodayYmd = () => {
+      const y = localDateYmd(new Date());
+      setTaggerFeedTodayYmd((prev) => (prev !== y ? y : prev));
+    };
+    syncFeedTodayYmd();
+    const dayRolloverId = window.setInterval(syncFeedTodayYmd, 60_000);
+
     onCleanup(() => {
       ac.abort();
+      window.clearInterval(dayRolloverId);
       flushStructuredSaveTimer();
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
@@ -2928,9 +2965,11 @@ export default function Tagger() {
               }
             >
               <Show
-                when={events().length > 0}
+                when={feedDisplayItems().length > 0}
                 fallback={
-                  <div class="tagger-empty">No entries yet. Tap a colored tag above to write a note.</div>
+                  <div class="tagger-empty">
+                    No entries for today. Tap a colored tag above to write a note.
+                  </div>
                 }
               >
                 <div
