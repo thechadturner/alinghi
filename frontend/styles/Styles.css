@@ -446,6 +446,31 @@ body.index-page .index-page-scroll-container {
   height: auto !important;
 }
 
+/* Index hero — subtle Alinghi swirl + wordmark (under gradient overlays) */
+.alinghi-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  z-index: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.alinghi-hero-backdrop__svg {
+  width: min(148vmin, 58rem);
+  height: auto;
+  max-height: 95%;
+  opacity: 0.2;
+  transform: translateY(2%);
+  flex-shrink: 0;
+}
+
+.alinghi-hero-backdrop__image {
+  pointer-events: none;
+}
+
 /* Optimize feature cards for scrolling - prevent hover effects from interrupting scroll */
 body.index-page .group {
   touch-action: pan-y;
@@ -473,35 +498,6 @@ body.index-page .group:hover {
   flex-direction: column !important;
   justify-content: center !important;
   align-items: center !important;
-}
-
-body.index-page .welcome-back-section .welcome-back-logo {
-  width: 300px;
-  height: 300px;
-  opacity: 1;
-  object-fit: contain;
-  display: block;
-  margin-left: auto;
-  margin-right: auto;
-  margin-bottom: 1.5rem;
-}
-
-/* Guest hero: Alinghi logo stacked above “Welcome to RACESIGHT” */
-body.index-page .index-guest-hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 100%;
-}
-
-body.index-page .index-hero-alinghi-logo {
-  width: 300px;
-  max-width: min(300px, 90vw);
-  height: auto;
-  object-fit: contain;
-  display: block;
-  flex-shrink: 0;
-  margin-bottom: 1.5rem;
 }
 
 /* Root styles - scoped to index page */
@@ -1088,6 +1084,19 @@ body.index-page #root {
   font-size: 24px;
   color: white;
   font-weight: normal;
+}
+
+/* Hide RACESIGHT on small screens, keep subtitle visible */
+@media (max-width: 729px) {
+  .logo a {
+    display: none;
+  }
+
+  .logo-subtitle {
+    position: static;
+    transform: none;
+    left: auto;
+  }
 }
 
 /* Grey background for autofilled/readonly fields - only change text color, not background */
@@ -2774,32 +2783,6 @@ input.form-input[readonly="readonly"],
   flex: 1;
 }
 
-.upload-files-dates-summary {
-  margin: 0 0 10px 0;
-  padding: 0 0 0 1.1rem;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  line-height: 1.45;
-}
-
-.upload-files-dates-summary-unparsed,
-.upload-files-dates-summary-warn {
-  color: var(--color-text-error);
-}
-
-.upload-file-parsed-date {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
-  min-width: 6.5rem;
-  text-align: right;
-  margin-right: 8px;
-}
-
-.upload-file-parsed-date--missing {
-  color: var(--color-text-error);
-}
-
 .file-icon {
   color: #6b7280;
   flex-shrink: 0;
@@ -4063,7 +4046,7 @@ html::-webkit-scrollbar-corner {
   /* Filters + count + bottom form approx */
 }
 
-/* AC40 Table layout fixes */
+/* GP50 Table layout fixes */
 .explore-table-container {
   display: flex;
   flex-direction: column;
@@ -6735,23 +6718,12 @@ html body #main-content>#media-container.targets-page,
     transform: translateX(-100%);
   }
 
-  /* Mobile header: tighter inset; title/subtitle 4px smaller than desktop (24px → 20px) */
+  /* Mobile header layout adjustments */
   .header {
     justify-content: flex-start;
-    align-items: center;
-    padding-left: 10px;
-  }
-
-  .header.header--dashboard {
+    /* Move logo to the left next to button */
     padding-left: 60px;
-  }
-
-  .logo a {
-    font-size: 20px;
-  }
-
-  .logo .logo-date {
-    font-size: 20px;
+    /* Make space for mobile menu button */
   }
 
   .logo {
@@ -6760,30 +6732,13 @@ html body #main-content>#media-container.targets-page,
     display: flex;
     align-items: center;
     height: 100%;
-    min-width: 0;
-    flex: 1;
-    max-width: calc(100vw - 120px);
-    gap: 10px;
   }
 
-  .logo a.header-project-title {
-    flex: 0 1 auto;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .logo>.logo-subtitle {
+  /* Vertically center logo-subtitle when project name is hidden (mobile mode) */
+  .logo-subtitle {
     position: static;
     transform: none;
     left: auto;
-    font-size: 20px;
-    flex: 1 1 auto;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .mobile-menu-button {
@@ -6803,11 +6758,8 @@ html body #main-content>#media-container.targets-page,
     }
 
     .header {
-      padding-left: 10px;
-    }
-
-    .header.header--dashboard {
       padding-left: 55px;
+      /* Slightly less padding for smaller screens */
     }
 
     .mobile-auth-links {
@@ -7183,6 +7135,47 @@ html body #main-content>#media-container.targets-page,
   transition: width 0.3s ease, transform 0.3s ease, background-color 0.3s ease;
   flex: 0 0 275px;
   /* Don't grow or shrink, maintain fixed width */
+}
+
+/* Explore chart submenu: optional owner icon (matches header user profile glyph) + label */
+.sidebar-explore-submenu-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 1.5rem;
+  min-width: 0;
+}
+
+.sidebar-explore-submenu-row .sidebar-chart-owner-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  opacity: 0.9;
+  color: inherit;
+}
+
+.sidebar-explore-submenu-row .sidebar-chart-owner-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-explore-submenu-row .sidebar-chart-shared-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  opacity: 0.9;
+  color: inherit;
+}
+
+.sidebar-explore-submenu-row .sidebar-chart-shared-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-explore-submenu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Sidebar main content area */

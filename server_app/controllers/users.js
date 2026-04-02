@@ -578,17 +578,18 @@ exports.getUserObjectNames = async (req, res) => {
       const sharedCondition = `(json ->> 'shared' = '1' OR json ->> 'shared' = 'true')`;
       // When requesting fleet_* (day mode), also include shared charts from non-fleet parent so dataset-mode public charts appear in day view
       const altParent = (parent_name === 'fleet_timeseries') ? 'timeseries' : (parent_name === 'fleet_scatter') ? 'scatter' : (parent_name === 'fleet_probability') ? 'probability' : null;
-      let sql = `SELECT object_id, object_name, date_modified, isMine from (
-        SELECT object_id, object_name, date_modified, 1 as isMine FROM ${class_name}.user_objects 
+      const sharedExpr = `CASE WHEN (json ->> 'shared' = '1' OR json ->> 'shared' = 'true') THEN 1 ELSE 0 END`;
+      let sql = `SELECT object_id, object_name, date_modified, isMine, is_shared from (
+        SELECT object_id, object_name, date_modified, 1 as isMine, ${sharedExpr} as is_shared FROM ${class_name}.user_objects 
         WHERE user_id = $1 and parent_name = $2 
         UNION ALL 
-        SELECT object_id, object_name, date_modified, 0 as isMine FROM ${class_name}.user_objects 
+        SELECT object_id, object_name, date_modified, 0 as isMine, 1 as is_shared FROM ${class_name}.user_objects 
         WHERE user_id <> $1 and parent_name = $2 and ${sharedCondition}`;
       const params = [user_id, parent_name];
       if (altParent) {
         sql += `
         UNION ALL 
-        SELECT object_id, object_name, date_modified, 0 as isMine FROM ${class_name}.user_objects 
+        SELECT object_id, object_name, date_modified, 0 as isMine, 1 as is_shared FROM ${class_name}.user_objects 
         WHERE user_id <> $1 and parent_name = $3 and ${sharedCondition}`;
         params.push(altParent);
       }

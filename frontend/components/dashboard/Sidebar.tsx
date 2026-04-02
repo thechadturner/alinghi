@@ -1,5 +1,5 @@
 import { createSignal, onMount, createEffect, Show, onCleanup, createMemo } from "solid-js";
-import { FiCodepen, FiSettings, FiFolder, FiChevronDown, FiFile, FiMap, FiActivity, FiTrendingUp, FiCornerUpRight, FiPlus, FiVideo, FiList, FiGrid, FiTrendingDown, FiTarget, FiRss, FiPlusCircle, FiMenu, FiWatch, FiX } from "solid-icons/fi";
+import { FiCodepen, FiSettings, FiFolder, FiChevronDown, FiFile, FiMap, FiActivity, FiTrendingUp, FiCornerUpRight, FiPlus, FiVideo, FiList, FiGrid, FiTrendingDown, FiTarget, FiRss, FiPlusCircle, FiMenu, FiWatch, FiX, FiShare2, FiUsers } from "solid-icons/fi";
 import { useNavigate, useLocation } from "@solidjs/router";
 
 import Pages from "./Pages";
@@ -23,6 +23,13 @@ import { apiEndpoints } from "@config/env";
 import { error as logError, log, debug, warn } from "../../utils/console";
 import { persistentSettingsService } from "../../services/persistentSettingsService";
 import { isMacOS } from "../../utils/deviceDetection";
+import {
+  dedupeObjectNameRows,
+  rowIsExplicitlySharedMine,
+  rowIsMine,
+  rowIsPrivateMineChart,
+  type ObjectNameRow,
+} from "../../utils/builderConstants";
 const { projects, selectedProjectId, setSelectedProjectId, selectedClassName, setSelectedClassName, selectedClassIcon, setSelectedClassIcon, selectedClassSizeM, setSelectedClassSizeM, selectedClassObject, setSelectedClassObject, selectedDatasetId, setSelectedDatasetId, selectedDate, setSelectedDate, selectedSourceId, setSelectedSourceId, selectedSourceName, setSelectedSourceName, selectedMenu, setSelectedMenu, selectedPage, setSelectedPage, restoreLastMenuForMode } = persistantStore;
 
 const [DatasetsComponent, setDatasetsComponent] = createSignal<any>(null);
@@ -1491,12 +1498,8 @@ const Sidebar = (props: SidebarProps) => {
       const response = await getData(url, controller.signal);
       
       if (response.success && response.data) {
-        // Ensure we return an array of objects with object_name property
-        const result = Array.isArray(response.data) ? [...response.data] : [];
-        result.sort((a: { object_name?: string }, b: { object_name?: string }) =>
-          String(a?.object_name ?? '').localeCompare(String(b?.object_name ?? ''), undefined, { sensitivity: 'base' })
-        );
-        return result;
+        const raw = Array.isArray(response.data) ? (response.data as ObjectNameRow[]) : [];
+        return dedupeObjectNameRows(raw);
       }
       return [];
     } catch (error: any) {
@@ -5395,11 +5398,13 @@ const Sidebar = (props: SidebarProps) => {
                     
                       <Show when={isExploreMenu && (hasUserObjects || showAddChartInSubmenu) && isExpanded && (!isCollapsed() || isMobile())}>
                         <div class="ml-4 space-y-1">
-                          {userObjects.map((object: any) => {
-                            // Explicitly capture object_name to avoid closure issues
+                          {userObjects.map((object: ObjectNameRow) => {
                             const objectName = object.object_name;
                             const currentParentName = parentName;
-                            
+                            const showPrivateOwnerIcon = rowIsPrivateMineChart(object);
+                            const showSharedMineIcon = rowIsExplicitlySharedMine(object);
+                            const showOthersSharedIcon = !rowIsMine(object);
+
                             return (
                               <button
                                 class={`menu-item text-sm ${isExploreSubmenuItemActive(currentParentName, objectName) ? "active" : ""}`}
@@ -5425,7 +5430,32 @@ const Sidebar = (props: SidebarProps) => {
                                 }}
                                 title={getMenuTooltip()}
                               >
-                                <span class="ml-6">{objectName}</span>
+                                <span class="sidebar-explore-submenu-row">
+                                  <Show when={showPrivateOwnerIcon}>
+                                    <span class="sidebar-chart-owner-icon" role="img" aria-label="Your private chart">
+                                      {/* Same user silhouette as header #user-icon / profile link */}
+                                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                                        <path
+                                          stroke-linecap="round"
+                                          stroke-linejoin="round"
+                                          stroke-width="2"
+                                          d="M12 14c4.418 0 8 3.582 8 8H4c0-4.418 3.582-8 8-8zm0-4c1.5 0 2.5-1.5 2.5-3s-1-3-2.5-3-2.5 1.5-2.5 3 1 3 2.5 3z"
+                                        />
+                                      </svg>
+                                    </span>
+                                  </Show>
+                                  <Show when={showSharedMineIcon}>
+                                    <span class="sidebar-chart-shared-icon" role="img" aria-label="Shared chart, visible to others">
+                                      <FiShare2 size={14} />
+                                    </span>
+                                  </Show>
+                                  <Show when={showOthersSharedIcon}>
+                                    <span class="sidebar-chart-shared-icon" role="img" aria-label="Chart from another user, shared with you">
+                                      <FiUsers size={14} />
+                                    </span>
+                                  </Show>
+                                  <span class="sidebar-explore-submenu-label">{objectName}</span>
+                                </span>
                               </button>
                             );
                           })}

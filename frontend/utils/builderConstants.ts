@@ -12,8 +12,72 @@ export function isNewChartPlaceholderName(name: string): boolean {
   return (name || '').trim().toLowerCase() === NEW_CHART_PLACEHOLDER_NAME;
 }
 
-/** Names API row shape (object_name, date_modified, isMine). Backend may return ismine (lowercase). */
-export type ObjectNameRow = { object_name?: string; date_modified?: string; isMine?: number; ismine?: number };
+/** Names API row shape (object_name, date_modified, isMine, is_shared). Backend may return lowercase column names. */
+export type ObjectNameRow = {
+  object_id?: string | number;
+  object_name?: string;
+  date_modified?: string;
+  isMine?: number;
+  ismine?: number;
+  is_shared?: number;
+  isshared?: number;
+};
+
+/** Dedupe /object/names rows by chart name; prefer your row, then newest date_modified. */
+export function dedupeObjectNameRows(rows: ObjectNameRow[]): ObjectNameRow[] {
+  const parseTime = (s: string | undefined) => {
+    const t = s ? Date.parse(s) : NaN;
+    return Number.isFinite(t) ? t : 0;
+  };
+  /** > 0 if a should replace b */
+  const prefer = (a: ObjectNameRow, b: ObjectNameRow): number => {
+    const aMine = rowIsMine(a) ? 1 : 0;
+    const bMine = rowIsMine(b) ? 1 : 0;
+    if (aMine !== bMine) return aMine - bMine;
+    const ta = parseTime(a.date_modified);
+    const tb = parseTime(b.date_modified);
+    if (ta !== tb) return ta > tb ? 1 : ta < tb ? -1 : 0;
+    return 0;
+  };
+  const byKey = new Map<string, ObjectNameRow>();
+  for (const row of rows) {
+    const key = String(row.object_name ?? '').trim().toLowerCase();
+    if (!key) continue;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+    if (prefer(row, existing) > 0) byKey.set(key, row);
+  }
+  return Array.from(byKey.values()).sort((a, b) =>
+    String(a.object_name ?? '').localeCompare(String(b.object_name ?? ''), undefined, { sensitivity: 'base' })
+  );
+}
+
+export function rowIsMine(row: ObjectNameRow): boolean {
+  const v = row.isMine ?? row.ismine;
+  return Number(v) === 1;
+}
+
+/**
+ * True when the row is your chart and `is_shared` is explicitly 0 (not shared / private).
+ * Shared charts (yours or others') and rows without `is_shared` do not get the private-owner sidebar icon.
+ */
+export function rowIsPrivateMineChart(row: ObjectNameRow): boolean {
+  if (!rowIsMine(row)) return false;
+  const v = row.is_shared ?? row.isshared;
+  if (v === undefined || v === null) return false;
+  return Number(v) === 0;
+}
+
+/** Your chart with `is_shared` explicitly 1 (shared / public). */
+export function rowIsExplicitlySharedMine(row: ObjectNameRow): boolean {
+  if (!rowIsMine(row)) return false;
+  const v = row.is_shared ?? row.isshared;
+  if (v === undefined || v === null) return false;
+  return Number(v) === 1;
+}
 
 /**
  * Returns whether the current user owns the loaded chart based on GET /object/names response.
@@ -28,7 +92,5 @@ export function isOwnerOfLoadedObject(namesData: unknown, loadedObjectName: stri
   );
   // If row not found (e.g. names list is limited), treat as owner so Save is not hidden
   if (!row) return true;
-  // Backend (PostgreSQL) often returns lowercase column names, so check both isMine and ismine
-  const isMineVal = (row as Record<string, unknown>).isMine ?? (row as Record<string, unknown>).ismine;
-  return Number(isMineVal) === 1;
+  return rowIsMine(row);
 }
