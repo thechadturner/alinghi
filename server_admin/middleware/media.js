@@ -75,7 +75,7 @@ async function computeStartEndFromMetadata(inputPath, userDate, options) {
   try {
     meta = await runFfprobe(inputPath);
   } catch (err) {
-    try { logMessage('0.0.0.0', '0', 'media.js', 'warn', 'computeStartEndFromMetadata: ffprobe failed', { inputPath, error: err?.message }); } catch {}
+    try { logMessage('0.0.0.0', '0', 'media.js', 'warn', 'computeStartEndFromMetadata: ffprobe failed', { inputPath, error: err?.message }); } catch { }
     const useDefaultStart = options?.useDefaultStartTime === true;
     if (useDefaultStart && normalized) {
       const durationSeconds = await getVideoDuration(inputPath).catch(() => 0);
@@ -85,7 +85,7 @@ async function computeStartEndFromMetadata(inputPath, userDate, options) {
           const sql = `SELECT (($1::date + 43200 * interval '1 second') AT TIME ZONE $2)::timestamptz AS value`;
           const startUtc = await options.db.GetValue(sql, [normalized, options.timezone]);
           if (startUtc != null) startDate = startUtc instanceof Date ? startUtc : new Date(startUtc);
-        } catch (e) {}
+        } catch (e) { }
       }
       if (!startDate) {
         const noonUtc = new Date(`${normalized}T12:00:00.000Z`);
@@ -115,7 +115,7 @@ async function computeStartEndFromMetadata(inputPath, userDate, options) {
         return { startIso, endIso, durationSeconds };
       }
     } catch (err) {
-      try { logMessage('0.0.0.0', '0', 'media.js', 'warn', 'Dataset timezone conversion failed, using UTC fallback', { error: err?.message }); } catch {}
+      try { logMessage('0.0.0.0', '0', 'media.js', 'warn', 'Dataset timezone conversion failed, using UTC fallback', { error: err?.message }); } catch { }
     }
   }
 
@@ -147,7 +147,7 @@ async function computeStartEndFromMetadata(inputPath, userDate, options) {
 function deleteOriginal(filePath) {
   fs.unlink(filePath, (err) => {
     if (err) {
-      try { logMessage('0.0.0.0', '0', 'media.js', 'error', `Error deleting file: ${err.message}`, { filePath }); } catch {}
+      try { logMessage('0.0.0.0', '0', 'media.js', 'error', `Error deleting file: ${err.message}`, { filePath }); } catch { }
     }
   });
 }
@@ -192,7 +192,7 @@ function runFfmpegEncode(opts) {
           const [, h, m, s, cs] = timeMatch.map(Number);
           const elapsed = h * 3600 + m * 60 + s + cs / 100;
           const percent = Math.min(100, Math.max(0, Math.round((elapsed / durationSeconds) * 100)));
-          try { onProgress({ event: 'stage_progress', stage: stageName, step, totalSteps, percent, filename }); } catch {}
+          try { onProgress({ event: 'stage_progress', stage: stageName, step, totalSteps, percent, filename }); } catch { }
         }
       }
     });
@@ -211,11 +211,11 @@ function runFfmpegEncode(opts) {
  * Process a video into multiple resolutions. Uses system ffmpeg/ffprobe (no fluent-ffmpeg).
  */
 function processVideoMulti(inputPath, options = {}) {
-  const baseOutDir = options.baseOutDir || (env?.MEDIA_DIRECTORY || 'C:/MyApps/Hunico/Uploads/Media');
+  const baseOutDir = options.baseOutDir || (env?.MEDIA_DIRECTORY || 'C:/MyApps/Alinghi/uploads/media');
   const filename = options.filename || path.basename(inputPath);
-  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
-  const onDone = typeof options.onDone === 'function' ? options.onDone : () => {};
-  const onError = typeof options.onError === 'function' ? options.onError : () => {};
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => { };
+  const onDone = typeof options.onDone === 'function' ? options.onDone : () => { };
+  const onError = typeof options.onError === 'function' ? options.onError : () => { };
   const subPath = options.subPath || '';
   const mediaSource = options.mediaSource || 'default';
 
@@ -228,7 +228,7 @@ function processVideoMulti(inputPath, options = {}) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   });
 
-  try { logMessage('0.0.0.0', '0', filename, 'info', 'Starting video processing', { inputPath, baseOutDir, subPath }); } catch {}
+  try { logMessage('0.0.0.0', '0', filename, 'info', 'Starting video processing', { inputPath, baseOutDir, subPath }); } catch { }
 
   const outputs = [
     {
@@ -259,10 +259,10 @@ function processVideoMulti(inputPath, options = {}) {
       const baseName = path.parse(filename).name + '.json';
       [outLow, outMed, outHigh].forEach((dir) => {
         const fp = path.join(dir, baseName);
-        try { fs.writeFileSync(fp, JSON.stringify(metadataJson, null, 2), 'utf8'); } catch {}
+        try { fs.writeFileSync(fp, JSON.stringify(metadataJson, null, 2), 'utf8'); } catch { }
       });
-      try { logMessage('0.0.0.0', '0', filename, 'info', 'Wrote metadata json files', {}); } catch {}
-    } catch {}
+      try { logMessage('0.0.0.0', '0', filename, 'info', 'Wrote metadata json files', {}); } catch { }
+    } catch { }
   };
 
   (async () => {
@@ -280,7 +280,7 @@ function processVideoMulti(inputPath, options = {}) {
       const computed = await computeStartEndFromMetadata(inputPath, options.overrideDate);
       metadataJson = { filename, durationSeconds: computed.durationSeconds, startTime: computed.startIso, endTime: computed.endIso };
     } catch (e) {
-      try { logMessage('0.0.0.0', '0', filename, 'warn', 'ffprobe failed, using defaults', { error: e?.message }); } catch {}
+      try { logMessage('0.0.0.0', '0', filename, 'warn', 'ffprobe failed, using defaults', { error: e?.message }); } catch { }
     }
 
     writeMetadataFiles(metadataJson);
@@ -288,8 +288,8 @@ function processVideoMulti(inputPath, options = {}) {
 
     for (let step = 0; step < outputs.length; step += 1) {
       const out = outputs[step];
-      try { onProgress({ event: 'stage_start', stage: out.name, step: step + 1, totalSteps, percent: 0, filename }); } catch {}
-      try { logMessage('0.0.0.0', '0', filename, 'info', `Stage start: ${out.name}`, { stage: out.name }); } catch {}
+      try { onProgress({ event: 'stage_start', stage: out.name, step: step + 1, totalSteps, percent: 0, filename }); } catch { }
+      try { logMessage('0.0.0.0', '0', filename, 'info', `Stage start: ${out.name}`, { stage: out.name }); } catch { }
 
       try {
         await runFfmpegEncode({
@@ -306,18 +306,18 @@ function processVideoMulti(inputPath, options = {}) {
           filename
         });
       } catch (err) {
-        try { logMessage('0.0.0.0', '0', filename, 'error', `Stage error: ${out.name} - ${err?.message}`, { stage: out.name, error: err?.message }); } catch {}
+        try { logMessage('0.0.0.0', '0', filename, 'error', `Stage error: ${out.name} - ${err?.message}`, { stage: out.name, error: err?.message }); } catch { }
         onError({ stage: out.name, error: err?.message });
         return;
       }
 
-      try { onProgress({ event: 'stage_end', stage: out.name, step: step + 1, totalSteps, percent: 100, filename }); } catch {}
-      try { logMessage('0.0.0.0', '0', filename, 'success', `Stage complete: ${out.name}`, { stage: out.name }); } catch {}
+      try { onProgress({ event: 'stage_end', stage: out.name, step: step + 1, totalSteps, percent: 100, filename }); } catch { }
+      try { logMessage('0.0.0.0', '0', filename, 'success', `Stage complete: ${out.name}`, { stage: out.name }); } catch { }
     }
 
-    try { deleteOriginal(inputPath); } catch {}
+    try { deleteOriginal(inputPath); } catch { }
     const files = outputs.map((o) => ({ name: o.name, file: o.file }));
-    try { logMessage('0.0.0.0', '0', filename, 'success', 'Completed video processing', { files }); } catch {}
+    try { logMessage('0.0.0.0', '0', filename, 'success', 'Completed video processing', { files }); } catch { }
     onDone({ success: true, files, metadata: metadataJson });
   })();
 }

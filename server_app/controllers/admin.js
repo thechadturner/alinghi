@@ -87,6 +87,90 @@ exports.getUserActivity = async (req, res) => {
     }
 };
 
+// Aggregate summaries for admin user activity (full table; not paginated)
+exports.getUserActivitySummary = async (req, res) => {
+  const info = { auth_token: req.cookies?.auth_token, location: 'server_app/admin', function: 'getUserActivitySummary' };
+
+  try {
+    const user_id = req.user.user_id;
+
+    if (user_id != db.GetSuperUser()) {
+      return sendResponse(res, info, 401, false, 'Unauthorized', null);
+    }
+
+    const summaryExcludeInternalEmailsWhere = `WHERE LOWER(COALESCE(b.email, '')) NOT LIKE '%chad%'
+        AND LOWER(COALESCE(b.email, '')) NOT LIKE '%cturner%'
+        AND LOWER(COALESCE(b.email, '')) NOT LIKE '%guyt2000%'`;
+
+    /* Top pages only: omit noisy / auth / shell filenames (case-insensitive substring on file_name) */
+    const summaryTopPagesExcludeFilesAnd = `
+      AND LOWER(TRIM(COALESCE(a.file_name, ''))) NOT LIKE '%datasets%'
+      AND LOWER(TRIM(COALESCE(a.file_name, ''))) NOT LIKE '%login%'
+      AND LOWER(TRIM(COALESCE(a.file_name, ''))) NOT LIKE '%forgotpassword%'
+      AND LOWER(TRIM(COALESCE(a.file_name, ''))) NOT LIKE '%forgot-password%'
+      AND LOWER(TRIM(COALESCE(a.file_name, ''))) NOT LIKE '%forgot_password%'
+      AND LOWER(TRIM(COALESCE(a.file_name, ''))) NOT LIKE '%register%'
+      AND (LOWER(TRIM(COALESCE(a.file_name, ''))) NOT LIKE 'index.%' AND LOWER(TRIM(COALESCE(a.file_name, ''))) <> 'index')`;
+
+    const sqlTopUsers = `
+      SELECT b.email, COUNT(*)::int AS cnt
+      FROM admin.user_activity a
+      INNER JOIN admin.users b ON a.user_id = b.user_id
+      ${summaryExcludeInternalEmailsWhere}
+      GROUP BY b.email
+      ORDER BY cnt DESC
+      LIMIT 5
+    `;
+
+    const sqlTopPages = `
+      SELECT COALESCE(NULLIF(TRIM(a.file_name), ''), '(empty)') AS page, COUNT(*)::int AS cnt
+      FROM admin.user_activity a
+      INNER JOIN admin.users b ON a.user_id = b.user_id
+      ${summaryExcludeInternalEmailsWhere}
+      ${summaryTopPagesExcludeFilesAnd}
+      GROUP BY 1
+      ORDER BY cnt DESC
+      LIMIT 5
+    `;
+
+    const sqlTopDays = `
+      SELECT TO_CHAR((a.datetime AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS day, COUNT(*)::int AS cnt
+      FROM admin.user_activity a
+      INNER JOIN admin.users b ON a.user_id = b.user_id
+      ${summaryExcludeInternalEmailsWhere}
+      GROUP BY (a.datetime AT TIME ZONE 'UTC')::date
+      ORDER BY cnt DESC
+      LIMIT 5
+    `;
+
+    debug('getUserActivitySummary: running aggregate queries');
+    const [topUsersRows, topPagesRows, topDaysRows] = await Promise.all([
+      db.GetRows(sqlTopUsers, []),
+      db.GetRows(sqlTopPages, []),
+      db.GetRows(sqlTopDays, []),
+    ]);
+
+    const topUsers = (topUsersRows || []).map((row) => ({
+      email: row.email ?? '',
+      count: row.cnt ?? 0,
+    }));
+    const topPages = (topPagesRows || []).map((row) => ({
+      page: row.page ?? '',
+      count: row.cnt ?? 0,
+    }));
+    const topDays = (topDaysRows || []).map((row) => ({
+      day: row.day ?? '',
+      count: row.cnt ?? 0,
+    }));
+
+    debug('getUserActivitySummary: topUsers', topUsers.length, 'topPages', topPages.length, 'topDays', topDays.length);
+
+    return sendResponse(res, info, 200, true, 'User activity summary', { topUsers, topPages, topDays }, false);
+  } catch (error) {
+    return sendResponse(res, info, 500, false, error.message, null, true);
+  }
+};
+
 // Retrieve recent activity
 exports.getLogActivity = async (req, res) => {
   const info = {"auth_token": req.cookies?.auth_token, "location": 'server_app/admin', "function": 'getLogActivity'}

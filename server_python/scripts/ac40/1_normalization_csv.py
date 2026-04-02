@@ -628,7 +628,7 @@ if __name__ == "__main__":
             df = df.sort_values(by='Datetime').reset_index(drop=True)
 
             # Get data directory from environment variable
-            data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
+            data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Alinghi/uploads/data')
             
             # Normalize class_name to lowercase for consistent directory structure
             class_lower = class_name.lower() if class_name else ''

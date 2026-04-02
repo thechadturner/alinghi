@@ -183,7 +183,7 @@ TARGET_CHANNELS = [
 
 def get_processed_data_ts_range(class_name, project_id, date, source_name):
     """Load processed_data_racesight.parquet and return (ts_min, ts_max, ts_series)."""
-    data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
+    data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Alinghi/uploads/data')
     date_str = str(date).replace('-', '').replace('/', '')
     dir_path = os.path.join(data_dir, 'system', str(project_id), class_name, date_str, source_name)
     path = os.path.join(dir_path, 'processed_data_racesight.parquet')
@@ -209,7 +209,7 @@ def get_canonical_ts_for_fusion(class_name, project_id, date, source_name):
     proc_min, proc_max, proc_ts = get_processed_data_ts_range(class_name, project_id, date, source_name)
     if proc_ts is not None and len(proc_ts) > 0:
         return proc_min, proc_max, proc_ts
-    data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
+    data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Alinghi/uploads/data')
     date_str = str(date).replace('-', '').replace('/', '')
     dir_path = os.path.join(data_dir, 'system', str(project_id), class_name, date_str, source_name)
     influx_path = None
@@ -870,7 +870,7 @@ def save_corrections_parquet(df_out, class_name, project_id, date, source_name):
     still has the old parquet open; deleting first also risks a window with no file.
     Atomic replace ensures readers see either the previous or the complete new file.
     """
-    data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
+    data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Alinghi/uploads/data')
     date_str = str(date).replace('-', '').replace('/', '')
     dir_path = os.path.join(data_dir, 'system', str(project_id), class_name, date_str, source_name)
     os.makedirs(dir_path, exist_ok=True)

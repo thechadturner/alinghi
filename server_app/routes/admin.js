@@ -24,6 +24,16 @@ router.get(
 );
 
 /**
+ * @route GET /api/admin/user_activity/summary
+ * @desc Top users, pages, and days (aggregates)
+ */
+router.get(
+  '/user_activity/summary',
+  authenticate,
+  controller.getUserActivitySummary
+);
+
+/**
  * @route GET /api/admin/user_activity
  * @desc Get user_activity
  */

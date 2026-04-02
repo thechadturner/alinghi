@@ -48,7 +48,7 @@ def resolve_data_directory() -> str:
     Match server_admin/controllers/uploads.js: if basename is not 'data' (case-insensitive),
     append 'Data'. So DATA_DIRECTORY=/data stays /data; C:/.../Uploads becomes .../Uploads/Data.
     """
-    root = os.getenv("DATA_DIRECTORY", "C:/MyApps/Hunico/Uploads")
+    root = os.getenv("DATA_DIRECTORY", "C:/MyApps/Alinghi/uploads/data")
     root = os.path.normpath(str(root).rstrip("/\\"))
     if os.path.basename(root).lower() != "data":
         root = os.path.join(root, "Data")
@@ -85,9 +85,57 @@ def _tutc_source_column(columns: list, table_name: str) -> str | None:
     return None
 
 
+def _open_sqlite_checked(db_path: str) -> sqlite3.Connection:
+    """
+    Open the training .db and fail fast with a clear message if the file is corrupt
+    or truncated (SQLite: 'database disk image is malformed').
+    """
+    try:
+        size = os.path.getsize(db_path)
+    except OSError as e:
+        raise RuntimeError(f"Cannot stat db file {db_path!r}: {e}") from e
+    try:
+        conn = sqlite3.connect(db_path)
+    except sqlite3.DatabaseError as e:
+        raise RuntimeError(
+            f"{e} (path={db_path!r}, size={size} bytes). "
+            "The file is not a readable SQLite database on disk — often a truncated upload "
+            "or a corrupt export. Verify with: sqlite3 <file.db> \"PRAGMA quick_check;\" "
+            "then re-export or re-upload."
+        ) from e
+    try:
+        rows = conn.execute("PRAGMA quick_check").fetchall()
+    except sqlite3.DatabaseError as e:
+        conn.close()
+        raise RuntimeError(
+            f"{e} (path={db_path!r}, size={size} bytes). "
+            "PRAGMA quick_check failed; database may be corrupt or incomplete."
+        ) from e
+    if not rows or rows[0][0] != "ok":
+        detail = rows[0][0] if rows else "no result"
+        conn.close()
+        raise RuntimeError(
+            f"SQLite quick_check reported: {detail!r} (path={db_path!r}, size={size} bytes). "
+            "Re-export the log database from the boat / logger PC or upload a known-good copy."
+        )
+    return conn
+
+
 def convert_db_to_parquet(db_path: str, output_dir: str, timestamp: str) -> None:
     os.makedirs(output_dir, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = None
+    try:
+        conn = _open_sqlite_checked(db_path)
+    except (OSError, RuntimeError) as exc:
+        u.log(
+            api_token,
+            "0_parse_db.py",
+            "error",
+            "parse db",
+            f"SQLite file not readable, skipping all parquet export: {db_path} — {exc}",
+        )
+        print(f"WARNING: SQLite not readable, parquet export skipped: {exc}", flush=True)
+        return
     try:
         for table_name, prefix in TABLE_MAP.items():
             u.log(api_token, "0_parse_db.py", "info", "parse db", f"Reading {table_name}")
@@ -119,10 +167,18 @@ def convert_db_to_parquet(db_path: str, output_dir: str, timestamp: str) -> None
                     f"Wrote {out_path} ({len(df):,} rows)",
                 )
             except Exception as exc:
-                u.log(api_token, "0_parse_db.py", "error", "parse db", f"{table_name}: {exc}")
-                raise
+                u.log(
+                    api_token,
+                    "0_parse_db.py",
+                    "error",
+                    "parse db",
+                    f"{table_name}: failed, skipping this table: {exc}",
+                )
+                print(f"WARNING: table {table_name} skipped: {exc}", flush=True)
+                continue
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

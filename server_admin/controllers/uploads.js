@@ -75,7 +75,7 @@ if (!fs.existsSync(uploadPath)) {
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, uploadPath); 
+    cb(null, uploadPath);
   },
   filename: (req, file, cb) => {
     cb(null, file.originalname);
@@ -106,7 +106,7 @@ const uploadFiles = multer({
 
 // Helper function to create targets directly (replaces HTTP fetch)
 const addTarget = async (req, class_name, project_id, name, json, isPolar) => {
-  const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/uploads', "function": 'addTarget'}
+  const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/uploads', "function": 'addTarget' }
 
   let label = 'target';
   if (isPolar == 1) {
@@ -119,40 +119,40 @@ const addTarget = async (req, class_name, project_id, name, json, isPolar) => {
   }
 
   try {
-      let result = await check_permissions(req, 'write', project_id)
-  
+    let result = await check_permissions(req, 'write', project_id)
+
+    if (result) {
+      let sql = `select target_id "value" from ${class_name}.targets where project_id = $1 and name = $2`
+      let params = [project_id, name]
+
+      let result = await db.GetValue(sql, params);
+
       if (result) {
-          let sql = `select target_id "value" from ${class_name}.targets where project_id = $1 and name = $2`
-          let params = [project_id, name]
+        sql = `update ${class_name}.targets set name = $2, json = $3::jsonb, date_modified = CURRENT_DATE where target_id = $1`
+        params = [result, name, json]
 
-          let result = await db.GetValue(sql, params);
+        result = await db.ExecuteCommand(sql, params);
 
-          if (result) {
-              sql = `update ${class_name}.targets set name = $2, json = $3::jsonb, date_modified = CURRENT_DATE where target_id = $1`
-              params = [result, name, json]
-
-              result = await db.ExecuteCommand(sql, params);
-
-              if (result) {
-                return { success: true, message: `Updated ${label} successfully` };
-              } else {
-                return { success: false, message: `Failed to update ${label}` };
-              }
-          } else {
-              sql = `insert into ${class_name}.targets (project_id, name, json, date_modified, "isPolar") values ($1,$2,$3::jsonb,CURRENT_DATE,$4)`
-              params = [project_id, name, json, isPolar]
-
-              result = await db.ExecuteCommand(sql, params);
-
-              if (result) {
-                return { success: true, message: `Inserted ${label} successfully` };
-              } else {
-                return { success: false, message: `Failed to create ${label}` };
-              }
-          }
+        if (result) {
+          return { success: true, message: `Updated ${label} successfully` };
+        } else {
+          return { success: false, message: `Failed to update ${label}` };
+        }
       } else {
-        return { success: false, message: 'Unauthorized' };
+        sql = `insert into ${class_name}.targets (project_id, name, json, date_modified, "isPolar") values ($1,$2,$3::jsonb,CURRENT_DATE,$4)`
+        params = [project_id, name, json, isPolar]
+
+        result = await db.ExecuteCommand(sql, params);
+
+        if (result) {
+          return { success: true, message: `Inserted ${label} successfully` };
+        } else {
+          return { success: false, message: `Failed to create ${label}` };
+        }
       }
+    } else {
+      return { success: false, message: 'Unauthorized' };
+    }
   } catch (error) {
     return { success: false, message: error.message };
   }
@@ -170,18 +170,18 @@ const addTarget = async (req, class_name, project_id, name, json, isPolar) => {
  * @param {string} reqIp - Request IP address
  */
 const processNormalizationsInParallel = async (
-  normalizationTasks, 
-  concurrency = 3, 
-  auth_token, 
-  results, 
-  db, 
-  updateDatasetDateModified, 
-  logMessage, 
+  normalizationTasks,
+  concurrency = 3,
+  auth_token,
+  results,
+  db,
+  updateDatasetDateModified,
+  logMessage,
   reqIp
 ) => {
-  logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Processing ${normalizationTasks.length} file(s) in parallel (concurrency: ${concurrency})`, { 
-    totalFiles: normalizationTasks.length, 
-    concurrency 
+  logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Processing ${normalizationTasks.length} file(s) in parallel (concurrency: ${concurrency})`, {
+    totalFiles: normalizationTasks.length,
+    concurrency
   });
 
   // Process files in batches
@@ -189,10 +189,10 @@ const processNormalizationsInParallel = async (
     const batch = normalizationTasks.slice(i, i + concurrency);
     const batchNumber = Math.floor(i / concurrency) + 1;
     const totalBatches = Math.ceil(normalizationTasks.length / concurrency);
-    
-    logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Processing normalization batch ${batchNumber} of ${totalBatches} (${batch.length} file(s))`, { 
-      batchNumber, 
-      totalBatches, 
+
+    logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Processing normalization batch ${batchNumber} of ${totalBatches} (${batch.length} file(s))`, {
+      batchNumber,
+      totalBatches,
       batchSize: batch.length,
       files: batch.map(t => t.fileName)
     });
@@ -201,7 +201,7 @@ const processNormalizationsInParallel = async (
     const batchPromises = batch.map(async (task) => {
       try {
         const result = await normalizeFile(auth_token, task.savePath, task.date, task.project_id, task.class_name, task.source_name);
-        
+
         if (result) {
           // Update dataset date_modified after successful normalization
           // Note: During uploads, datasets may not exist yet. Pass suppressWarning=true
@@ -210,20 +210,20 @@ const processNormalizationsInParallel = async (
           // Get source_id from source_name
           const sourceSql = `SELECT source_id "value" FROM ${task.class_name}.sources WHERE source_name = $1 AND project_id = $2`;
           const source_id = await db.GetValue(sourceSql, [task.source_name, task.project_id]);
-          
+
           if (source_id) {
             // Suppress warning during uploads since datasets don't exist yet
             await updateDatasetDateModified(auth_token, task.class_name, task.project_id, source_id, task.date, true);
           }
-          
+
           return { fileName: task.fileName, success: true, date: task.date };
         } else {
           return { fileName: task.fileName, success: false, message: 'Failed to normalize file' };
         }
       } catch (error) {
-        logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', task.fileName, 'error', `Error normalizing file: ${error.message}`, { 
+        logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', task.fileName, 'error', `Error normalizing file: ${error.message}`, {
           fileName: task.fileName,
-          error: error.stack 
+          error: error.stack
         });
         return { fileName: task.fileName, success: false, message: error.message };
       }
@@ -231,7 +231,7 @@ const processNormalizationsInParallel = async (
 
     // Wait for all files in batch to complete (success or failure)
     const batchResults = await Promise.allSettled(batchPromises);
-    
+
     // Process results and add to results array
     batchResults.forEach((settledResult, index) => {
       if (settledResult.status === 'fulfilled') {
@@ -239,15 +239,15 @@ const processNormalizationsInParallel = async (
       } else {
         // This shouldn't happen since we catch errors in the promise, but handle it just in case
         const task = batch[index];
-        logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', task?.fileName || 'unknown', 'error', `Unexpected error in normalization batch: ${settledResult.reason}`, { 
-          error: settledResult.reason 
+        logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', task?.fileName || 'unknown', 'error', `Unexpected error in normalization batch: ${settledResult.reason}`, {
+          error: settledResult.reason
         });
         results.push({ fileName: task?.fileName || 'unknown', success: false, message: settledResult.reason?.message || 'Unknown error' });
       }
     });
   }
 
-  logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Completed parallel normalization processing`, { 
+  logMessage(reqIp || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Completed parallel normalization processing`, {
     totalFiles: normalizationTasks.length,
     successful: results.filter(r => r.success).length,
     failed: results.filter(r => !r.success).length
@@ -258,7 +258,7 @@ const uploadData = async (req, res) => {
   const auth_header = req.cookies?.auth_token ?? req.headers.authorization;
   const auth_token = getAuthToken(auth_header)
 
-  const info = {"auth_token": auth_token, "location": 'server_admin/uploads', "function": 'uploadData'}
+  const info = { "auth_token": auth_token, "location": 'server_admin/uploads', "function": 'uploadData' }
 
   // Wrap entire function in try-catch to prevent 502 errors
   try {
@@ -267,7 +267,7 @@ const uploadData = async (req, res) => {
       logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', 'Validation errors in uploadData', { errors: errors.array() });
       return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null);
     }
-    
+
     const files = req.files || [];
     if (!Array.isArray(files) || files.length === 0) {
       logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', 'No files provided in uploadData', {});
@@ -348,238 +348,238 @@ const uploadData = async (req, res) => {
     const shouldSkipNormalization = skip_normalization === true || skip_normalization === 'true' || skip_normalization === '1';
 
     try {
-    let dates = [];
-    const results = []; // Array to keep track of each file's operation result
-    const xmlFiles = []; // Track XML files for post-processing
-    const metadataFiles = ['.json', '.xml']; // File extensions that don't need normalization
+      let dates = [];
+      const results = []; // Array to keep track of each file's operation result
+      const xmlFiles = []; // Track XML files for post-processing
+      const metadataFiles = ['.json', '.xml']; // File extensions that don't need normalization
 
-    // Create the directory structure base
-    let dataDirectory = env.DATA_DIRECTORY || 'C:/MyApps/Hunico/Uploads';
-    dataDirectory = path.normalize(dataDirectory).replace(/[\\/]+$/, '');
-    const lastSegment = path.basename(dataDirectory).toLowerCase();
-    if (lastSegment !== 'data') {
-      dataDirectory = path.join(dataDirectory, 'Data');
-    }
-
-    // Separate files into data files and metadata files
-    const dataFiles = [];
-    const metadataFileList = [];
-    const fileDateMap = new Map(); // Store extracted dates for each file
-    
-    for (const file of files) {
-      const fileExt = path.extname(file.originalname).toLowerCase();
-      if (metadataFiles.includes(fileExt)) {
-        metadataFileList.push(file);
-      } else {
-        dataFiles.push(file);
+      // Create the directory structure base
+      let dataDirectory = env.DATA_DIRECTORY || 'C:/MyApps/Alinghi/uploads/data';
+      dataDirectory = path.normalize(dataDirectory).replace(/[\\/]+$/, '');
+      const lastSegment = path.basename(dataDirectory).toLowerCase();
+      if (lastSegment !== 'data') {
+        dataDirectory = path.join(dataDirectory, 'Data');
       }
-    }
 
-    // First pass: Extract dates from data files
-    let targetDate = null;
-    let targetFormattedDate = null;
-    
-    for (const file of dataFiles) {
-      const filePath = path.join(uploadPath, file.originalname);
-      const fileName = file.originalname;
-      const dataFileExt = path.extname(fileName).toLowerCase();
-  
-      try {
-        if (!fs.existsSync(filePath)) {
-          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'warn', `File does not exist at upload path: ${filePath}`, { filePath });
-          continue;
-        }
-        const stats = fs.statSync(filePath);
-        if (!stats || stats.size === 0) {
-          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'warn', `File is empty: ${filePath}`, { filePath, size: stats?.size });
-          continue;
-        }
+      // Separate files into data files and metadata files
+      const dataFiles = [];
+      const metadataFileList = [];
+      const fileDateMap = new Map(); // Store extracted dates for each file
 
-        // Verify file is fully downloaded (important for Google Drive files)
+      for (const file of files) {
+        const fileExt = path.extname(file.originalname).toLowerCase();
+        if (metadataFiles.includes(fileExt)) {
+          metadataFileList.push(file);
+        } else {
+          dataFiles.push(file);
+        }
+      }
+
+      // First pass: Extract dates from data files
+      let targetDate = null;
+      let targetFormattedDate = null;
+
+      for (const file of dataFiles) {
+        const filePath = path.join(uploadPath, file.originalname);
+        const fileName = file.originalname;
+        const dataFileExt = path.extname(fileName).toLowerCase();
+
         try {
-          await verifyFileComplete(filePath, 30000, 500, fileName);
-        } catch (verifyError) {
-          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `File verification failed for ${fileName}: ${verifyError.message}`, { 
-            filePath, 
-            error: verifyError.message 
-          });
-          throw new Error(`File ${fileName} is not fully downloaded. Please wait for download to complete and try again.`);
-        }
-
-        if ((dataFileExt === '.db' || dataFileExt === '.jsonl') && parsedUploadDate) {
-          const { date: dbDate, formattedDate: dbFormatted } = parsedUploadDate;
-          fileDateMap.set(fileName, { date: dbDate, formattedDate: dbFormatted });
-          if (!targetDate) {
-            targetDate = dbDate;
-            targetFormattedDate = dbFormatted;
+          if (!fs.existsSync(filePath)) {
+            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'warn', `File does not exist at upload path: ${filePath}`, { filePath });
+            continue;
           }
-          dates.push(dbDate);
-          continue;
-        }
-  
-        // Wrap extractDatetimeColumn in additional error handling with timeout
-        let medianDatetime;
-        try {
-          const result = await Promise.race([
-            extractDatetimeColumn(filePath),
-            new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('extractDatetimeColumn timed out after 60 seconds')), 60000)
-            )
-          ]);
-          medianDatetime = result.medianDatetime;
-        } catch (extractError) {
-          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `Error in extractDatetimeColumn: ${extractError.message}`, { 
-            project_id, 
-            class_name, 
-            source_name, 
-            filePath,
-            error: extractError.stack,
-            errorName: extractError.name
-          });
-          throw extractError; // Re-throw to be caught by outer catch
-        }
-        
-        if (!medianDatetime || isNaN(medianDatetime)) {
-          throw new Error(`Invalid medianDatetime returned: ${medianDatetime}`);
-        }
-        
-        const date = new Date(medianDatetime).toISOString().split('T')[0];
-        const formattedDate = date.replace(/-/g, '');
-        
-        // Store date for this file
-        fileDateMap.set(fileName, { date, formattedDate });
-        
-        // Use the first date we encounter for metadata files
-        if (!targetDate) {
-          targetDate = date;
-          targetFormattedDate = formattedDate;
-        }
-        
-        dates.push(date);
-      } catch (error) {
-        logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `Error extracting date from data file: ${error.message}`, { 
-          project_id, 
-          class_name, 
-          source_name, 
-          filePath: path.join(uploadPath, file.originalname),
-          error: error.stack,
-          errorName: error.name
-        });
-        // Continue processing even if date extraction fails for one file
-      }
-    }
+          const stats = fs.statSync(filePath);
+          if (!stats || stats.size === 0) {
+            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'warn', `File is empty: ${filePath}`, { filePath, size: stats?.size });
+            continue;
+          }
 
-    // If no dates were extracted from data files, try to extract from XML files
-    if (!targetDate && metadataFileList.length > 0 && dataFiles.length === 0) {
-      // Try to extract date from XML files' CreationTimeDate
-      for (const file of metadataFileList) {
-        if (path.extname(file.originalname).toLowerCase() === '.xml') {
+          // Verify file is fully downloaded (important for Google Drive files)
           try {
-            const filePath = path.join(uploadPath, file.originalname);
-            if (fs.existsSync(filePath)) {
-              const xmlContent = fs.readFileSync(filePath, 'utf8');
-              // Extract CreationTimeDate using regex (simple approach)
-              const creationTimeMatch = xmlContent.match(/<CreationTimeDate[^>]*>([^<]+)<\/CreationTimeDate>/i);
-              if (creationTimeMatch && creationTimeMatch[1]) {
-                const creationTime = creationTimeMatch[1].trim();
-                const dateObj = new Date(creationTime);
-                if (!isNaN(dateObj.getTime())) {
-                  targetDate = dateObj.toISOString().split('T')[0];
+            await verifyFileComplete(filePath, 30000, 500, fileName);
+          } catch (verifyError) {
+            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `File verification failed for ${fileName}: ${verifyError.message}`, {
+              filePath,
+              error: verifyError.message
+            });
+            throw new Error(`File ${fileName} is not fully downloaded. Please wait for download to complete and try again.`);
+          }
+
+          if ((dataFileExt === '.db' || dataFileExt === '.jsonl') && parsedUploadDate) {
+            const { date: dbDate, formattedDate: dbFormatted } = parsedUploadDate;
+            fileDateMap.set(fileName, { date: dbDate, formattedDate: dbFormatted });
+            if (!targetDate) {
+              targetDate = dbDate;
+              targetFormattedDate = dbFormatted;
+            }
+            dates.push(dbDate);
+            continue;
+          }
+
+          // Wrap extractDatetimeColumn in additional error handling with timeout
+          let medianDatetime;
+          try {
+            const result = await Promise.race([
+              extractDatetimeColumn(filePath),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('extractDatetimeColumn timed out after 60 seconds')), 60000)
+              )
+            ]);
+            medianDatetime = result.medianDatetime;
+          } catch (extractError) {
+            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `Error in extractDatetimeColumn: ${extractError.message}`, {
+              project_id,
+              class_name,
+              source_name,
+              filePath,
+              error: extractError.stack,
+              errorName: extractError.name
+            });
+            throw extractError; // Re-throw to be caught by outer catch
+          }
+
+          if (!medianDatetime || isNaN(medianDatetime)) {
+            throw new Error(`Invalid medianDatetime returned: ${medianDatetime}`);
+          }
+
+          const date = new Date(medianDatetime).toISOString().split('T')[0];
+          const formattedDate = date.replace(/-/g, '');
+
+          // Store date for this file
+          fileDateMap.set(fileName, { date, formattedDate });
+
+          // Use the first date we encounter for metadata files
+          if (!targetDate) {
+            targetDate = date;
+            targetFormattedDate = formattedDate;
+          }
+
+          dates.push(date);
+        } catch (error) {
+          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `Error extracting date from data file: ${error.message}`, {
+            project_id,
+            class_name,
+            source_name,
+            filePath: path.join(uploadPath, file.originalname),
+            error: error.stack,
+            errorName: error.name
+          });
+          // Continue processing even if date extraction fails for one file
+        }
+      }
+
+      // If no dates were extracted from data files, try to extract from XML files
+      if (!targetDate && metadataFileList.length > 0 && dataFiles.length === 0) {
+        // Try to extract date from XML files' CreationTimeDate
+        for (const file of metadataFileList) {
+          if (path.extname(file.originalname).toLowerCase() === '.xml') {
+            try {
+              const filePath = path.join(uploadPath, file.originalname);
+              if (fs.existsSync(filePath)) {
+                const xmlContent = fs.readFileSync(filePath, 'utf8');
+                // Extract CreationTimeDate using regex (simple approach)
+                const creationTimeMatch = xmlContent.match(/<CreationTimeDate[^>]*>([^<]+)<\/CreationTimeDate>/i);
+                if (creationTimeMatch && creationTimeMatch[1]) {
+                  const creationTime = creationTimeMatch[1].trim();
+                  const dateObj = new Date(creationTime);
+                  if (!isNaN(dateObj.getTime())) {
+                    targetDate = dateObj.toISOString().split('T')[0];
+                    targetFormattedDate = targetDate.replace(/-/g, '');
+                    logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Extracted date from XML file ${file.originalname}: ${targetDate}`, { targetDate, fileName: file.originalname });
+                    break; // Use the first valid date found
+                  }
+                }
+              }
+            } catch (error) {
+              logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'warn', `Error extracting date from XML file ${file.originalname}: ${error.message}`, { error: error.stack });
+              // Continue to next XML file
+            }
+          }
+        }
+
+        // If still no date found from XML content, try to extract from filename
+        // Race course files often have format: YYMMDD_filename.xml (e.g., 260116_race.xml)
+        if (!targetDate) {
+          for (const file of metadataFileList) {
+            if (path.extname(file.originalname).toLowerCase() === '.xml') {
+              // Try to extract YYMMDD from beginning of filename
+              const filenameMatch = file.originalname.match(/^(\d{6})/);
+              if (filenameMatch && filenameMatch[1]) {
+                const yymmdd = filenameMatch[1];
+                const yy = parseInt(yymmdd.substring(0, 2), 10);
+                const mm = yymmdd.substring(2, 4);
+                const dd = yymmdd.substring(4, 6);
+
+                // Convert YY to YYYY (assume 20xx for years 00-49, 19xx for 50-99)
+                const fullYear = yy < 50 ? 2000 + yy : 1900 + yy;
+                const month = parseInt(mm, 10);
+                const day = parseInt(dd, 10);
+
+                // Validate month and day
+                if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+                  targetDate = `${fullYear}-${mm}-${dd}`;
                   targetFormattedDate = targetDate.replace(/-/g, '');
-                  logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Extracted date from XML file ${file.originalname}: ${targetDate}`, { targetDate, fileName: file.originalname });
+                  logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Extracted date from XML filename ${file.originalname}: ${targetDate}`, { targetDate, fileName: file.originalname });
                   break; // Use the first valid date found
                 }
               }
             }
-          } catch (error) {
-            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'warn', `Error extracting date from XML file ${file.originalname}: ${error.message}`, { error: error.stack });
-            // Continue to next XML file
           }
         }
+
+        // If still no date found, return error
+        if (!targetDate) {
+          return sendResponse(res, info, 400, false, 'Cannot process metadata files without data files to determine date, and could not extract date from XML files or filenames', null);
+        }
       }
-      
-      // If still no date found from XML content, try to extract from filename
-      // Race course files often have format: YYMMDD_filename.xml (e.g., 260116_race.xml)
-      if (!targetDate) {
-        for (const file of metadataFileList) {
-          if (path.extname(file.originalname).toLowerCase() === '.xml') {
-            // Try to extract YYMMDD from beginning of filename
-            const filenameMatch = file.originalname.match(/^(\d{6})/);
-            if (filenameMatch && filenameMatch[1]) {
-              const yymmdd = filenameMatch[1];
-              const yy = parseInt(yymmdd.substring(0, 2), 10);
-              const mm = yymmdd.substring(2, 4);
-              const dd = yymmdd.substring(4, 6);
-              
-              // Convert YY to YYYY (assume 20xx for years 00-49, 19xx for 50-99)
-              const fullYear = yy < 50 ? 2000 + yy : 1900 + yy;
-              const month = parseInt(mm, 10);
-              const day = parseInt(dd, 10);
-              
-              // Validate month and day
-              if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-                targetDate = `${fullYear}-${mm}-${dd}`;
-                targetFormattedDate = targetDate.replace(/-/g, '');
-                logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Extracted date from XML filename ${file.originalname}: ${targetDate}`, { targetDate, fileName: file.originalname });
-                break; // Use the first valid date found
-              }
+
+      // If we have metadata files but no data files, and we still don't have a date, use current date as fallback
+      if (!targetDate && metadataFileList.length > 0) {
+        const now = new Date();
+        targetDate = now.toISOString().split('T')[0];
+        targetFormattedDate = targetDate.replace(/-/g, '');
+        logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'warn', 'No data files found, using current date for metadata files', { targetDate });
+      }
+
+      // Phase 1: Save all files and collect normalization tasks
+      const normalizationTasks = []; // Array to collect files that need normalization
+
+      for (const file of files) {
+        const filePath = path.join(uploadPath, file.originalname);
+        const fileName = file.originalname;
+        const fileExt = path.extname(fileName).toLowerCase();
+        const isMetadataFile = metadataFiles.includes(fileExt);
+
+        try {
+          if (!fs.existsSync(filePath)) {
+            throw new Error(`File not found: ${filePath}`);
+          }
+          const stats = fs.statSync(filePath);
+          if (!stats || stats.size === 0) {
+            throw new Error(`File is empty: ${filePath}`);
+          }
+
+          // Verify file is fully downloaded before processing (important for Google Drive files)
+          // Skip verification for metadata files that were already verified in first pass
+          if (!isMetadataFile) {
+            try {
+              await verifyFileComplete(filePath, 30000, 500, fileName);
+            } catch (verifyError) {
+              logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `File verification failed for ${fileName} before processing: ${verifyError.message}`, {
+                filePath,
+                error: verifyError.message
+              });
+              throw new Error(`File ${fileName} is not fully downloaded. Please wait for download to complete and try again.`);
             }
           }
-        }
-      }
-      
-      // If still no date found, return error
-      if (!targetDate) {
-        return sendResponse(res, info, 400, false, 'Cannot process metadata files without data files to determine date, and could not extract date from XML files or filenames', null);
-      }
-    }
 
-    // If we have metadata files but no data files, and we still don't have a date, use current date as fallback
-    if (!targetDate && metadataFileList.length > 0) {
-      const now = new Date();
-      targetDate = now.toISOString().split('T')[0];
-      targetFormattedDate = targetDate.replace(/-/g, '');
-      logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'warn', 'No data files found, using current date for metadata files', { targetDate });
-    }
-
-    // Phase 1: Save all files and collect normalization tasks
-    const normalizationTasks = []; // Array to collect files that need normalization
-    
-    for (const file of files) {
-      const filePath = path.join(uploadPath, file.originalname);
-      const fileName = file.originalname;
-      const fileExt = path.extname(fileName).toLowerCase();
-      const isMetadataFile = metadataFiles.includes(fileExt);
-  
-      try {
-        if (!fs.existsSync(filePath)) {
-          throw new Error(`File not found: ${filePath}`);
-        }
-        const stats = fs.statSync(filePath);
-        if (!stats || stats.size === 0) {
-          throw new Error(`File is empty: ${filePath}`);
-        }
-
-        // Verify file is fully downloaded before processing (important for Google Drive files)
-        // Skip verification for metadata files that were already verified in first pass
-        if (!isMetadataFile) {
-          try {
-            await verifyFileComplete(filePath, 30000, 500, fileName);
-          } catch (verifyError) {
-            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `File verification failed for ${fileName} before processing: ${verifyError.message}`, { 
-              filePath, 
-              error: verifyError.message 
-            });
-            throw new Error(`File ${fileName} is not fully downloaded. Please wait for download to complete and try again.`);
-          }
-        }
-
-        // Get date from map if available, otherwise extract or use target date
-        let date, formattedDate;
-        if (isMetadataFile) {
-          // Use the target date determined from data files
-          date = targetDate;
-          formattedDate = targetFormattedDate;
+          // Get date from map if available, otherwise extract or use target date
+          let date, formattedDate;
+          if (isMetadataFile) {
+            // Use the target date determined from data files
+            date = targetDate;
+            formattedDate = targetFormattedDate;
           } else {
             // Use stored date if available, otherwise extract (shouldn't happen but safety check)
             const storedDate = fileDateMap.get(fileName);
@@ -593,7 +593,7 @@ const uploadData = async (req, res) => {
               try {
                 const result = await Promise.race([
                   extractDatetimeColumn(filePath),
-                  new Promise((_, reject) => 
+                  new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('extractDatetimeColumn timed out after 60 seconds')), 60000)
                   )
                 ]);
@@ -615,10 +615,10 @@ const uploadData = async (req, res) => {
                   formattedDate = date.replace(/-/g, '');
                 }
               } catch (extractError) {
-                logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `Error extracting date in second pass: ${extractError.message}`, { 
-                  project_id, 
-                  class_name, 
-                  source_name, 
+                logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `Error extracting date in second pass: ${extractError.message}`, {
+                  project_id,
+                  class_name,
+                  source_name,
                   filePath,
                   error: extractError.stack,
                   errorName: extractError.name
@@ -627,213 +627,213 @@ const uploadData = async (req, res) => {
               }
             }
           }
-        
-        // Build path components
-        // For XML files (metadata), save to date directory without source subfolder
-        // For data files, save to date/source_name directory
-        // Normalize class_name to lowercase for consistent directory structure
-        const classLower = String(class_name || '').toLowerCase();
-        let pathComponents;
-        if (isMetadataFile && fileExt === '.xml') {
-          // XML files go to: raw/project_id/class_name/date/
-          pathComponents = [
-            dataDirectory,
-            "raw", 
-            String(project_id), 
-            classLower,
-            String(formattedDate)
-          ];
-        } else {
-          // Data files go to: raw/project_id/class_name/date/source_name/
-          pathComponents = [
-            dataDirectory,
-            "raw", 
-            String(project_id), 
-            classLower,
-            String(formattedDate),
-            String(pathSourceName)
-          ];
-        }
-        
-        const saveDir = path.join(...pathComponents);
-  
-        if (!fs.existsSync(saveDir)) {
-          fs.mkdirSync(saveDir, { recursive: true });
-        }
 
-        // Save the file to the specified directory (always overwrite if same name exists)
-        const savePath = path.join(saveDir, file.originalname);
-        const uploadedFileSize = stats.size;
-        if (fs.existsSync(savePath)) {
-          try {
-            const existingFileStats = fs.statSync(savePath);
-            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'info', `Overwriting existing file: ${savePath}`, {
-              project_id,
-              class_name,
-              source_name,
-              savePath,
-              existingSize: existingFileStats.size,
-              newSize: uploadedFileSize,
-            });
-          } catch (statErr) {
-            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'warn', `Could not stat existing file before overwrite: ${savePath}`, { error: statErr.message });
-          }
-        }
-
-        moveFileSync(filePath, savePath);
-
-        logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'info', `File saved to: ${savePath}`, { project_id, class_name, source_name, savePath });
-
-        // Collect normalization tasks instead of processing immediately
-        if (!isMetadataFile) {
-          if (shouldSkipNormalization || fileExt === '.db' || fileExt === '.jsonl') {
-            // Skip normalization; .db / .jsonl raw profiles are never normalized here
-            results.push({ 
-              fileName, 
-              success: true, 
-              date,
-              savePath, // Include savePath so frontend can normalize later
-              needsNormalization: fileExt !== '.db' && fileExt !== '.jsonl'
-            });
+          // Build path components
+          // For XML files (metadata), save to date directory without source subfolder
+          // For data files, save to date/source_name directory
+          // Normalize class_name to lowercase for consistent directory structure
+          const classLower = String(class_name || '').toLowerCase();
+          let pathComponents;
+          if (isMetadataFile && fileExt === '.xml') {
+            // XML files go to: raw/project_id/class_name/date/
+            pathComponents = [
+              dataDirectory,
+              "raw",
+              String(project_id),
+              classLower,
+              String(formattedDate)
+            ];
           } else {
-            // Collect task for parallel processing
-            normalizationTasks.push({ 
-              savePath, 
-              date, 
-              project_id, 
-              class_name, 
-              source_name, 
-              fileName 
-            });
+            // Data files go to: raw/project_id/class_name/date/source_name/
+            pathComponents = [
+              dataDirectory,
+              "raw",
+              String(project_id),
+              classLower,
+              String(formattedDate),
+              String(pathSourceName)
+            ];
           }
-        } else {
-          // Track XML files for post-processing
-          if (fileExt === '.xml') {
-            xmlFiles.push({ fileName, savePath, saveDir });
+
+          const saveDir = path.join(...pathComponents);
+
+          if (!fs.existsSync(saveDir)) {
+            fs.mkdirSync(saveDir, { recursive: true });
           }
-          results.push({ fileName, success: true, message: 'Metadata file uploaded (no normalization needed)' });
-        }
-      } catch (error) {
-        logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `Error processing file: ${error.message}`, { project_id, class_name, source_name, error: error.stack });
-        results.push({ fileName, success: false, message: error.message });
-      } finally {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-      }
-    }
 
-    // Phase 2: Process normalizations in parallel (3 at a time)
-    if (normalizationTasks.length > 0) {
-      await processNormalizationsInParallel(
-        normalizationTasks,
-        3, // concurrency limit
-        auth_token,
-        results,
-        db,
-        updateDatasetDateModified,
-        logMessage,
-        req.ip || '0.0.0.0'
-      );
-    }
+          // Save the file to the specified directory (always overwrite if same name exists)
+          const savePath = path.join(saveDir, file.originalname);
+          const uploadedFileSize = stats.size;
+          if (fs.existsSync(savePath)) {
+            try {
+              const existingFileStats = fs.statSync(savePath);
+              logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'info', `Overwriting existing file: ${savePath}`, {
+                project_id,
+                class_name,
+                source_name,
+                savePath,
+                existingSize: existingFileStats.size,
+                newSize: uploadedFileSize,
+              });
+            } catch (statErr) {
+              logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'warn', `Could not stat existing file before overwrite: ${savePath}`, { error: statErr.message });
+            }
+          }
 
-    // Phase 3: Process XML files if class_name is 'ac40'
-    // IMPORTANT: This runs regardless of normalization success/failure - XML parsing is independent
-    // It runs after all normalizations complete to ensure all files have been processed
-    // parseXml always runs when XML files are present (regardless of skip_normalization flag)
-    if (xmlFiles.length > 0 && class_name.toLowerCase() === 'ac40') {
-      // Use the target date (should be the same for all files in this batch)
-      const xmlDate = targetDate || dates[0];
-      
-      if (xmlDate) {
-        // Use the directory where XML files are stored (should be the same for all XML files in a batch)
-        const xmlDir = xmlFiles[0].saveDir;
-        const formattedXmlDate = xmlDate.replace(/-/g, '');
-        
-        logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Processing ${xmlFiles.length} XML file(s) for ac40 class (runs regardless of normalization success)`, { xmlDir, date: xmlDate });
-        
-        // Wrap in try-catch to ensure XML parsing attempt happens even if there were previous errors
-        try {
-          const parseResult = await parseXML(auth_token, xmlDate, project_id, class_name, xmlDir);
-          if (parseResult) {
-            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'success', 'XML parsing completed successfully', { xmlDir });
-            // Update dataset date_modified after successful XML parsing
-            // Note: During uploads, datasets may not exist yet. Pass suppressWarning=true
-            // to avoid logging warnings, as datasets will be created later and date_modified
-            // will be updated then.
-            // Get source_id from source_name (use first source_name from the batch)
-            const sourceSql = `SELECT source_id "value" FROM ${class_name}.sources WHERE source_name = $1 AND project_id = $2`;
-            const source_id = await db.GetValue(sourceSql, [source_name, project_id]);
-            
-            if (source_id) {
-              // Suppress warning during uploads since datasets don't exist yet
-              await updateDatasetDateModified(auth_token, class_name, project_id, source_id, xmlDate, true);
+          moveFileSync(filePath, savePath);
+
+          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'info', `File saved to: ${savePath}`, { project_id, class_name, source_name, savePath });
+
+          // Collect normalization tasks instead of processing immediately
+          if (!isMetadataFile) {
+            if (shouldSkipNormalization || fileExt === '.db' || fileExt === '.jsonl') {
+              // Skip normalization; .db / .jsonl raw profiles are never normalized here
+              results.push({
+                fileName,
+                success: true,
+                date,
+                savePath, // Include savePath so frontend can normalize later
+                needsNormalization: fileExt !== '.db' && fileExt !== '.jsonl'
+              });
+            } else {
+              // Collect task for parallel processing
+              normalizationTasks.push({
+                savePath,
+                date,
+                project_id,
+                class_name,
+                source_name,
+                fileName
+              });
             }
           } else {
-            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', 'XML parsing failed', { xmlDir });
+            // Track XML files for post-processing
+            if (fileExt === '.xml') {
+              xmlFiles.push({ fileName, savePath, saveDir });
+            }
+            results.push({ fileName, success: true, message: 'Metadata file uploaded (no normalization needed)' });
           }
-        } catch (xmlError) {
-          // Log error but don't throw - XML parsing errors should not prevent upload response
-          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', `Error parsing XML files: ${xmlError.message}`, { xmlDir, error: xmlError.stack });
+        } catch (error) {
+          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', file.originalname, 'error', `Error processing file: ${error.message}`, { project_id, class_name, source_name, error: error.stack });
+          results.push({ fileName, success: false, message: error.message });
+        } finally {
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
         }
+      }
+
+      // Phase 2: Process normalizations in parallel (3 at a time)
+      if (normalizationTasks.length > 0) {
+        await processNormalizationsInParallel(
+          normalizationTasks,
+          3, // concurrency limit
+          auth_token,
+          results,
+          db,
+          updateDatasetDateModified,
+          logMessage,
+          req.ip || '0.0.0.0'
+        );
+      }
+
+      // Phase 3: Process XML files if class_name is 'ac40'
+      // IMPORTANT: This runs regardless of normalization success/failure - XML parsing is independent
+      // It runs after all normalizations complete to ensure all files have been processed
+      // parseXml always runs when XML files are present (regardless of skip_normalization flag)
+      if (xmlFiles.length > 0 && class_name.toLowerCase() === 'ac40') {
+        // Use the target date (should be the same for all files in this batch)
+        const xmlDate = targetDate || dates[0];
+
+        if (xmlDate) {
+          // Use the directory where XML files are stored (should be the same for all XML files in a batch)
+          const xmlDir = xmlFiles[0].saveDir;
+          const formattedXmlDate = xmlDate.replace(/-/g, '');
+
+          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'info', `Processing ${xmlFiles.length} XML file(s) for ac40 class (runs regardless of normalization success)`, { xmlDir, date: xmlDate });
+
+          // Wrap in try-catch to ensure XML parsing attempt happens even if there were previous errors
+          try {
+            const parseResult = await parseXML(auth_token, xmlDate, project_id, class_name, xmlDir);
+            if (parseResult) {
+              logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'success', 'XML parsing completed successfully', { xmlDir });
+              // Update dataset date_modified after successful XML parsing
+              // Note: During uploads, datasets may not exist yet. Pass suppressWarning=true
+              // to avoid logging warnings, as datasets will be created later and date_modified
+              // will be updated then.
+              // Get source_id from source_name (use first source_name from the batch)
+              const sourceSql = `SELECT source_id "value" FROM ${class_name}.sources WHERE source_name = $1 AND project_id = $2`;
+              const source_id = await db.GetValue(sourceSql, [source_name, project_id]);
+
+              if (source_id) {
+                // Suppress warning during uploads since datasets don't exist yet
+                await updateDatasetDateModified(auth_token, class_name, project_id, source_id, xmlDate, true);
+              }
+            } else {
+              logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', 'XML parsing failed', { xmlDir });
+            }
+          } catch (xmlError) {
+            // Log error but don't throw - XML parsing errors should not prevent upload response
+            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', `Error parsing XML files: ${xmlError.message}`, { xmlDir, error: xmlError.stack });
+          }
+        } else {
+          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'warn', 'Could not determine date for XML processing - skipping parseXML', { xmlFiles: xmlFiles.map(f => f.fileName) });
+        }
+      }
+
+      // Check overall results and send the appropriate response
+      const allSucceeded = results.every(result => result.success);
+      const failedFiles = results.filter(result => !result.success);
+      const skippedFiles = results.filter(result => result.skipped === true);
+
+      // Include results in response when:
+      // 1. skip_normalization is true (so frontend can normalize later)
+      // 2. There are skipped files (so frontend can show appropriate messages)
+      let responseData = dates;
+      if (shouldSkipNormalization || skippedFiles.length > 0) {
+        responseData = {
+          dates: dates,
+          results: results
+        };
+      }
+
+      if (allSucceeded) {
+        if (activeProfile) {
+          const savedPaths = results.filter((r) => r.success && r.savePath).map((r) => r.savePath);
+          try {
+            await activeProfile.afterRawUpload({
+              savedPaths,
+              class_name,
+              project_id,
+              profileId: activeProfile.id,
+              req,
+              auth_token,
+              formattedDate: targetFormattedDate,
+              sourceName: pathSourceName,
+            });
+          } catch (hookErr) {
+            logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', `afterRawUpload: ${hookErr.message}`, { error: hookErr.stack });
+            return sendResponse(
+              res,
+              info,
+              500,
+              false,
+              `Post-upload processing failed: ${hookErr.message}`,
+              responseData,
+              false,
+            );
+          }
+        }
+        return sendResponse(res, info, 200, true, 'All files uploaded and processed successfully', responseData, false);
       } else {
-        logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'warn', 'Could not determine date for XML processing - skipping parseXML', { xmlFiles: xmlFiles.map(f => f.fileName) });
+        const successCount = results.filter(r => r.success).length;
+        const failCount = failedFiles.length;
+        const message = `${successCount} file(s) succeeded, ${failCount} file(s) failed: ${JSON.stringify(failedFiles)}`;
+        return sendResponse(res, info, 400, false, message, responseData, false);
       }
-    }
-
-    // Check overall results and send the appropriate response
-    const allSucceeded = results.every(result => result.success);
-    const failedFiles = results.filter(result => !result.success);
-    const skippedFiles = results.filter(result => result.skipped === true);
-
-    // Include results in response when:
-    // 1. skip_normalization is true (so frontend can normalize later)
-    // 2. There are skipped files (so frontend can show appropriate messages)
-    let responseData = dates;
-    if (shouldSkipNormalization || skippedFiles.length > 0) {
-      responseData = {
-        dates: dates,
-        results: results
-      };
-    }
-
-    if (allSucceeded) {
-      if (activeProfile) {
-        const savedPaths = results.filter((r) => r.success && r.savePath).map((r) => r.savePath);
-        try {
-          await activeProfile.afterRawUpload({
-            savedPaths,
-            class_name,
-            project_id,
-            profileId: activeProfile.id,
-            req,
-            auth_token,
-            formattedDate: targetFormattedDate,
-            sourceName: pathSourceName,
-          });
-        } catch (hookErr) {
-          logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', `afterRawUpload: ${hookErr.message}`, { error: hookErr.stack });
-          return sendResponse(
-            res,
-            info,
-            500,
-            false,
-            `Post-upload processing failed: ${hookErr.message}`,
-            responseData,
-            false,
-          );
-        }
-      }
-      return sendResponse(res, info, 200, true, 'All files uploaded and processed successfully', responseData, false);
-    } else {
-      const successCount = results.filter(r => r.success).length;
-      const failCount = failedFiles.length;
-      const message = `${successCount} file(s) succeeded, ${failCount} file(s) failed: ${JSON.stringify(failedFiles)}`;
-      return sendResponse(res, info, 400, false, message, responseData, false);
-    }
     } catch (error) {
       // Log error to shared logging system before sending response
-      logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', `Unhandled error in uploadData: ${error.message}`, { 
+      logMessage(req.ip || '0.0.0.0', auth_token?.user_id || '0', 'uploadData', 'error', `Unhandled error in uploadData: ${error.message}`, {
         error: error.stack,
         errorName: error.name,
         class_name: req.body?.class_name,
@@ -845,7 +845,7 @@ const uploadData = async (req, res) => {
     }
   } catch (outerError) {
     // Catch any errors that occur outside the main try block (e.g., in validation)
-    logMessage(req.ip || '0.0.0.0', '0', 'uploadData', 'error', `Critical error in uploadData (outer catch): ${outerError.message}`, { 
+    logMessage(req.ip || '0.0.0.0', '0', 'uploadData', 'error', `Critical error in uploadData (outer catch): ${outerError.message}`, {
       error: outerError.stack,
       errorName: outerError.name
     });
@@ -895,8 +895,8 @@ const uploadTargets = async (req, res) => {
       const fileNameWithoutExtension = path.basename(fileName, path.extname(fileName));
 
       // Log file upload info
-      logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'debug', 
-        `Processing target file: ${fileName}, size: ${file.size} bytes, path: ${filePath}`, 
+      logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'debug',
+        `Processing target file: ${fileName}, size: ${file.size} bytes, path: ${filePath}`,
         { fileName, fileSize: file.size, filePath });
 
       try {
@@ -909,38 +909,38 @@ const uploadTargets = async (req, res) => {
         }
 
         // Log actual file size on disk
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'debug', 
-          `Target file on disk: ${fileName}, size: ${stats.size} bytes`, 
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'debug',
+          `Target file on disk: ${fileName}, size: ${stats.size} bytes`,
           { fileName, diskSize: stats.size });
 
         // Read first line to verify content
         const firstLine = fs.readFileSync(filePath, 'utf8').split('\n')[0];
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'debug', 
-          `Target file first line: ${firstLine.substring(0, 150)}`, 
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'debug',
+          `Target file first line: ${firstLine.substring(0, 150)}`,
           { fileName, firstLinePreview: firstLine.substring(0, 150) });
 
         const output_str = await csvtoJSON(filePath);
 
         if (output_str != null) {
-          const response_json = await addTarget(req,class_name,project_id,fileNameWithoutExtension,output_str,0);
+          const response_json = await addTarget(req, class_name, project_id, fileNameWithoutExtension, output_str, 0);
 
           if (response_json.success) {
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', response_json.message, info.function+": "+fileName);
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', response_json.message, info.function + ": " + fileName);
             results.push({ fileName, success: true });
           } else {
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', response_json.message, info.function+": "+fileName);
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', response_json.message, info.function + ": " + fileName);
             results.push({ fileName, success: false, message: response_json.message });
           }
         } else {
-          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', 'Failed to parse csv file', info.function+": "+fileName);
+          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', 'Failed to parse csv file', info.function + ": " + fileName);
           results.push({ fileName, success: false, message: "Failed to parse csv file" });
         }
       } catch (error) {
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Exception during target upload: ${error.message}`, info.function+": "+fileName);
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Exception during target upload: ${error.message}`, info.function + ": " + fileName);
         results.push({ fileName, success: false, message: error.message });
       } finally {
         if (fs.existsSync(filePath)) {
-          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Removing temporary file: ${filePath}`, info.function+": "+fileName);
+          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Removing temporary file: ${filePath}`, info.function + ": " + fileName);
           fs.unlinkSync(filePath);
         }
       }
@@ -994,8 +994,8 @@ const uploadPolars = async (req, res) => {
 
       // Log file upload info - show original filename and extension
       const originalExt = path.extname(fileName).toLowerCase();
-      logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 
-        `Processing polar file: ${fileName} (extension: ${originalExt}), size: ${file.size} bytes, path: ${filePath}`, 
+      logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info',
+        `Processing polar file: ${fileName} (extension: ${originalExt}), size: ${file.size} bytes, path: ${filePath}`,
         { fileName, originalExtension: originalExt, fileSize: file.size, filePath });
 
       try {
@@ -1008,31 +1008,31 @@ const uploadPolars = async (req, res) => {
         }
 
         // Log actual file size on disk
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'debug', 
-          `Polar file on disk: ${fileName}, size: ${stats.size} bytes`, 
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'debug',
+          `Polar file on disk: ${fileName}, size: ${stats.size} bytes`,
           { fileName, diskSize: stats.size });
 
         // Read first line to verify content - show COMPLETE header and first data row
         const fileLines = fs.readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim().length > 0);
         const headerLine = fileLines[0] || '';
         const firstDataLine = fileLines[1] || '';
-        
+
         const headerTabCount = (headerLine.match(/\t/g) || []).length;
         const headerColumns = headerLine.split('\t');
         const dataTabCount = (firstDataLine.match(/\t/g) || []).length;
         const dataColumns = firstDataLine.split('\t');
-        
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 
-          `COMPLETE HEADER: "${headerLine}"`, 
+
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info',
+          `COMPLETE HEADER: "${headerLine}"`,
           { fileName, headerLine, headerTabCount, headerColumnCount: headerColumns.length });
-        
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 
-          `FIRST DATA ROW: "${firstDataLine}"`, 
+
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info',
+          `FIRST DATA ROW: "${firstDataLine}"`,
           { fileName, firstDataLine, dataTabCount, dataColumnCount: dataColumns.length });
-        
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 
-          `COLUMN BREAKDOWN - Header has ${headerColumns.length} columns, First data row has ${dataColumns.length} columns`, 
-          { 
+
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info',
+          `COLUMN BREAKDOWN - Header has ${headerColumns.length} columns, First data row has ${dataColumns.length} columns`,
+          {
             fileName,
             headerColumns: headerColumns.map((col, idx) => `[${idx}]: "${col}"`),
             dataColumns: dataColumns.map((col, idx) => `[${idx}]: "${col}"`)
@@ -1041,8 +1041,8 @@ const uploadPolars = async (req, res) => {
         // Check if file is PLR format and parse directly
         let output_str;
         if (originalExt === '.plr') {
-          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 
-            `Detected PLR file format, parsing directly without conversion`, 
+          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info',
+            `Detected PLR file format, parsing directly without conversion`,
             { fileName, extension: originalExt });
           output_str = await plrToJSON(filePath);
         } else {
@@ -1050,25 +1050,25 @@ const uploadPolars = async (req, res) => {
         }
 
         if (output_str != null) {
-          const response_json = await addTarget(req,class_name,project_id,fileNameWithoutExtension,output_str,1);
+          const response_json = await addTarget(req, class_name, project_id, fileNameWithoutExtension, output_str, 1);
 
           if (response_json.success) {
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', response_json.message, info.function+": "+fileName);
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', response_json.message, info.function + ": " + fileName);
             results.push({ fileName, success: true });
           } else {
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', response_json.message, info.function+": "+fileName);
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', response_json.message, info.function + ": " + fileName);
             results.push({ fileName, success: false, message: response_json.message });
           }
         } else {
-          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', 'Failed to parse file', info.function+": "+fileName);
+          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', 'Failed to parse file', info.function + ": " + fileName);
           results.push({ fileName, success: false, message: "Failed to parse csv file" });
         }
       } catch (error) {
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Exception during polar upload: ${error.message}`, info.function+": "+fileName);
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Exception during polar upload: ${error.message}`, info.function + ": " + fileName);
         results.push({ fileName, success: false, message: error.message });
       } finally {
         if (fs.existsSync(filePath)) {
-          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Removing temporary file: ${filePath}`, info.function+": "+fileName);
+          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Removing temporary file: ${filePath}`, info.function + ": " + fileName);
           fs.unlinkSync(filePath);
         }
       }
@@ -1089,7 +1089,7 @@ const uploadPolars = async (req, res) => {
 };
 
 const uploadVideo = async (req, res) => {
-  const info = {auth_token: req.cookies?.auth_token,location: 'server_admin/uploads',function: 'uploadVideo'};
+  const info = { auth_token: req.cookies?.auth_token, location: 'server_admin/uploads', function: 'uploadVideo' };
 
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -1135,8 +1135,8 @@ const uploadVideo = async (req, res) => {
           throw new Error(`File not found: ${filePath}`);
         }
 
-        // DATA_DIRECTORY should be C:/MyApps/Hunico/Uploads (base path); add Media if not present
-        let dataRoot = env?.DATA_DIRECTORY || 'C:/MyApps/Hunico/Uploads';
+        // DATA_DIRECTORY should be C:/MyApps/Alinghi/uploads/data (base path); add Media if not present
+        let dataRoot = env?.DATA_DIRECTORY || 'C:/MyApps/Alinghi/uploads/data';
         dataRoot = path.normalize(dataRoot).replace(/[\\/]+$/, '');
         const lastSegment = path.basename(dataRoot).toLowerCase();
         if (lastSegment !== 'media') {
@@ -1151,13 +1151,13 @@ const uploadVideo = async (req, res) => {
         if (skipFfmpeg) {
           encodingSkipped = true;
           // Bypass: save directly to MEDIA_DIRECTORY (not DATA_DIRECTORY) so file lands under Uploads/Media
-          let mediaBase = env?.MEDIA_DIRECTORY || 'C:/MyApps/Hunico/Uploads/Media';
+          let mediaBase = env?.MEDIA_DIRECTORY || 'C:/MyApps/Alinghi/uploads/media';
           mediaBase = path.normalize(mediaBase).replace(/[\\/]+$/, '');
           const medResDir = path.join(mediaBase, 'system', String(project_id), classLower, date, sanitizedMediaSource, 'med_res');
           const medResPath = path.join(medResDir, fileName);
           if (!fs.existsSync(medResDir)) fs.mkdirSync(medResDir, { recursive: true });
           moveFileSync(filePath, medResPath);
-          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `File saved as med_res (bypass): ${medResPath}`, info.function+": "+fileName);
+          logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `File saved as med_res (bypass): ${medResPath}`, info.function + ": " + fileName);
 
           setImmediate(async () => {
             try {
@@ -1180,7 +1180,7 @@ const uploadVideo = async (req, res) => {
               };
               const metadataJson = { filename: fileName, durationSeconds: durationSeconds || 0, startTime: startIso, endTime: endIso };
               const metaPath = path.join(medResDir, path.parse(fileName).name + '.json');
-              try { fs.writeFileSync(metaPath, JSON.stringify(metadataJson, null, 2), 'utf8'); } catch {}
+              try { fs.writeFileSync(metaPath, JSON.stringify(metadataJson, null, 2), 'utf8'); } catch { }
               // Internal self-call: loopback works in both dev and prod Docker (same container)
               const adminPort = env.ADMIN_PORT || 8059;
               const mediaApiUrl = `http://127.0.0.1:${adminPort}/api/media`;
@@ -1194,14 +1194,14 @@ const uploadVideo = async (req, res) => {
                 body: JSON.stringify(payload)
               });
               if (response.ok) {
-                logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', 'Created media record for uploaded video', info.function+": "+fileName);
+                logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', 'Created media record for uploaded video', info.function + ": " + fileName);
               } else {
                 let errJson;
-                try { errJson = await response.json(); } catch {}
+                try { errJson = await response.json(); } catch { }
                 logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Failed to create media record: ${response.status}`, `${info.function}: ${fileName} ${errJson ? JSON.stringify(errJson) : ''}`);
               }
             } catch (e) {
-              logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Media record error: ${e?.message}`, info.function+": "+fileName);
+              logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Media record error: ${e?.message}`, info.function + ": " + fileName);
             }
           });
 
@@ -1222,7 +1222,7 @@ const uploadVideo = async (req, res) => {
           batchCtx.completed += 1;
           if (batchCtx.completed >= batchCtx.total && !batchCtx.videoReadySent) {
             batchCtx.videoReadySent = true;
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 'Broadcasting video_ready event - ALL FILES COMPLETE (bypass)', info.function+": "+fileName);
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 'Broadcasting video_ready event - ALL FILES COMPLETE (bypass)', info.function + ": " + fileName);
             const n = batchCtx.outputs.length;
             const errs = batchCtx.errors.length;
             const completeText = errs === 0
@@ -1256,7 +1256,7 @@ const uploadVideo = async (req, res) => {
         if (!fs.existsSync(rawDir)) fs.mkdirSync(rawDir, { recursive: true });
         const rawPath = path.join(rawDir, fileName);
         moveFileSync(filePath, rawPath);
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `File moved to raw: ${rawPath}`, info.function+": "+fileName);
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `File moved to raw: ${rawPath}`, info.function + ": " + fileName);
 
         setImmediate(async () => {
           try {
@@ -1264,7 +1264,7 @@ const uploadVideo = async (req, res) => {
             const { startIso, endIso, durationSeconds } = await computeStartEndFromMetadata(rawPath, dbDate, { timezone: tz || undefined, db, useDefaultStartTime: !useFileDatetime });
             const systemBase = path.join(dataRoot, 'Media', 'system', String(project_id), classLower, date);
             const fileTemplate = path.join(systemBase, sanitizedMediaSource, '{res}', fileName); // {res} = low_res|med_res|high_res
-            
+
             const payload = {
               class_name,
               project_id: Number(project_id),
@@ -1291,18 +1291,18 @@ const uploadVideo = async (req, res) => {
               body: JSON.stringify(payload)
             });
             if (response.ok) {
-              logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', 'Created media record for uploaded video', info.function+": "+fileName);
+              logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', 'Created media record for uploaded video', info.function + ": " + fileName);
             } else {
               let errJson;
-              try { errJson = await response.json(); } catch {}
+              try { errJson = await response.json(); } catch { }
               logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Failed to create media record: ${response.status}`, `${info.function}: ${fileName} ${errJson ? JSON.stringify(errJson) : ''}`);
             }
           } catch (e) {
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Media record error: ${e?.message}`, info.function+": "+fileName);
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Media record error: ${e?.message}`, info.function + ": " + fileName);
           }
         });
 
-        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 'Starting video processing', info.function+": "+fileName);
+        logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 'Starting video processing', info.function + ": " + fileName);
         req.app?.locals?.broadcastProgress?.({
           success: true,
           event: {
@@ -1323,8 +1323,8 @@ const uploadVideo = async (req, res) => {
 
         setImmediate(() => {
           try {
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Starting background processing for ${fileName}`, info.function+": "+fileName);
-            
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Starting background processing for ${fileName}`, info.function + ": " + fileName);
+
             // Fallback timeout to check if processing completed
             const startTime = Date.now();
             // Fallback: if onDone is never called (e.g. crash), notify after 2 hours so UI doesn't hang forever.
@@ -1335,12 +1335,12 @@ const uploadVideo = async (req, res) => {
                 // Only trigger fallback if this specific file hasn't been completed yet
                 if (!batchCtx.completedFiles.has(fileName)) {
                   const elapsed = Date.now() - startTime;
-                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'warn', `FALLBACK TRIGGERED: onDone not called for ${fileName} within ${FALLBACK_MS / 60000} minutes (elapsed: ${elapsed}ms)`, info.function+": "+fileName);
-                  
+                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'warn', `FALLBACK TRIGGERED: onDone not called for ${fileName} within ${FALLBACK_MS / 60000} minutes (elapsed: ${elapsed}ms)`, info.function + ": " + fileName);
+
                   // Mark this file as completed (with fallback)
                   batchCtx.completedFiles.add(fileName);
-                  batchCtx.outputs.push({ 
-                    file: fileName, 
+                  batchCtx.outputs.push({
+                    file: fileName,
                     renditions: [
                       { name: 'low_res', file: path.join(dataRoot, 'Media', 'system', String(project_id), classLower, date, sanitizedMediaSource, 'low_res', fileName) },
                       { name: 'med_res', file: path.join(dataRoot, 'Media', 'system', String(project_id), classLower, date, sanitizedMediaSource, 'med_res', fileName) },
@@ -1348,10 +1348,10 @@ const uploadVideo = async (req, res) => {
                     ]
                   });
                   batchCtx.completed += 1;
-                  
+
                   if (batchCtx.completed >= batchCtx.total && !batchCtx.videoReadySent) {
                     batchCtx.videoReadySent = true; // Prevent duplicate sends
-                    logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 'Fallback: Broadcasting video_ready event', info.function+": "+fileName);
+                    logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 'Fallback: Broadcasting video_ready event', info.function + ": " + fileName);
                     req.app?.locals?.broadcastProgress?.({
                       success: true,
                       event: {
@@ -1373,10 +1373,10 @@ const uploadVideo = async (req, res) => {
                   }
                 }
               } catch (e) {
-                logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Fallback check error: ${e?.message}`, info.function+": "+fileName);
+                logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Fallback check error: ${e?.message}`, info.function + ": " + fileName);
               }
             }, FALLBACK_MS);
-            
+
             processVideoMulti(rawPath, {
               baseOutDir: dataRoot,
               filename: fileName,
@@ -1407,25 +1407,25 @@ const uploadVideo = async (req, res) => {
                 try {
                   // Check if this file has already been completed (prevent duplicates)
                   if (batchCtx.completedFiles.has(fileName)) {
-                    logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'warn', `Duplicate onDone callback for ${fileName} - ignoring`, info.function+": "+fileName);
+                    logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'warn', `Duplicate onDone callback for ${fileName} - ignoring`, info.function + ": " + fileName);
                     return;
                   }
-                  
+
                   clearTimeout(fallbackTimeout); // Cancel fallback since we got the real completion
-                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', 'Completed video processing', info.function+": "+fileName);
-                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `onDone called for ${fileName} with result:`, info.function+": "+fileName, result);
-                  
+                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'success', 'Completed video processing', info.function + ": " + fileName);
+                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `onDone called for ${fileName} with result:`, info.function + ": " + fileName, result);
+
                   // Mark this file as completed
                   batchCtx.completedFiles.add(fileName);
                   batchCtx.outputs.push({ file: fileName, renditions: result.files });
                   batchCtx.completed += 1;
-                  
+
                   // Only send video_ready when ALL files have completed ALL their stages
-                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `File ${fileName} completed. Progress: ${batchCtx.completed}/${batchCtx.total}. Outputs: ${batchCtx.outputs.length}, Errors: ${batchCtx.errors.length}`, info.function+": "+fileName);
-                  
+                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `File ${fileName} completed. Progress: ${batchCtx.completed}/${batchCtx.total}. Outputs: ${batchCtx.outputs.length}, Errors: ${batchCtx.errors.length}`, info.function + ": " + fileName);
+
                   if (batchCtx.completed >= batchCtx.total && !batchCtx.videoReadySent) {
                     batchCtx.videoReadySent = true; // Prevent duplicate sends
-                    logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 'Broadcasting video_ready event - ALL FILES COMPLETE', info.function+": "+fileName);
+                    logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', 'Broadcasting video_ready event - ALL FILES COMPLETE', info.function + ": " + fileName);
                     req.app?.locals?.broadcastProgress?.({
                       success: true,
                       event: {
@@ -1446,19 +1446,19 @@ const uploadVideo = async (req, res) => {
                     });
                   }
                 } catch (e) {
-                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Error in onDone callback: ${e?.message}`, info.function+": "+fileName);
+                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Error in onDone callback: ${e?.message}`, info.function + ": " + fileName);
                 }
               },
               onError: (e) => {
                 try {
                   // Check if this file has already been processed (prevent duplicates)
                   if (batchCtx.completedFiles.has(fileName)) {
-                    logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'warn', `Duplicate onError callback for ${fileName} - ignoring`, info.function+": "+fileName);
+                    logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'warn', `Duplicate onError callback for ${fileName} - ignoring`, info.function + ": " + fileName);
                     return;
                   }
-                  
-                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Error processing video: ${e?.error || 'unknown'}`, info.function+": "+fileName);
-                  
+
+                  logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Error processing video: ${e?.error || 'unknown'}`, info.function + ": " + fileName);
+
                   // Mark this file as completed (with error)
                   batchCtx.completedFiles.add(fileName);
                   batchCtx.errors.push({ file: fileName, error: e?.error || 'unknown' });
@@ -1481,7 +1481,7 @@ const uploadVideo = async (req, res) => {
                   });
                   if (batchCtx.completed >= batchCtx.total && !batchCtx.videoReadySent) {
                     batchCtx.videoReadySent = true; // Prevent duplicate sends
-                    try { log('[PROGRESS][SEND] video_ready (batch after error)'); } catch {}
+                    try { log('[PROGRESS][SEND] video_ready (batch after error)'); } catch { }
                     req.app?.locals?.broadcastProgress?.({
                       success: true,
                       event: {
@@ -1501,11 +1501,11 @@ const uploadVideo = async (req, res) => {
                       }
                     });
                   }
-                } catch {}
+                } catch { }
               }
             });
           } catch (bgErr) {
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Background processing error for ${fileName}: ${bgErr?.message}`, info.function+": "+fileName);
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'error', `Background processing error for ${fileName}: ${bgErr?.message}`, info.function + ": " + fileName);
             req.app?.locals?.broadcastProgress?.({ event: 'video_error', file: fileName, error: bgErr?.message });
           }
         });
@@ -1517,10 +1517,10 @@ const uploadVideo = async (req, res) => {
         // temp file already moved to raw or cleaned on error path
         try {
           if (fs.existsSync(filePath)) {
-            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Removing temporary file: ${filePath}`, info.function+": "+fileName);
+            logMessage(req.ip || '0.0.0.0', info.auth_token?.user_id || '0', info.location, 'info', `Removing temporary file: ${filePath}`, info.function + ": " + fileName);
             fs.unlinkSync(filePath);
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -1565,7 +1565,7 @@ const checkFileExists = async (req, res) => {
     }
 
     // Construct the directory path (same logic as uploadData)
-    let dataDirectory = env.DATA_DIRECTORY || 'C:/MyApps/Hunico/Uploads';
+    let dataDirectory = env.DATA_DIRECTORY || 'C:/MyApps/Alinghi/uploads/data';
     dataDirectory = path.normalize(dataDirectory).replace(/[\\/]+$/, '');
     const lastSegment = path.basename(dataDirectory).toLowerCase();
     if (lastSegment !== 'data') {
@@ -1674,7 +1674,7 @@ const listCsvFiles = async (req, res) => {
     }
 
     // Construct the directory path
-    let dataDirectory = env.DATA_DIRECTORY || 'C:/MyApps/Hunico/Uploads';
+    let dataDirectory = env.DATA_DIRECTORY || 'C:/MyApps/Alinghi/uploads/data';
     dataDirectory = path.normalize(dataDirectory).replace(/[\\/]+$/, '');
     const lastSegment = path.basename(dataDirectory).toLowerCase();
     if (lastSegment !== 'data') {

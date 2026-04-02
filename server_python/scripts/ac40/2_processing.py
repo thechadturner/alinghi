@@ -1453,7 +1453,7 @@ if __name__ == "__main__":
                     u.log(api_token, "2_processing.py", "info", "processing data", str(len(df))+ " records processed...")
 
                     if len(df2) > 0:
-                        chosen_columns = ['Datetime', 'ts', 'Grade', 'Headsail_code', 'Name', 'Crew_count', 'Wing_code', 'Rudder_code', 'Daggerboard_code', 'Config_code', 'Maneuver_type', 'Phase_id', 'Period_id', 'Race_status']
+                        chosen_columns = ['Datetime', 'ts', 'Grade', 'Headsail_code', 'Name', 'Crew_count', 'Wing_code', 'Rudder_code', 'Daggerboard_code', 'Config_code', 'Maneuver_type', 'Phase_id', 'Period_id', 'Race_status', 'Foiling_state', 'Accel_rate_mps2', 'Yaw_rate_dps']
                         
                         # Filter to only include columns that actually exist in df3
                         chosen_columns = [col for col in chosen_columns if col in df2.columns]
@@ -1476,7 +1476,7 @@ if __name__ == "__main__":
                             print("Saving to parquet...", flush=True)
 
                         # Get data directory from environment variable
-                        data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
+                        data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Alinghi/uploads/data')
                         
                         event_file_path = os.path.join(data_dir, 'system', str(project_id), class_name, date, source_name, 'processed_data_racesight.parquet')
 

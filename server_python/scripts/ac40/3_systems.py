@@ -182,7 +182,7 @@ def _filesystem_class_dir(class_name: str) -> str:
 
 
 def _write_flight_parquet(df_export, class_name, project_id, date, source_name):
-    data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Hunico/Uploads/Data')
+    data_dir = os.getenv('DATA_DIRECTORY', 'C:/MyApps/Alinghi/uploads/data')
     out_dir = os.path.join(
         data_dir, 'system', str(project_id), _filesystem_class_dir(class_name), date, source_name,
     )

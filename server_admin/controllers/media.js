@@ -91,19 +91,19 @@ exports.convertLocalToUtc = async (req, res) => {
 };
 
 exports.addMedia = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/media', "function": 'addMedia'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/media', "function": 'addMedia' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
-  
+
     try {
         const { class_name, project_id, date, start_time, end_time, duration, file_name, media_source, tags, shared, timezone } = req.body;
         const tzVal = (timezone != null && typeof timezone === 'string' && timezone.trim() !== '') ? timezone.trim() : null;
 
         let result = await check_permissions(req, 'write', project_id)
-    
+
         if (result) {
             // Check if media exists using project_id, file_name, media_source, and date
             let sql = `select media_id "value" from ${class_name}.media where project_id = $1 and file_name = $2 and media_source = $3 and date = $4`
@@ -153,13 +153,13 @@ exports.addMedia = async (req, res) => {
 };
 
 exports.editMedia = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/media', "function": 'editMedia'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/media', "function": 'editMedia' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null, true);
     }
-  
+
     try {
         const { class_name, project_id, media_id, start_time, end_time } = req.body;
         // start_time/end_time must be ISO 8601 UTC (e.g. with Z). Normalize to UTC ISO string so DB stores correct instant regardless of server TZ.
@@ -174,7 +174,7 @@ exports.editMedia = async (req, res) => {
         const endIso = toUtcIso(end_time);
 
         let result = await check_permissions(req, 'write', project_id)
-    
+
         if (result) {
             sql = `update ${class_name}.media set start_time = $2::timestamptz, end_time = $3::timestamptz where media_id = $1`
             params = [media_id, startIso, endIso]
@@ -187,7 +187,7 @@ exports.editMedia = async (req, res) => {
                 if (env.VITE_VERBOSE === 'true') {
                     log(sql, params)
                 }
-                
+
                 return sendResponse(res, info, 500, false, "Unable to update media...", null, true);
             }
         } else {
@@ -199,36 +199,36 @@ exports.editMedia = async (req, res) => {
 };
 
 exports.removeMedia = async (req, res) => {
-    const info = {"auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'removeMedia'}
+    const info = { "auth_token": req.cookies?.auth_token, "location": 'server_admin/events', "function": 'removeMedia' }
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null);
+        return sendResponse(res, info, 400, false, JSON.stringify(errors.array()), null);
     }
-    
+
     try {
-      const { class_name, project_id, file_name, media_source } = req.body;
-  
-      let result = await check_permissions(req, 'write', project_id)
+        const { class_name, project_id, file_name, media_source } = req.body;
 
-      if (result) {
-        const sql = `DELETE FROM ${class_name}.media WHERE project_id = $1 and file_name = $2 and media_source = $3`;
-        const params = [project_id, file_name, media_source];
+        let result = await check_permissions(req, 'write', project_id)
 
-        let result = await db.ExecuteCommand(sql, params);
-  
         if (result) {
-            return sendResponse(res, info, 200, true, "Media removed successfully!", true, false);
-        } else {
-            if (env.VITE_VERBOSE === 'true') {
-                log(sql, params)
+            const sql = `DELETE FROM ${class_name}.media WHERE project_id = $1 and file_name = $2 and media_source = $3`;
+            const params = [project_id, file_name, media_source];
+
+            let result = await db.ExecuteCommand(sql, params);
+
+            if (result) {
+                return sendResponse(res, info, 200, true, "Media removed successfully!", true, false);
+            } else {
+                if (env.VITE_VERBOSE === 'true') {
+                    log(sql, params)
+                }
+
+                return sendResponse(res, info, 204, false, "Media not removed", null, true);
             }
-            
-            return sendResponse(res, info, 204, false, "Media not removed", null, true);
+        } else {
+            return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
         }
-      } else {
-        return sendResponse(res, info, 401, false, 'Unauthorized', null, true);
-      }
     } catch (error) {
         return sendResponse(res, info, 500, false, error.message, null, true);
     }
@@ -261,7 +261,7 @@ exports.removeMediaByDate = async (req, res) => {
             normalizedDate = normalizedDate.replace(/\//g, '-');
         }
 
-        let mediaBase = env?.MEDIA_DIRECTORY || 'C:/MyApps/Hunico/Uploads/Media';
+        let mediaBase = env?.MEDIA_DIRECTORY || 'C:/MyApps/Alinghi/uploads/media';
         mediaBase = path.normalize(mediaBase).replace(/[\\/]+$/, '');
         const classLower = String(class_name || '').toLowerCase();
         const dateYyyyMmDd = normalizedDate;

@@ -276,7 +276,7 @@ def main():
         u.log(api_token, "2_targets.py", "warning", "targets", "Target JSON had no valid UPWIND/DOWNWIND; skipping")
         sys.exit(0)
 
-    data_dir = os.getenv("DATA_DIRECTORY", "C:/MyApps/Hunico/Uploads/Data")
+    data_dir = os.getenv("DATA_DIRECTORY", "C:/MyApps/Alinghi/uploads/data")
     class_lower = (class_name or "").lower()
     date_clean = (date or "").replace("-", "").replace("/", "")
     folder_path = os.path.join(data_dir, "system", str(project_id), class_lower, date_clean, source_name or "")

@@ -8838,6 +8838,76 @@ html body #main-content>#media-container.targets-page,
   /* Prevent width constraints */
 }
 
+.admin-activity-summary-loading {
+  width: 98%;
+  padding: 1rem;
+  text-align: center;
+  color: var(--color-text-secondary, #6b7280);
+  font-size: 0.875rem;
+}
+
+.admin-activity-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  width: 98%;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+@media (min-width: 1024px) {
+  .admin-activity-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.admin-activity-summary-panel {
+  /* No outer “form” chrome; tables keep their own borders */
+  background-color: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0.25rem 0;
+  min-width: 0;
+}
+
+.admin-activity-summary-grid>.admin-activity-summary-panel:first-child {
+  padding-left: 25px;
+}
+
+.admin-activity-summary-panel h2 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+}
+
+/* Nested admin-table inside summary panels: inherit main log styling without breaking grid */
+.admin-activity-summary-table-shell.admin-table {
+  margin: 0;
+  width: 100%;
+  max-width: 100%;
+  box-shadow: none;
+}
+
+.admin-activity-summary-table-shell table td:last-child {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-activity-summary-page-cell {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-activity-summary-empty {
+  margin: 0;
+  padding: 0.5rem 0;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #6b7280);
+}
+
 .admin-table-container {
   flex: 1;
   overflow: auto;
@@ -8949,6 +9019,14 @@ html body #main-content>#media-container.targets-page,
   /* Prevent width constraints */
   flex-shrink: 0;
   /* Prevent filter controls from shrinking */
+}
+
+/* Admin User Activity: narrower bar — must win over .filter-controls width: 100% and flex stretch */
+.filter-controls.admin-activity-filter-controls {
+  width: calc(98% - 20px);
+  max-width: 100%;
+  box-sizing: border-box;
+  align-self: flex-start;
 }
 
 .filter-controls label {

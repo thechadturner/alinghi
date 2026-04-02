@@ -22,6 +22,27 @@ interface PaginationData {
   };
 }
 
+interface TopUserSummaryRow {
+  email: string;
+  count: number;
+}
+
+interface TopPageSummaryRow {
+  page: string;
+  count: number;
+}
+
+interface TopDaySummaryRow {
+  day: string;
+  count: number;
+}
+
+interface UserActivitySummary {
+  topUsers: TopUserSummaryRow[];
+  topPages: TopPageSummaryRow[];
+  topDays: TopDaySummaryRow[];
+}
+
 // Function to fetch user activity
 async function fetchUserActivity(page = 1, limit = 50): Promise<PaginationData> {
   const controller = new AbortController();
@@ -44,6 +65,33 @@ async function fetchUserActivity(page = 1, limit = 50): Promise<PaginationData> 
   }
 }
 
+const emptySummary = (): UserActivitySummary => ({
+  topUsers: [],
+  topPages: [],
+  topDays: [],
+});
+
+async function fetchUserActivitySummary(): Promise<UserActivitySummary> {
+  try {
+    const url = apiEndpoints.app.admin.user_activity_summary;
+    const response = await getData(url);
+
+    if (response.success && response.data && typeof response.data === "object") {
+      const d = response.data as Partial<UserActivitySummary>;
+      return {
+        topUsers: Array.isArray(d.topUsers) ? d.topUsers : [],
+        topPages: Array.isArray(d.topPages) ? d.topPages : [],
+        topDays: Array.isArray(d.topDays) ? d.topDays : [],
+      };
+    }
+
+    return emptySummary();
+  } catch (error: unknown) {
+    logError("Error fetching user activity summary:", error);
+    return emptySummary();
+  }
+}
+
 export default function AdminActivity() {
   const [activities, setActivities] = createSignal<Activity[]>([]);
   const [allActivities, setAllActivities] = createSignal<Activity[]>([]);
@@ -58,6 +106,9 @@ export default function AdminActivity() {
   const [totalPages, setTotalPages] = createSignal(1);
   const [totalRecords, setTotalRecords] = createSignal(0);
   const [limit, setLimit] = createSignal(100);
+
+  const [summaryLoading, setSummaryLoading] = createSignal(true);
+  const [summary, setSummary] = createSignal<UserActivitySummary>(emptySummary());
 
   // Enhanced color coding with better contrast
   const getRowClass = (activity: Activity): string => {
@@ -203,9 +254,19 @@ export default function AdminActivity() {
     }
   };
 
+  const loadSummary = async () => {
+    setSummaryLoading(true);
+    try {
+      const data = await fetchUserActivitySummary();
+      setSummary(data);
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
   onMount(async () => {
     await logPageLoad('AdminActivity.jsx', 'Admin Activity Page');
-    await loadData();
+    await Promise.all([loadData(), loadSummary()]);
   });
 
   return (
@@ -217,7 +278,7 @@ export default function AdminActivity() {
       </div>
 
       {/* Enhanced Filter Controls */}
-      <div class="filter-controls mt-2 bg-gray-50 rounded-lg" style="width: 98%;">
+      <div class="filter-controls admin-activity-filter-controls mt-2 bg-gray-50 rounded-lg">
         <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
           {/* Search */}
           <div class="lg:col-span-3">
@@ -267,6 +328,102 @@ export default function AdminActivity() {
             : `Showing ${filteredActivities().length} of ${totalRecords()} entries`}
         </div>
       </div>
+
+      <Show
+        when={!summaryLoading()}
+        fallback={
+          <div class="admin-activity-summary-loading">Loading activity summary...</div>
+        }
+      >
+        <div class="admin-activity-summary-grid">
+          <div class="admin-activity-summary-panel">
+            <h2>Top users</h2>
+            <Show
+              when={summary().topUsers.length > 0}
+              fallback={<p class="admin-activity-summary-empty">No data</p>}
+            >
+              <div class="admin-table admin-activity-summary-table-shell">
+                <table class="w-full border-collapse border border-gray-200 text-left">
+                  <thead class="bg-gray-200 sticky top-0 z-20">
+                    <tr>
+                      <th class="border border-gray-300 px-4 py-2 font-semibold">User</th>
+                      <th class="border border-gray-300 px-4 py-2 font-semibold">Events</th>
+                    </tr>
+                  </thead>
+                  <tbody class="bg-white">
+                    <For each={summary().topUsers}>
+                      {(row) => (
+                        <tr class="border border-gray-200 hover:bg-gray-50">
+                          <td class="px-4 py-2 text-sm font-medium">{row.email}</td>
+                          <td class="px-4 py-2 text-sm text-gray-600">{row.count}</td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            </Show>
+          </div>
+          <div class="admin-activity-summary-panel">
+            <h2>Top pages</h2>
+            <Show
+              when={summary().topPages.length > 0}
+              fallback={<p class="admin-activity-summary-empty">No data</p>}
+            >
+              <div class="admin-table admin-activity-summary-table-shell">
+                <table class="w-full border-collapse border border-gray-200 text-left">
+                  <thead class="bg-gray-200 sticky top-0 z-20">
+                    <tr>
+                      <th class="border border-gray-300 px-4 py-2 font-semibold">Page</th>
+                      <th class="border border-gray-300 px-4 py-2 font-semibold">Events</th>
+                    </tr>
+                  </thead>
+                  <tbody class="bg-white">
+                    <For each={summary().topPages}>
+                      {(row) => (
+                        <tr class="border border-gray-200 hover:bg-gray-50">
+                          <td class="px-4 py-2 text-sm text-gray-600 admin-activity-summary-page-cell" title={row.page}>
+                            {row.page}
+                          </td>
+                          <td class="px-4 py-2 text-sm text-gray-600">{row.count}</td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            </Show>
+          </div>
+          <div class="admin-activity-summary-panel">
+            <h2>Top days (UTC)</h2>
+            <Show
+              when={summary().topDays.length > 0}
+              fallback={<p class="admin-activity-summary-empty">No data</p>}
+            >
+              <div class="admin-table admin-activity-summary-table-shell">
+                <table class="w-full border-collapse border border-gray-200 text-left">
+                  <thead class="bg-gray-200 sticky top-0 z-20">
+                    <tr>
+                      <th class="border border-gray-300 px-4 py-2 font-semibold">Day (UTC)</th>
+                      <th class="border border-gray-300 px-4 py-2 font-semibold">Events</th>
+                    </tr>
+                  </thead>
+                  <tbody class="bg-white">
+                    <For each={summary().topDays}>
+                      {(row) => (
+                        <tr class="border border-gray-200 hover:bg-gray-50">
+                          <td class="px-4 py-2 text-sm text-gray-600">{row.day}</td>
+                          <td class="px-4 py-2 text-sm text-gray-600">{row.count}</td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            </Show>
+          </div>
+        </div>
+      </Show>
 
       {/* Activity Table */}
       <div class="admin-table-container">
