@@ -107,22 +107,37 @@ export default function RaceCourseLayer(props: RaceCourseLayerProps) {
       return null;
     }
 
-    // Check what datetime field name is used
-    const firstItem = data[0];
-    const datetimeField = firstItem?.DATETIME ? 'DATETIME' : 
-                         firstItem?.Datetime ? 'Datetime' : 
-                         firstItem?.datetime ? 'datetime' : null;
-    
-    if (!datetimeField) {
+    // Detect datetime field from first valid record (not just index 0)
+    const datetimeField = (() => {
+      for (const item of data) {
+        if (item && (item as any).DATETIME != null) return 'DATETIME';
+        if (item && (item as any).Datetime != null) return 'Datetime';
+        if (item && (item as any).datetime != null) return 'datetime';
+      }
       return null;
+    })();
+    
+    // If no datetime field exists, keep layer stable by falling back to the latest entry
+    // instead of returning null (which clears boundaries/marks until a toggle/remount).
+    if (!datetimeField) {
+      return data[data.length - 1] || null;
     }
 
-    // Sort data by datetime field
-    const sortedData = [...data].sort((a, b) => {
-      const timeA = new Date((a as any)[datetimeField]).getTime();
-      const timeB = new Date((b as any)[datetimeField]).getTime();
-      return timeA - timeB;
-    });
+    // Keep only records with valid timestamps, then sort by time
+    const sortedData = data
+      .filter((item) => {
+        const ts = new Date((item as any)[datetimeField]).getTime();
+        return Number.isFinite(ts);
+      })
+      .sort((a, b) => {
+        const timeA = new Date((a as any)[datetimeField]).getTime();
+        const timeB = new Date((b as any)[datetimeField]).getTime();
+        return timeA - timeB;
+      });
+
+    if (sortedData.length === 0) {
+      return data[data.length - 1] || null;
+    }
 
     // First, try to find the last available boundary at or before the target time
     // This is important for live mode where current time may be beyond all boundaries

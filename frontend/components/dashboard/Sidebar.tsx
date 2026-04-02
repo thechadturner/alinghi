@@ -432,6 +432,13 @@ const Sidebar = (props: SidebarProps) => {
     return canonicalExploreMenuName(sel) === canonicalExploreMenuName(menuName);
   };
 
+  /** Submenu rows use parent keys like `timeseries` / `fleet_timeseries` + object_name; highlight when that chart is selected. */
+  const isExploreSubmenuItemActive = (parentKey: string, objectName: string): boolean => {
+    const page = (selectedPage() || '').trim();
+    if (!page || page !== objectName) return false;
+    return canonicalExploreMenuName(selectedMenu() || '') === canonicalExploreMenuName(parentKey);
+  };
+
   // Function to detect screen size and set responsive state
   const checkScreenSize = (): void => {
     const width = window.innerWidth;
@@ -904,18 +911,18 @@ const Sidebar = (props: SidebarProps) => {
     // Normalize "fleet video" / "fleetvideo" -> "video", "fleet timeseries" -> "timeseries", etc.
     if (key.startsWith('fleet')) key = key.replace(/^fleet_?/, '') || key;
     const fleetName = DAY_EXPLORE_FLEET_ALIAS[key];
-    return fleetName ? `ac40/day/explore/${fleetName}` : null;
+    return fleetName ? `gp50/day/explore/${fleetName}` : null;
   };
 
   /** Day report page_name -> file path (no extension). Used when day_pages returns dataset paths; load Fleet* day components instead. */
   const DAY_REPORT_PATH: Record<string, string> = {
-    'performance': 'ac40/day/reports/FleetPerformance',
-    'maneuvers': 'ac40/day/reports/FleetManeuvers',
-    'racesummary': 'ac40/day/reports/RaceSummary',
-    'trainingsummary': 'ac40/day/reports/TrainingSummary',
+    'performance': 'gp50/day/reports/FleetPerformance',
+    'maneuvers': 'gp50/day/reports/FleetManeuvers',
+    'racesummary': 'gp50/day/reports/RaceSummary',
+    'trainingsummary': 'gp50/day/reports/TrainingSummary',
     /** DB page_name for Prestart.tsx (day_pages); keep prestart alias for older rows */
-    'startsummary': 'ac40/day/reports/Prestart',
-    'prestart': 'ac40/day/reports/Prestart',
+    'startsummary': 'gp50/day/reports/Prestart',
+    'prestart': 'gp50/day/reports/Prestart',
   };
   const getDayReportFilePath = (pageName: string): string | null => {
     if (!pageName || typeof pageName !== 'string') return null;
@@ -933,7 +940,7 @@ const Sidebar = (props: SidebarProps) => {
       debug('[Sidebar] basePath after extension removal', { basePath });
       
       // Convert file path to the glob key format (relative to reports directory)
-      // e.g., "ac40/dataset/explore/Map" -> "../../reports/ac40/dataset/explore/Map.tsx"
+      // e.g., "gp50/dataset/explore/Map" -> "../../reports/gp50/dataset/explore/Map.tsx"
       let globKey = `../../reports/${basePath}.tsx`;
       debug('[Sidebar] Initial glob key', { globKey });
       
@@ -966,7 +973,7 @@ const Sidebar = (props: SidebarProps) => {
         if (lastSegment.startsWith('fleet')) lastSegment = lastSegment.replace(/^fleet_?/, '') || lastSegment;
         const fleetName = DAY_EXPLORE_FLEET_ALIAS[lastSegment];
         if (fleetName) {
-          const fleetPath = `ac40/day/explore/${fleetName}`;
+          const fleetPath = `gp50/day/explore/${fleetName}`;
           const fleetGlobKey = `../../reports/${fleetPath}.tsx`;
           loader = reportModules[fleetGlobKey];
           if (loader) {
@@ -1485,7 +1492,10 @@ const Sidebar = (props: SidebarProps) => {
       
       if (response.success && response.data) {
         // Ensure we return an array of objects with object_name property
-        const result = Array.isArray(response.data) ? response.data : [];
+        const result = Array.isArray(response.data) ? [...response.data] : [];
+        result.sort((a: { object_name?: string }, b: { object_name?: string }) =>
+          String(a?.object_name ?? '').localeCompare(String(b?.object_name ?? ''), undefined, { sensitivity: 'base' })
+        );
         return result;
       }
       return [];
@@ -2365,11 +2375,11 @@ const Sidebar = (props: SidebarProps) => {
                   setSelectedMenu(canonicalExploreMenuName(item.page_name));
                   // Load with objectName for user page types (GRID, POLAR ROSE, etc.) so saved chart is shown after builder save. Use item.file_path directly to avoid findMenuItemByPageName lookup before state is committed.
                   if (userPageTypesWithObjectName.has(normalizedItemName)) {
-                    const objectNameVal = selectedPage() || 'default';
+                    const objectNameVal = selectedPage() || undefined;
                     await ensureSourcesReady();
                     const Component = await loadComponentFromPath(item.file_path);
                     setComponent(() => (props: any) => <Component {...props} objectName={objectNameVal} />);
-                    setSelectedPage(objectNameVal);
+                    if (objectNameVal) setSelectedPage(objectNameVal);
                   } else {
                     await loadComponent(item.file_path);
                   }
@@ -3420,7 +3430,7 @@ const Sidebar = (props: SidebarProps) => {
       });
 
       // Try to use a fallback className based on common patterns
-      const fallbackClassName = 'ac40'; // Default fallback
+      const fallbackClassName = 'gp50'; // Default fallback
       warn('[Sidebar] Using fallback className:', fallbackClassName);
       setSelectedClassName(fallbackClassName);
       className = fallbackClassName;
@@ -4185,7 +4195,7 @@ const Sidebar = (props: SidebarProps) => {
     if (!className || className.trim().length === 0) {
       const pathname = location.pathname;
       debug('[Sidebar] handleAddDataset: Trying to extract from route:', pathname);
-      // Check for class-specific routes like /dashboard/ac40, /reports/ac40, etc.
+      // Check for class-specific routes like /dashboard/gp50, /reports/gp50, etc.
       const routeMatch = pathname.match(/\/(?:dashboard|reports|upload-datasets)\/([^/]+)/);
       if (routeMatch && routeMatch[1]) {
         className = routeMatch[1].toLowerCase();
@@ -4195,8 +4205,8 @@ const Sidebar = (props: SidebarProps) => {
     
     // Fallback to default if still not available
     if (!className || className.trim().length === 0) {
-      warn('[Sidebar] handleAddDataset: No className found, falling back to ac40');
-      className = 'ac40';
+      warn('[Sidebar] handleAddDataset: No className found, falling back to gp50');
+      className = 'gp50';
     }
     
     debug('[Sidebar] handleAddDataset: Final className:', className, 'Navigating to:', `/upload-datasets/${className}`);
@@ -4483,7 +4493,7 @@ const Sidebar = (props: SidebarProps) => {
             if (key.startsWith('fleet')) key = key.replace(/^fleet_?/, '') || key;
             const fleetName = DAY_EXPLORE_FLEET_ALIAS[key];
             debug('[Sidebar] Fallback derivation', { lastSegment, key, fleetName });
-            if (fleetName) splitPath = `ac40/day/explore/${fleetName}`;
+            if (fleetName) splitPath = `gp50/day/explore/${fleetName}`;
           }
           if (!splitPath && basePath.includes('dataset/reports')) {
             const lastSegment = basePath.split('/').pop() || '';
@@ -4685,7 +4695,7 @@ const Sidebar = (props: SidebarProps) => {
   };
 
   const handleUpdateDatasetMenuClick = () => {
-    const className = selectedClassName() || 'ac40';
+    const className = selectedClassName() || 'gp50';
     navigate(`/dataset-info/${className}`)
   };
 
@@ -5220,7 +5230,7 @@ const Sidebar = (props: SidebarProps) => {
                     <div class="menu-container group relative">
                       <button
                         class={`menu-item ${isMenuActive(item.page_name) ? "active" : ""}`}
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           const isCtrlPressed = e?.ctrlKey || e?.metaKey;
                           const isShiftPressed = e?.shiftKey;
                           
@@ -5250,33 +5260,54 @@ const Sidebar = (props: SidebarProps) => {
                             // Ctrl+click - open in split view (always use handleMenuClick so Map+Ctrl+click Scatter works same as Scatter+Ctrl+click Map)
                             handleMenuClick(item, e);
                           } else if (isExploreMenu) {
+                            let resolvedUserObjects = userObjects;
+                            // Defensive fetch: menu/object loading can race, so refresh object names on click before deciding it's empty.
+                            if (!hasUserObjects && parentName && !isMapPage && !isVideoMenu) {
+                              const fetchedObjects = await fetchUserPageNames(parentName);
+                              if (fetchedObjects.length > 0) {
+                                resolvedUserObjects = fetchedObjects;
+                                setUserPageObjects(prev => {
+                                  const next = new Map(prev);
+                                  next.set(parentName, fetchedObjects);
+                                  return next;
+                                });
+                                debug('[Sidebar] Refreshed user page objects on click', {
+                                  parentName,
+                                  objectCount: fetchedObjects.length
+                                });
+                              }
+                            }
+                            const hasResolvedUserObjects = resolvedUserObjects.length > 0;
                             debug('=== EXPLORE MENU LOGIC ===');
                             debug('isExploreMenu:', isExploreMenu);
                             debug('hasUserObjects:', hasUserObjects);
+                            debug('hasResolvedUserObjects:', hasResolvedUserObjects);
                             debug('parentName:', parentName);
                             // For explore menu items, check split view state
-                            if (hasUserObjects) {
+                            if (hasResolvedUserObjects) {
                               // If this is a multiple-chart page but we clicked the main menu item, 
                               // we might want to toggle the dropdown OR go to the first chart.
                               // Existing logic goes to first chart.
                               // Let's modify: if it has multiple charts, go to first.
                               
                               debug('Has user objects, checking split view state');
+                              // Open the accordion so the submenu list is visible (matches first chart loaded).
+                              setExpandedMenus(new Set([parentName]));
                               if (isSplitView()) {
                                 // In split view: normal click updates left panel with first user object
-                                debug('Explore menu with user objects in split view, loading first user object:', userObjects[0].object_name);
+                                debug('Explore menu with user objects in split view, loading first user object:', resolvedUserObjects[0].object_name);
                                 debug('isSplitView() result:', isSplitView());
                                 debug('updateLeftComponent available:', typeof updateLeftComponent);
                                 setSelectedMenu(canonicalExploreMenuName(item.page_name));
-                                setSelectedPage(userObjects[0].object_name);
+                                setSelectedPage(resolvedUserObjects[0].object_name);
                                 setIsProjectMenuActive(false);
                                 // For explore menu items with user objects, we need to load the explore component
                                 // and then update the left panel with the result
-                                loadExploreComponentForLeftPanel(parentName, userObjects[0].object_name);
+                                loadExploreComponentForLeftPanel(parentName, resolvedUserObjects[0].object_name);
                               } else {
                                 debug('Not in split view, calling handleUserPageClick');
                                 // If there are user objects, navigate to the first object automatically
-                                handleUserPageClick(parentName, userObjects[0].object_name, e);
+                                handleUserPageClick(parentName, resolvedUserObjects[0].object_name, e);
                               }
                             } else {
                               // No user objects (or empty list) – navigate to builder so user can create first chart
@@ -5371,7 +5402,7 @@ const Sidebar = (props: SidebarProps) => {
                             
                             return (
                               <button
-                                class={`menu-item text-sm ${isMenuActive(`${currentParentName}_${objectName}`) ? "active" : ""}`}
+                                class={`menu-item text-sm ${isExploreSubmenuItemActive(currentParentName, objectName) ? "active" : ""}`}
                                 onClick={(e: MouseEvent) => {
                                   const isCtrlPressed = e?.ctrlKey || (e as any)?.metaKey;
                                   const isShiftPressed = e?.shiftKey;

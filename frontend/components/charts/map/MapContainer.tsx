@@ -88,6 +88,7 @@ import { logPageLoad } from "../../../utils/logging";
 import { processMapDataWithWorker } from "../../../utils/workerManager";
 import { persistentSettingsService } from "../../../services/persistentSettingsService";
 import { user } from "../../../store/userStore";
+import { isSameRace } from "../../../utils/raceValueUtils";
 
 import "../../../styles/thirdparty/mapbox-gl.css";
 
@@ -565,6 +566,17 @@ export default function MapContainer(props: MapContainerProps) {
   // Multi-only filters (race/leg) to avoid mutating global filterStore
   const [multiSelectedRaces, setMultiSelectedRaces] = createSignal<string[]>([]);
   const [multiSelectedLegs, setMultiSelectedLegs] = createSignal<string[]>([]);
+  const normalizeRaceSelection = (races: (number | string)[]): string[] =>
+    (Array.isArray(races) ? races : [])
+      .filter((race) => race !== null && race !== undefined && String(race).trim() !== '')
+      .map((race) => String(race));
+  const setNormalizedSelectedRaces = (races: (number | string)[]) => {
+    const normalized = normalizeRaceSelection(races);
+    if (sourceMode === 'multi') {
+      setMultiSelectedRaces(normalized);
+    }
+    setSelectedRacesTimeseries(normalized);
+  };
   // Hovered boat source id (when animation stopped) for path highlight and boat label emphasis
   const [hoveredSourceId, setHoveredSourceId] = createSignal<number | null>(null);
   // Combined highlight: selected boats (from FleetMap click) + hovered when animation stopped
@@ -2869,7 +2881,7 @@ export default function MapContainer(props: MapContainerProps) {
     if (Array.isArray(races) && races.length > 0) {
       const currentSelected = multiSelectedRaces();
       const currentRace = currentSelected && currentSelected.length > 0 ? currentSelected[0] : null;
-      const isCurrentRaceValid = currentRace !== null && races.includes(currentRace);
+      const isCurrentRaceValid = currentRace !== null && races.some((raceOption) => isSameRace(raceOption, currentRace));
       
       if (!currentRace || dateChanged || (raceOptionsChanged && !isCurrentRaceValid)) {
         logDebug('MapContainer: Updating race selection', {
@@ -2915,16 +2927,17 @@ export default function MapContainer(props: MapContainerProps) {
       if (!raceOptions() || raceOptions().length === 0) return;
       const races = raceOptions();
       const current = (multiSelectedRaces() && multiSelectedRaces().length > 0) ? multiSelectedRaces()[0] : races[0];
-      const idx = races.indexOf(current);
+      const idx = races.findIndex((raceOption) => isSameRace(raceOption, current));
+      const resolvedIdx = idx >= 0 ? idx : 0;
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
         e.stopPropagation();
-        const nextIdx = Math.max(0, idx - 1);
+        const nextIdx = Math.max(0, resolvedIdx - 1);
         setMultiSelectedRaces([races[nextIdx]]);
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
         e.stopPropagation();
-        const nextIdx = Math.min(races.length - 1, idx + 1);
+        const nextIdx = Math.min(races.length - 1, resolvedIdx + 1);
         setMultiSelectedRaces([races[nextIdx]]);
       }
     };
@@ -3380,9 +3393,9 @@ export default function MapContainer(props: MapContainerProps) {
         gradeOptions={liveMode ? [] : gradeOptions()}
         setGradeOptions={liveMode ? () => {} : setGradeOptions}
         selectedRacesTimeseries={liveMode ? [] : (sourceMode === 'multi' ? multiSelectedRaces() : selectedRacesTimeseries())}
-        setSelectedRacesTimeseries={liveMode ? () => {} : (sourceMode === 'multi' ? (races: (number | string)[]) => { setMultiSelectedRaces(Array.isArray(races) ? races : []); setSelectedRacesTimeseries(Array.isArray(races) ? races : []); } : setSelectedRacesTimeseries)}
+        setSelectedRacesTimeseries={liveMode ? () => {} : setNormalizedSelectedRaces}
         selectedRaces={liveMode ? [] : (sourceMode === 'multi' ? multiSelectedRaces() : selectedRacesTimeseries())}
-        setSelectedRaces={liveMode ? () => {} : (sourceMode === 'multi' ? (races: (number | string)[]) => setMultiSelectedRaces(Array.isArray(races) ? races : []) : setSelectedRacesTimeseries)}
+        setSelectedRaces={liveMode ? () => {} : setNormalizedSelectedRaces}
         selectedLegsTimeseries={liveMode ? [] : (sourceMode === 'multi' ? multiSelectedLegs() : selectedLegsTimeseries())}
         setSelectedLegsTimeseries={liveMode ? () => {} : (sourceMode === 'multi' ? setMultiSelectedLegs : setSelectedLegsTimeseries)}
         selectedLegs={liveMode ? [] : (sourceMode === 'multi' ? multiSelectedLegs() : selectedLegsTimeseries())}
@@ -3398,15 +3411,17 @@ export default function MapContainer(props: MapContainerProps) {
           setSelectedStatesTimeseries(newFilters);
         }}
         toggleRaceFilter={(race) => {
+          const normalizedRace = String(race);
           if (sourceMode === 'multi') {
-            setMultiSelectedRaces([race]);
+            setMultiSelectedRaces([normalizedRace]);
+            setSelectedRacesTimeseries([normalizedRace]);
           } else {
-            const currentRaces = selectedRacesTimeseries();
+            const currentRaces = normalizeRaceSelection(selectedRacesTimeseries());
             let newRaces;
-            if (currentRaces.includes(race)) {
-              newRaces = currentRaces.filter(r => r !== race);
+            if (currentRaces.some((r) => isSameRace(r, normalizedRace))) {
+              newRaces = currentRaces.filter((r) => !isSameRace(r, normalizedRace));
             } else {
-              newRaces = [...currentRaces, race];
+              newRaces = [...currentRaces, normalizedRace];
             }
             setSelectedRacesTimeseries(newRaces);
           }

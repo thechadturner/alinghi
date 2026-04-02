@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show, Switch, Match, createEffect } from "solid-js";
+import { createSignal, onMount, Show, Switch, Match, createEffect, type Component as SolidComponent } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { useNavigate } from "@solidjs/router";
 
@@ -43,7 +43,8 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [fetchMenuTrigger, setFetchMenuTrigger] = createSignal(false);
   const [sidebarInitialized, setSidebarInitialized] = createSignal(false);
-  const [component, setComponent] = createSignal(null); 
+  type DashboardComponent = SolidComponent<any>;
+  const [component, setComponent] = createSignal<DashboardComponent | null>(null); 
   const [hasExistingDataset, setHasExistingDataset] = createSignal(false);
   // Initialize to true so sidebar shows immediately on first render
   // onMount will handle data fetching in background
@@ -52,8 +53,8 @@ export default function Dashboard() {
   
   // Split view state management - proper SolidJS approach
   const [isSplitView, setIsSplitView] = createSignal(false);
-  const [leftComponent, setLeftComponent] = createSignal(null);
-  const [rightComponent, setRightComponent] = createSignal(null);
+  const [leftComponent, setLeftComponent] = createSignal<DashboardComponent | null>(null);
+  const [rightComponent, setRightComponent] = createSignal<DashboardComponent | null>(null);
   const [splitViewTitle, setSplitViewTitle] = createSignal('');
   const [leftPanelWidth, setLeftPanelWidth] = createSignal(50); // Percentage
   const [isHoveringSplitView, setIsHoveringSplitView] = createSignal(false); // Track hover state for close button
@@ -130,10 +131,11 @@ export default function Dashboard() {
   // No need for separate events loading in Dashboard
 
   // Function to update left component in split view
-  const updateLeftComponent = (componentToLoad) => {
+  const updateLeftComponent = (componentToLoad: () => DashboardComponent) => {
     log('updateLeftComponent called, isSplitView:', isSplitView(), 'componentToLoad:', componentToLoad);
     if (isSplitView()) {
-      setLeftComponent(componentToLoad);
+      // componentToLoad is a factory, evaluate then store component value explicitly.
+      setLeftComponent(() => componentToLoad());
       setLeftPanelMenu(selectedMenu());
       log('Left component updated');
     }
@@ -141,19 +143,25 @@ export default function Dashboard() {
 
   // Split view management functions - proper SolidJS approach
   // When leftComponent is provided (e.g. day mode), use it for left panel to avoid reusing the live main component (prevents SolidJS "push of null" when moving FleetMap).
-  const openInSplitView = (componentToLoad, title, menuName = null, leftComponent = null) => {
+  const openInSplitView = (
+    componentToLoad: () => DashboardComponent,
+    title: string,
+    menuName: string | null = null,
+    leftComponentFactory: (() => DashboardComponent) | null = null
+  ) => {
     if (isSplitView()) {
       // If already in split view, replace the RIGHT component (Ctrl+click behavior)
-      setRightComponent(componentToLoad);
+      setRightComponent(() => componentToLoad());
       setSplitViewTitle(title);
       if (menuName) {
         setRightPanelMenu(menuName);
       }
     } else {
       // Start split view - left from fresh load when provided, else current main; new to right
-      setLeftComponent(leftComponent != null ? leftComponent : component());
+      const leftToRender = leftComponentFactory != null ? leftComponentFactory() : component();
+      setLeftComponent(() => leftToRender);
       setLeftPanelMenu(selectedMenu());
-      setRightComponent(componentToLoad);
+      setRightComponent(() => componentToLoad());
       setSplitViewTitle(title);
       setIsSplitView(true);
       if (menuName) {
