@@ -1741,10 +1741,16 @@ export function setupMediaContainerScaling(options: {
 		mediaContainer.style.setProperty('max-height', `${layoutHeight}px`, 'important');
 		mediaContainer.style.setProperty('overflow-y', 'auto', 'important');
 	} else if (mediaContainer.classList.contains('fleet-performance-page')) {
-		// Same as Race Summary: do NOT set pixel dimensions - let CSS fill the parent
-		mediaContainer.style.removeProperty('width');
-		mediaContainer.style.removeProperty('height');
-		mediaContainer.style.removeProperty('min-height');
+		// Same width/min-width as performance-page: fixed layout width = effectiveBaseWidth; transform:scale()
+		// fits it to main-content. Removing inline width relied on #main-content>#media-container (often false
+		// when wrapped in .playback-view-wrapper), so width could fail to track --layout-base-width on resize.
+		mediaContainer.style.setProperty('width', `${effectiveBaseWidth}px`, 'important');
+		mediaContainer.style.setProperty('min-width', `${effectiveBaseWidth}px`, 'important');
+		// Desktop: let CSS flex fill #main-content height. Mobile: layout height set after scaleFactor below.
+		if (!isMobile) {
+			mediaContainer.style.removeProperty('height');
+			mediaContainer.style.removeProperty('min-height');
+		}
 	} else if (mediaContainer.classList.contains('performance-page') || mediaContainer.classList.contains('scatter-page')) {
 		mediaContainer.style.setProperty('width', `${effectiveBaseWidth}px`, 'important');
 		mediaContainer.style.setProperty('min-width', `${effectiveBaseWidth}px`, 'important');
@@ -1768,9 +1774,13 @@ export function setupMediaContainerScaling(options: {
 		mediaContainer.style.setProperty('height', `${maneuversLayoutHeight}px`, 'important');
 		mediaContainer.style.setProperty('min-height', `${maneuversLayoutHeight}px`, 'important');
 	} else if (isRaceSummaryPage || isPrestartPage) {
-		mediaContainer.style.removeProperty('width');
-		mediaContainer.style.removeProperty('height');
-		mediaContainer.style.removeProperty('min-height');
+		// Same as fleet-performance-page: fixed layout width; transform: scale() fits to main-content
+		mediaContainer.style.setProperty('width', `${effectiveBaseWidth}px`, 'important');
+		mediaContainer.style.setProperty('min-width', `${effectiveBaseWidth}px`, 'important');
+		if (!isMobile) {
+			mediaContainer.style.removeProperty('height');
+			mediaContainer.style.removeProperty('min-height');
+		}
 	} else if (isCheatSheetPage) {
 		// Cheat Sheet: set dimensions via JS; add header height so container fills (was short by header amount)
 		const cheatSheetHeight = availableHeight + headerHeight;
@@ -1793,7 +1803,8 @@ export function setupMediaContainerScaling(options: {
     // Use width-based scaling if requested, or for maneuvers page so scale grows continuously with width (no plateau 1370–1620)
     // Width-based scaling fills the width completely (may require vertical scrolling)
     // Minimum scaling ensures content fits in both dimensions (maintains aspect ratio)
-    const useWidthBasedScale = scaleToWidth || isManeuversPage;
+    const useWidthBasedScale =
+      scaleToWidth || isManeuversPage || isRaceSummaryPage || isPrestartPage;
     let scaleFactor = useWidthBasedScale ? widthScaleFactor : Math.min(widthScaleFactor, heightScaleFactor);
     
     // IMPORTANT: Cap scale factor appropriately based on page type
@@ -1813,9 +1824,9 @@ export function setupMediaContainerScaling(options: {
     else if (mediaContainer.classList.contains('maneuvers-page')) {
       scaleFactor = Math.min(scaleFactor, 1.5);
     }
-    // Race Summary and Prestart: no transform scaling - container uses 100% width/height so keep scale 1
+    // Race Summary / Prestart / Training Summary: width-based scale like fleet-performance and maneuvers (cap zoom-up)
     else if (isRaceSummaryPage || isPrestartPage) {
-      scaleFactor = 1;
+      scaleFactor = Math.min(scaleFactor, 1.5);
     }
     // Cheat Sheet: no transform scaling - height set via JS above
     else if (isCheatSheetPage) {
@@ -1825,7 +1836,27 @@ export function setupMediaContainerScaling(options: {
     else {
       scaleFactor = Math.min(scaleFactor, 1.0);
     }
-    
+
+    // Fleet performance + race summary / prestart (mobile): explicit layout height so scaled box fills main-content
+    if (
+      isMobile &&
+      (mediaContainer.classList.contains('fleet-performance-page') ||
+        isRaceSummaryPage ||
+        isPrestartPage)
+    ) {
+      const mainContentEl = document.getElementById('main-content');
+      const visibleFillHeight = Math.max(
+        200,
+        mainContentEl && mainContentEl.clientHeight > 0
+          ? mainContentEl.clientHeight
+          : (window.visualViewport?.height ?? window.innerHeight) - headerHeight
+      );
+      const safeFleetScale = Math.max(scaleFactor, 0.05);
+      const fleetLayoutHeight = Math.round(visibleFillHeight / safeFleetScale);
+      mediaContainer.style.setProperty('height', `${fleetLayoutHeight}px`, 'important');
+      mediaContainer.style.setProperty('min-height', `${fleetLayoutHeight}px`, 'important');
+    }
+
     // Per page-scaling-strategy.md: main-content scrolls (body.scaling-page gives overflow-y: auto)
     // For performance pages, do not set main-content height - CSS scaling-page rule applies
     if (isPerformancePage) {
@@ -1872,7 +1903,7 @@ export function setupMediaContainerScaling(options: {
         }
     } else if (isRaceSummaryPage || isPrestartPage) {
         // Race Summary / Prestart: same scroll pattern as FleetPerformance (per performance-page-scroll-fix.md)
-        // No legend; scaleFactor is 1 so layoutHeight = desiredVisibleHeight
+        // No legend; layoutHeight = desiredVisibleHeight / scaleFactor (transform scale)
         const scrollContainer = mediaContainer.querySelector('.performance-charts-scroll-container');
         if (scrollContainer) {
             const viewportHeightForScroll = (window.visualViewport && isMobile)
@@ -1986,8 +2017,35 @@ export function setupMediaContainerScaling(options: {
         }
         // Race-summary (and similar) may be wrapped; observe main-content so we react when it gets final size
         const mainContent = document.getElementById('main-content');
-        if (mainContent && (mediaContainer.classList.contains('race-summary-page') || mediaContainer.classList.contains('maneuvers-page'))) {
+        if (
+          mainContent &&
+          (mediaContainer.classList.contains('race-summary-page') ||
+            mediaContainer.classList.contains('prestart-page') ||
+            mediaContainer.classList.contains('maneuvers-page'))
+        ) {
           resizeObserver.observe(mainContent);
+        }
+        // Performance pages: observe the legend section so scroll container height recomputes when
+        // data loads and the legend grows (prevents oversized scroll container / black space on mobile).
+        const isPerf = mediaContainer.classList.contains('fleet-performance-page') || mediaContainer.classList.contains('performance-page');
+        if (isPerf) {
+          const legendEl = mediaContainer.querySelector('.performance-legend-section');
+          if (legendEl) {
+            resizeObserver.observe(legendEl);
+          } else {
+            // Legend not yet in DOM — poll briefly until it appears then observe it
+            let legendPollCount = 0;
+            const pollLegend = () => {
+              const el = document.getElementById('media-container')?.querySelector('.performance-legend-section');
+              if (el) {
+                resizeObserver.observe(el);
+              } else if (legendPollCount < 20) {
+                legendPollCount++;
+                setTimeout(pollLegend, 100);
+              }
+            };
+            setTimeout(pollLegend, 100);
+          }
         }
       }
     } else {
@@ -2016,7 +2074,12 @@ export function setupMediaContainerScaling(options: {
               resizeObserver.observe(container.parentElement);
             }
             const mainContent = document.getElementById('main-content');
-            if (mainContent && (container.classList.contains('race-summary-page') || container.classList.contains('maneuvers-page'))) {
+            if (
+              mainContent &&
+              (container.classList.contains('race-summary-page') ||
+                container.classList.contains('prestart-page') ||
+                container.classList.contains('maneuvers-page'))
+            ) {
               resizeObserver.observe(mainContent);
             }
           }
@@ -2029,20 +2092,44 @@ export function setupMediaContainerScaling(options: {
     }
   }, 200);
 
-  // Extra delayed updates for race-summary / calibration so dimensions apply after layout has settled
+  // Extra delayed updates for race-summary / prestart / calibration so dimensions apply after layout has settled
   setTimeout(() => {
     const container = document.getElementById('media-container');
-    if (container?.classList.contains('race-summary-page') || container?.classList.contains('calibration-page')) {
+    if (
+      container?.classList.contains('race-summary-page') ||
+      container?.classList.contains('prestart-page') ||
+      container?.classList.contains('calibration-page')
+    ) {
       updateScale();
     }
   }, 400);
   setTimeout(() => {
     const container = document.getElementById('media-container');
-    if (container?.classList.contains('race-summary-page') || container?.classList.contains('calibration-page')) {
+    if (
+      container?.classList.contains('race-summary-page') ||
+      container?.classList.contains('prestart-page') ||
+      container?.classList.contains('calibration-page')
+    ) {
       updateScale();
     }
   }, 800);
-  
+
+  // Extra delayed updates for fleet-performance / performance pages so scroll container height is
+  // recalculated after the legend section finishes rendering with loaded data (legend height was 0
+  // on first pass, causing oversized scroll container and black space on mobile).
+  setTimeout(() => {
+    const container = document.getElementById('media-container');
+    if (container?.classList.contains('fleet-performance-page') || container?.classList.contains('performance-page')) {
+      updateScale();
+    }
+  }, 400);
+  setTimeout(() => {
+    const container = document.getElementById('media-container');
+    if (container?.classList.contains('fleet-performance-page') || container?.classList.contains('performance-page')) {
+      updateScale();
+    }
+  }, 1000);
+
   // Listen to window resize
   window.addEventListener('resize', updateScale);
 

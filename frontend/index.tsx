@@ -20,8 +20,6 @@ import "./styles/thirdparty/mapbox-gl.css";
 
 import App from './App';
 
-import "./styles/Styles.css";
-
 // TEMPORARILY DISABLED: Install console gate early so all console output respects VITE_VERBOSE
 // Re-enabled to debug production issues
 // import { installConsoleGate } from './utils/console';

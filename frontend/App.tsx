@@ -1,4 +1,4 @@
-import "@styles/Styles.css";
+import "@styles/app.css";
 import { Router, Route, useSearchParams, useParams } from "@solidjs/router";
 import { lazy, createSignal, onMount, Show } from "solid-js";
 import { error as logError } from "./utils/console";

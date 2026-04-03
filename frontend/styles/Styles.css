@@ -446,38 +446,6 @@ body.index-page .index-page-scroll-container {
   height: auto !important;
 }
 
-/* Alinghi logo on index: preflight makes img display:block, so text-center does not center it */
-body.index-page .index-hero-alinghi-logo,
-body.index-page .welcome-back-logo {
-  margin-left: auto;
-  margin-right: auto;
-}
-
-/* Index hero — subtle Alinghi swirl + wordmark (under gradient overlays) */
-.alinghi-hero-backdrop {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  z-index: 0;
-  pointer-events: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.alinghi-hero-backdrop__svg {
-  width: min(148vmin, 58rem);
-  height: auto;
-  max-height: 95%;
-  opacity: 0.2;
-  transform: translateY(2%);
-  flex-shrink: 0;
-}
-
-.alinghi-hero-backdrop__image {
-  pointer-events: none;
-}
-
 /* Optimize feature cards for scrolling - prevent hover effects from interrupting scroll */
 body.index-page .group {
   touch-action: pan-y;
@@ -496,15 +464,6 @@ body.index-page .group:hover {
   flex: 1 !important;
   display: flex !important;
   flex-direction: column !important;
-}
-
-/* Welcome back section for logged-in users - scoped to index page */
-.index-page-container .welcome-back-section {
-  min-height: calc(100vh - 160px) !important;
-  display: flex !important;
-  flex-direction: column !important;
-  justify-content: center !important;
-  align-items: center !important;
 }
 
 /* Root styles - scoped to index page */
@@ -4137,7 +4096,9 @@ html::-webkit-scrollbar-corner {
 /* media-container: fixed base width 1620px; fill main-content height so .performance-charts-scroll-container can scroll */
 #main-content>#media-container.performance-page,
 #main-content>#media-container.fleet-performance-page,
-#main-content>#media-container.targets-page {
+#main-content>#media-container.targets-page,
+#main-content>#media-container.race-summary-page,
+#main-content>#media-container.prestart-page {
   width: var(--layout-base-width, 1620px) !important;
   /* Per doc: fixed base width for scaling */
   min-width: var(--layout-base-width, 1620px) !important;
@@ -4152,10 +4113,15 @@ html::-webkit-scrollbar-corner {
   flex-direction: column !important;
 }
 
-/* Race Summary page - full width/height (descendant selector: media-container may be wrapped by Switch/Match) */
-#main-content #media-container.race-summary-page {
-  width: 100% !important;
-  min-width: 0 !important;
+/* Same as above when #media-container is not a direct child (e.g. under .playback-view-wrapper in Dashboard).
+   Without this, height:100% on the direct-child rule never applies and width can drift from resize/layout. */
+#main-content #media-container.performance-page,
+#main-content #media-container.fleet-performance-page,
+#main-content #media-container.targets-page,
+#main-content #media-container.race-summary-page,
+#main-content #media-container.prestart-page {
+  width: var(--layout-base-width, 1620px) !important;
+  min-width: var(--layout-base-width, 1620px) !important;
   max-width: none !important;
   height: 100% !important;
   min-height: 0 !important;
@@ -4164,7 +4130,7 @@ html::-webkit-scrollbar-corner {
   display: flex !important;
   flex-direction: column !important;
   flex: 1 1 auto !important;
-  /* Take all available space in flex parent */
+  /* Grow inside .playback-view-wrapper so flex chain reaches full main-content height */
 }
 
 /* TimeSeries page specific overrides - use viewport-based height scaling like performance page */
@@ -4617,19 +4583,21 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
   height: auto;
 }
 
-/* Race Summary page - fill parent via 100% (no pixel dimensions from JS, no transform scaling) */
+/* Race Summary / Training Summary - same scaling layout as fleet-performance-page */
 #media-container.race-summary-page {
-  width: 100% !important;
-  height: 100% !important;
-  min-height: calc(100vh - 92px) !important;
-  max-height: calc(100vh - 92px) !important;
-  /* Cap height so inner gets bounded height and can scroll */
+  width: var(--layout-base-width, 1620px) !important;
+  min-width: var(--layout-base-width, 1620px) !important;
+  min-height: calc(100vh - 60px) !important;
+  max-height: none !important;
   overflow: hidden !important;
   box-sizing: border-box !important;
   position: relative !important;
   display: flex !important;
   flex-direction: column !important;
   padding-bottom: 32px !important;
+  transform: scale(var(--scale-factor, 1)) !important;
+  transform-origin: top left !important;
+  will-change: transform !important;
 }
 
 #media-container.race-summary-page.scaling-initializing {
@@ -4641,10 +4609,9 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
   transition: opacity 0.1s ease-in !important;
 }
 
-/* Race Summary: same scroll pattern as FleetPerformance - container flex, scroll in .performance-charts-scroll-inner */
 #media-container.race-summary-page .container {
   width: 100% !important;
-  min-width: 0 !important;
+  min-width: var(--layout-base-width, 1620px) !important;
   max-width: none !important;
   flex: 1 1 auto !important;
   min-height: 0 !important;
@@ -4675,31 +4642,21 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
   padding-bottom: 80px !important;
 }
 
-/* Prestart (Start Summary) page - same scroll pattern as Race Summary: bounded height, scroll in .performance-charts-scroll-inner */
-#main-content #media-container.prestart-page {
-  width: 100% !important;
-  min-width: 0 !important;
-  max-width: none !important;
-  height: 100% !important;
-  min-height: 0 !important;
-  overflow: hidden !important;
-  box-sizing: border-box !important;
-  display: flex !important;
-  flex-direction: column !important;
-  flex: 1 1 auto !important;
-}
-
+/* Prestart (Start Summary) - same scaling layout as race-summary / fleet-performance */
 #media-container.prestart-page {
-  width: 100% !important;
-  height: 100% !important;
-  min-height: calc(100vh - 92px) !important;
-  max-height: calc(100vh - 92px) !important;
+  width: var(--layout-base-width, 1620px) !important;
+  min-width: var(--layout-base-width, 1620px) !important;
+  min-height: calc(100vh - 60px) !important;
+  max-height: none !important;
   overflow: hidden !important;
   box-sizing: border-box !important;
   position: relative !important;
   display: flex !important;
   flex-direction: column !important;
   padding-bottom: 32px !important;
+  transform: scale(var(--scale-factor, 1)) !important;
+  transform-origin: top left !important;
+  will-change: transform !important;
 }
 
 #media-container.prestart-page.scaling-initializing {
@@ -4713,7 +4670,7 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
 
 #media-container.prestart-page .container {
   width: 100% !important;
-  min-width: 0 !important;
+  min-width: var(--layout-base-width, 1620px) !important;
   max-width: none !important;
   flex: 1 1 auto !important;
   min-height: 0 !important;
@@ -4743,6 +4700,17 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
   width: 100% !important;
   padding-bottom: 80px !important;
   box-sizing: border-box !important;
+}
+
+.race-summary-page .race-summary-flight-heading {
+  margin-bottom: 0.25rem;
+}
+
+.race-summary-page .race-summary-flight-caption {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
+  line-height: 1.35;
+  margin: 0 0 0.5rem 0;
 }
 
 .race-summary-page .race-summary-empty-message {
@@ -4822,6 +4790,7 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
 .race-summary-page .race-summary-dropdown-section {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-bottom: 1rem;
 }
@@ -5537,7 +5506,9 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
 
 /* Explore timeseries in split view: allow JS-set height to apply (no min/max that would constrain it) */
 .split-panel #media-container.timeseries-page,
-.split-panel #media-container.calibration-page {
+.split-panel #media-container.calibration-page,
+.split-panel #media-container.race-summary-page,
+.split-panel #media-container.prestart-page {
   min-height: 0 !important;
   max-height: none !important;
 }
@@ -6563,9 +6534,11 @@ html body #main-content>#media-container.targets-page,
   /* Scatter page overrides - keep 1620px base width (same as base rules) */
   /* No override needed - base rules already set 1620px width for all screen sizes */
 
-  /* Performance/FleetPerformance/Scatter/Probability - per page-scaling-strategy.md (overflow hidden, scroll in .performance-charts-scroll-inner) */
+  /* Performance/Fleet/race-summary/prestart/Scatter - per page-scaling-strategy.md */
   #media-container.performance-page,
   #media-container.fleet-performance-page,
+  #media-container.race-summary-page,
+  #media-container.prestart-page,
   #media-container.scatter-page {
     max-width: none !important;
     width: var(--layout-base-width, 1620px) !important;
@@ -6577,6 +6550,8 @@ html body #main-content>#media-container.targets-page,
 
   #main-content>#media-container.performance-page,
   #main-content>#media-container.fleet-performance-page,
+  #main-content>#media-container.race-summary-page,
+  #main-content>#media-container.prestart-page,
   #main-content>#media-container.scatter-page {
     max-width: none !important;
   }
@@ -6610,9 +6585,11 @@ html body #main-content>#media-container.targets-page,
   /* Scatter page overrides - keep 1620px base width (same as base rules) */
   /* No override needed - base rules already set 1620px width for all screen sizes */
 
-  /* Performance/FleetPerformance/Scatter/Probability - per page-scaling-strategy.md (overflow hidden, scroll in .performance-charts-scroll-inner) */
+  /* Performance/Fleet/race-summary/prestart/Scatter - per page-scaling-strategy.md */
   #media-container.performance-page,
   #media-container.fleet-performance-page,
+  #media-container.race-summary-page,
+  #media-container.prestart-page,
   #media-container.scatter-page {
     max-width: none !important;
     width: var(--layout-base-width, 1620px) !important;
@@ -6624,6 +6601,8 @@ html body #main-content>#media-container.targets-page,
 
   #main-content>#media-container.performance-page,
   #main-content>#media-container.fleet-performance-page,
+  #main-content>#media-container.race-summary-page,
+  #main-content>#media-container.prestart-page,
   #main-content>#media-container.scatter-page {
     max-width: none !important;
   }
@@ -6922,11 +6901,15 @@ html body #main-content>#media-container.targets-page,
     /* max-width: min(100vw, 2000px) !important; Removed - let JavaScript control max-width */
   }
 
-  /* Performance/fleet-performance/scatter/probability on mobile: keep overflow hidden so scroll is in .performance-charts-scroll-inner (bounded height) */
+  /* Performance/fleet/race-summary/prestart/scatter on mobile: overflow hidden; scroll in .performance-charts-scroll-inner */
   #main-content>#media-container.performance-page,
   #media-container.performance-page,
   #main-content>#media-container.fleet-performance-page,
   #media-container.fleet-performance-page,
+  #main-content>#media-container.race-summary-page,
+  #media-container.race-summary-page,
+  #main-content>#media-container.prestart-page,
+  #media-container.prestart-page,
   #main-content>#media-container.scatter-page,
   #media-container.scatter-page {
     max-width: none !important;
@@ -6937,6 +6920,24 @@ html body #main-content>#media-container.targets-page,
     /* Fill main-content so inner scroll gets bounded height */
     overflow: hidden !important;
     /* Required so .performance-charts-scroll-inner has fixed viewport and proper scroll range */
+  }
+
+  /* Enable vertical touch scrolling inside chart scroll area on mobile.
+     D3-drag (used for lasso selection) respects touch-action: pan-y and will not call
+     preventDefault for vertical swipes, allowing the user to scroll the chart list. */
+  .fleet-performance-page .performance-charts-scroll-inner,
+  .performance-page .performance-charts-scroll-inner,
+  .race-summary-page .performance-charts-scroll-inner,
+  .prestart-page .performance-charts-scroll-inner {
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .fleet-performance-page .performance-charts-scroll-inner svg,
+  .performance-page .performance-charts-scroll-inner svg,
+  .race-summary-page .performance-charts-scroll-inner svg,
+  .prestart-page .performance-charts-scroll-inner svg {
+    touch-action: pan-y;
   }
 
   /* Prevent mobile max-width from capping scaled targets page */
@@ -9444,12 +9445,6 @@ html body #main-content>#media-container.targets-page,
   border: 1px solid #ccc;
   /* Grey outline */
   border-radius: 4px;
-}
-
-/* Source filter: wider than default DropDownButton xlarge for long source names */
-.datasets-page .datasets-page-source-dropdown .forced-xlarge {
-  width: min(100%, 280px);
-  min-width: 220px;
 }
 
 .years-container {

@@ -1,0 +1,48 @@
+/* Alinghi branding and dataset Source control — keep general UI in Styles.css */
+
+/* Alinghi logo on index: preflight makes img display:block, so text-center does not center it */
+body.index-page .index-hero-alinghi-logo,
+body.index-page .welcome-back-logo {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Index hero — subtle Alinghi swirl + wordmark (under gradient overlays) */
+.alinghi-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  z-index: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.alinghi-hero-backdrop__svg {
+  width: min(148vmin, 58rem);
+  height: auto;
+  max-height: 95%;
+  opacity: 0.2;
+  transform: translateY(2%);
+  flex-shrink: 0;
+}
+
+.alinghi-hero-backdrop__image {
+  pointer-events: none;
+}
+
+/* Welcome back section for logged-in users - scoped to index page */
+.index-page-container .welcome-back-section {
+  min-height: calc(100vh - 160px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+/* Datasets page: Source filter uses DropDownButton size="big" → .forced-big; widen for long source names */
+.datasets-page .datasets-page-source-dropdown .forced-big {
+  width: min(100%, 100px);
+  min-width: 100px;
+}

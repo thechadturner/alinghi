@@ -1524,13 +1524,15 @@ const Datasets = (props: DatasetsProps) => {
             <div class="flex w-full">
               <div class="w-1/4 h-15 mt-5">
                 <div class="flex gap-x-2">
-                  <DropDownButton
-                    options={source_names()}
-                    defaultText={selectedSourceName()}
-                    handleSelection={handleSourceSelection}
-                    smallLabel="Source"
-                    size="big"
-                  />
+                  <div class="datasets-page-source-dropdown">
+                    <DropDownButton
+                      options={source_names()}
+                      defaultText={selectedSourceName()}
+                      handleSelection={handleSourceSelection}
+                      smallLabel="Source"
+                      size="big"
+                    />
+                  </div>
 
                   <DropDownButton
                     options={years().map(y => String(y))}

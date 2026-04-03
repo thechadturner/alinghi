@@ -1,0 +1,5 @@
+/* App stylesheet entry: theme first, then Alinghi-specific rules.
+   To replace the main UI theme, change or swap only the first @import below. */
+
+@import "./Styles.css";
+@import "./alinghi.css";
