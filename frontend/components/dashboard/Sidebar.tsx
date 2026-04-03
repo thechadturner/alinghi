@@ -911,30 +911,37 @@ const Sidebar = (props: SidebarProps) => {
     'timeseries': 'FleetTimeSeries',
   };
 
+  /** Report component file name (under reports/{class}/day/reports/) keyed by normalized page_name */
+  const DAY_REPORT_COMPONENT: Record<string, string> = {
+    performance: 'FleetPerformance',
+    maneuvers: 'FleetManeuvers',
+    racesummary: 'RaceSummary',
+    trainingsummary: 'TrainingSummary',
+    /** DB page_name for Prestart.tsx (day_pages); keep prestart alias for older rows */
+    startsummary: 'Prestart',
+    prestart: 'Prestart',
+  };
+
   /** When in day mode, use this path for split view so we load FleetMap/FleetVideo/FleetTimeSeries instead of dataset explore components. Map is always "MAP" in UI. */
   const getDayExploreFilePath = (pageName: string): string | null => {
+    const className = (selectedClassName() || '').trim();
+    if (!className) return null;
     // Normalize: lowercase, no spaces, no underscores (so TIME_SERIES / Time Series -> timeseries)
     let key = (pageName || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
     // Normalize "fleet video" / "fleetvideo" -> "video", "fleet timeseries" -> "timeseries", etc.
     if (key.startsWith('fleet')) key = key.replace(/^fleet_?/, '') || key;
     const fleetName = DAY_EXPLORE_FLEET_ALIAS[key];
-    return fleetName ? `gp50/day/explore/${fleetName}` : null;
+    return fleetName ? `${className}/day/explore/${fleetName}` : null;
   };
 
   /** Day report page_name -> file path (no extension). Used when day_pages returns dataset paths; load Fleet* day components instead. */
-  const DAY_REPORT_PATH: Record<string, string> = {
-    'performance': 'gp50/day/reports/FleetPerformance',
-    'maneuvers': 'gp50/day/reports/FleetManeuvers',
-    'racesummary': 'gp50/day/reports/RaceSummary',
-    'trainingsummary': 'gp50/day/reports/TrainingSummary',
-    /** DB page_name for Prestart.tsx (day_pages); keep prestart alias for older rows */
-    'startsummary': 'gp50/day/reports/Prestart',
-    'prestart': 'gp50/day/reports/Prestart',
-  };
   const getDayReportFilePath = (pageName: string): string | null => {
     if (!pageName || typeof pageName !== 'string') return null;
+    const className = (selectedClassName() || '').trim();
+    if (!className) return null;
     const key = (pageName || '').toString().toLowerCase().replace(/\s+/g, '').replace(/_/g, '');
-    return DAY_REPORT_PATH[key] ?? null;
+    const componentFile = DAY_REPORT_COMPONENT[key];
+    return componentFile ? `${className}/day/reports/${componentFile}` : null;
   };
 
   // Helper function to load component from file path
@@ -947,7 +954,7 @@ const Sidebar = (props: SidebarProps) => {
       debug('[Sidebar] basePath after extension removal', { basePath });
       
       // Convert file path to the glob key format (relative to reports directory)
-      // e.g., "gp50/dataset/explore/Map" -> "../../reports/gp50/dataset/explore/Map.tsx"
+      // e.g., "ac40/dataset/explore/Map" -> "../../reports/ac40/dataset/explore/Map.tsx"
       let globKey = `../../reports/${basePath}.tsx`;
       debug('[Sidebar] Initial glob key', { globKey });
       
@@ -980,11 +987,19 @@ const Sidebar = (props: SidebarProps) => {
         if (lastSegment.startsWith('fleet')) lastSegment = lastSegment.replace(/^fleet_?/, '') || lastSegment;
         const fleetName = DAY_EXPLORE_FLEET_ALIAS[lastSegment];
         if (fleetName) {
-          const fleetPath = `gp50/day/explore/${fleetName}`;
-          const fleetGlobKey = `../../reports/${fleetPath}.tsx`;
-          loader = reportModules[fleetGlobKey];
-          if (loader) {
-            debug(`[Sidebar] Resolved dataset/explore to day/explore Fleet: ${basePath} -> ${fleetPath}`);
+          const pathClass =
+            segments.length >= 2 &&
+            segments[0] &&
+            (segments[1] === 'dataset' || segments[1] === 'day')
+              ? segments[0]
+              : (selectedClassName() || '').trim();
+          if (pathClass) {
+            const fleetPath = `${pathClass}/day/explore/${fleetName}`;
+            const fleetGlobKey = `../../reports/${fleetPath}.tsx`;
+            loader = reportModules[fleetGlobKey];
+            if (loader) {
+              debug(`[Sidebar] Resolved dataset/explore to day/explore Fleet: ${basePath} -> ${fleetPath}`);
+            }
           }
         }
       }
@@ -3433,7 +3448,7 @@ const Sidebar = (props: SidebarProps) => {
       });
 
       // Try to use a fallback className based on common patterns
-      const fallbackClassName = 'gp50'; // Default fallback
+      const fallbackClassName = 'ac40'; // Default fallback
       warn('[Sidebar] Using fallback className:', fallbackClassName);
       setSelectedClassName(fallbackClassName);
       className = fallbackClassName;
@@ -4198,7 +4213,7 @@ const Sidebar = (props: SidebarProps) => {
     if (!className || className.trim().length === 0) {
       const pathname = location.pathname;
       debug('[Sidebar] handleAddDataset: Trying to extract from route:', pathname);
-      // Check for class-specific routes like /dashboard/gp50, /reports/gp50, etc.
+      // Check for class-specific routes like /dashboard/ac40, /reports/ac40, etc.
       const routeMatch = pathname.match(/\/(?:dashboard|reports|upload-datasets)\/([^/]+)/);
       if (routeMatch && routeMatch[1]) {
         className = routeMatch[1].toLowerCase();
@@ -4208,8 +4223,8 @@ const Sidebar = (props: SidebarProps) => {
     
     // Fallback to default if still not available
     if (!className || className.trim().length === 0) {
-      warn('[Sidebar] handleAddDataset: No className found, falling back to gp50');
-      className = 'gp50';
+      warn('[Sidebar] handleAddDataset: No className found, falling back to ac40');
+      className = 'ac40';
     }
     
     debug('[Sidebar] handleAddDataset: Final className:', className, 'Navigating to:', `/upload-datasets/${className}`);
@@ -4496,7 +4511,16 @@ const Sidebar = (props: SidebarProps) => {
             if (key.startsWith('fleet')) key = key.replace(/^fleet_?/, '') || key;
             const fleetName = DAY_EXPLORE_FLEET_ALIAS[key];
             debug('[Sidebar] Fallback derivation', { lastSegment, key, fleetName });
-            if (fleetName) splitPath = `gp50/day/explore/${fleetName}`;
+            if (fleetName) {
+              const segs = basePath.split('/');
+              const pathClass =
+                segs.length >= 2 &&
+                segs[0] &&
+                (segs[1] === 'dataset' || segs[1] === 'day')
+                  ? segs[0]
+                  : (selectedClassName() || '').trim();
+              if (pathClass) splitPath = `${pathClass}/day/explore/${fleetName}`;
+            }
           }
           if (!splitPath && basePath.includes('dataset/reports')) {
             const lastSegment = basePath.split('/').pop() || '';
@@ -4692,19 +4716,6 @@ const Sidebar = (props: SidebarProps) => {
       navigate(`/overlay-builder`);
     }
   }
-
-  const handleUpdateProjectMenuClick = () => {
-    navigate("/project-info")
-  };
-
-  const handleUpdateDatasetMenuClick = () => {
-    const className = selectedClassName() || 'gp50';
-    navigate(`/dataset-info/${className}`)
-  };
-
-  const handleAdminMenuClick = () => {
-    navigate("/admin")
-  };
 
   const handleAddProject = () => {
     navigate("/project")

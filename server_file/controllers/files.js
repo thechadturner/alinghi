@@ -62,6 +62,52 @@ function resolveSourcePath(parentDir, sourceName) {
 }
 
 /**
+ * After PostgreSQL schema rename gp50 → ac40, parquet on disk may still live under
+ * system/<project>/gp50/... while clients send class_name AC40 (→ ac40). Try both.
+ */
+function systemClassDirCandidates(classLower) {
+  const c = String(classLower || '').toLowerCase();
+  if (c === 'ac40') return ['ac40', 'gp50'];
+  return [c];
+}
+
+/** First existing .../system/<project>/<classDir> among canonical + legacy names. */
+function firstExistingSystemClassPath(projectId, classLower) {
+  for (const dir of systemClassDirCandidates(classLower)) {
+    const p = safeJoin(env.DATA_DIRECTORY, 'system', String(projectId), dir);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** First existing .../system/<project>/<classDir>/<date> among candidates. */
+function resolveSystemDatePath(projectId, classLower, dateYyyyMmDd) {
+  for (const dir of systemClassDirCandidates(classLower)) {
+    const p = safeJoin(env.DATA_DIRECTORY, 'system', String(projectId), dir, dateYyyyMmDd);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/**
+ * Resolve .../system/<project>/<classDir>/<date>/<source> using legacy class dirs when needed.
+ * @returns {string|null} Absolute path to source folder if it exists
+ */
+function resolveSystemSourcePath(projectId, classLower, dateYyyyMmDd, sourceName) {
+  for (const dir of systemClassDirCandidates(classLower)) {
+    const parentDir = safeJoin(env.DATA_DIRECTORY, 'system', String(projectId), dir, dateYyyyMmDd);
+    const sourcePath = resolveSourcePath(parentDir, sourceName);
+    if (fs.existsSync(sourcePath)) {
+      if (dir !== String(classLower).toLowerCase()) {
+        log(`[files] Using legacy class folder "${dir}" for class_name→${classLower}, date=${dateYyyyMmDd}, source=${sourceName}`);
+      }
+      return sourcePath;
+    }
+  }
+  return null;
+}
+
+/**
  * Influx query resolution for unified backfill when API sends RAW (null): env INFLUX_BACKFILL_RAW_RESOLUTION or 100ms.
  */
 function influxResolutionForChannelValuesBackfill(resolution) {

@@ -46,6 +46,24 @@ const isValidatePath = (path) => {
     return pathRegex.test(path);
 }
 
+/**
+ * Map legacy PostgreSQL class schema names to the current schema (after migrations).
+ * Clients may still send gp50 from cached state while the DB schema was renamed to ac40.
+ * @param {string|undefined|null} class_name
+ * @returns {string|undefined|null}
+ */
+function normalizeClassSchemaName(class_name) {
+    if (class_name == null || typeof class_name !== 'string') {
+        return class_name;
+    }
+    const trimmed = class_name.trim();
+    const lower = trimmed.toLowerCase();
+    if (lower === 'gp50') {
+        return 'ac40';
+    }
+    return trimmed;
+}
+
 const sanitizeChannelNames = (channelString) => {
     try {
         const channelNames = JSON.parse(channelString);
@@ -192,7 +210,8 @@ const sendResponse = (res, info, status, success, message, data = null, log = fa
  */
 async function getDatasetTimezone(class_name, dataset_id, db) {
     try {
-        const sql = `SELECT timezone FROM ${class_name}.datasets WHERE dataset_id = $1 LIMIT 1`;
+        const schema = normalizeClassSchemaName(class_name);
+        const sql = `SELECT timezone FROM ${schema}.datasets WHERE dataset_id = $1 LIMIT 1`;
         const params = [dataset_id];
         const timezone = await db.GetValue(sql, params);
         
@@ -284,6 +303,7 @@ module.exports = {
     isValidateMediaSourceName,
     isValidateTargetName,
     isValidatePath,
+    normalizeClassSchemaName,
     sanitizeChannelNames,
     listtostring,
     sendResponse,

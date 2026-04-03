@@ -7,6 +7,13 @@ import { apiEndpoints } from "@config/env";
 import { debug, error as logError } from "../../../../utils/console";
 import { logPageLoad } from "../../../../utils/logging";
 import Loading from "../../../../components/utilities/Loading";
+import {
+  CalAxisLabel,
+  CalParquet,
+  CAL_KNOTS_TO_METRIC_SPEED,
+  CalTableUnitToken,
+  CAL_VIOLIN_UNITS_NOTE,
+} from "./calibrationParquetKeys";
 import { unifiedDataStore } from "../../../../store/unifiedDataStore";
 import { resolveDataField } from "../../../../utils/colorScale";
 import Violin from "../../../../components/charts/Violin";
@@ -82,7 +89,7 @@ function smoothOffsetsByTimeSec(
   return out;
 }
 
-/** Channels: before = normalized + corrections pre-cal fusion (Awa_n_fused_deg, Aws_fused_norm_kph). After = _cor. Lwy_offset_norm_deg = propagated leeway offset (normalized deg). Awa_offset_deg = pipeline-recorded AWA correction (clamped server-side). AWS has no offset column. */
+/** Channels for calibration parquet request; speed-related keys from `calibrationParquetKeys`. */
 const CALIBRATION_CHANNELS = [
   "ts",
   "Datetime",
@@ -103,14 +110,14 @@ const CALIBRATION_CHANNELS = [
   "Awa_mhu_cor_deg",
   "Twa_deg",
   "Twa_cor_deg",
-  "Tws_kts",
-  "Tws_cor_kph",
-  "Aws_kph",
-  "Aws_fused_norm_kph",
-  "Aws_fused_kph",
-  "Aws_cor_kph",
-  "Bsp_kph",
-  "Bsp_kts",
+  CalParquet.twsKnots,
+  CalParquet.twsCorMetric,
+  CalParquet.awsMetric,
+  CalParquet.awsFusedNormMetric,
+  CalParquet.awsFusedMetric,
+  CalParquet.awsCorMetric,
+  CalParquet.bspMetric,
+  CalParquet.bspKnots,
   "Twd_deg",
   "Twd_cor_deg",
   "Race_number",
@@ -196,9 +203,6 @@ const CAL_LEGEND_SECTOR =
 const CAL_TIMESERIES_GRADES_NOTE =
   "All grades: offset curves use the full calibration dataset (offsets trained on grade ≥ 2 only). AWA Δ: Awa_offset_deg when present, else Awa_n_cor−before; 10 s box smooth; clamp ±5°. LWY Δ: Lwy_offset_norm_deg or Lwy_n_cor−Lwy_n; 5 min box smooth; clamp ±5°.";
 
-/** Knots → km/h (matches AC40 `3_corrections.py` Tws_cor_kph from Tws_kts). */
-const KTS_TO_KPH = 1.852;
-
 /** Fused-channel before/after row config. */
 interface BeforeAfterPairConfig {
   label: string;
@@ -218,23 +222,23 @@ interface BeforeAfterPairConfig {
 const CALIBRATION_BEFORE_AFTER_PAIRS: BeforeAfterPairConfig[] = [
   {
     label: "BSP",
-    before: "Bsp_kts",
-    after: "Bsp_kph",
-    unit: "kph",
-    beforeScale: KTS_TO_KPH,
+    before: CalParquet.bspKnots,
+    after: CalParquet.bspMetric,
+    unit: CalTableUnitToken.speedMetric,
+    beforeScale: CAL_KNOTS_TO_METRIC_SPEED,
     afterScale: 1,
   },
   { label: "AWA", before: "Awa_n_deg", after: "Awa_n_cor_deg", unit: "°", useAbsMean: true },
-  { label: "AWS", before: "Aws_kph", after: "Aws_cor_kph", unit: "kph" },
+  { label: "AWS", before: CalParquet.awsMetric, after: CalParquet.awsCorMetric, unit: CalTableUnitToken.speedMetric },
   { label: "TWA", before: "Twa_n_deg", after: "Twa_n_cor_deg", unit: "°", useAbsMean: true },
   { label: "CWA", before: "Cwa_n_deg", after: "Cwa_n_cor_deg", unit: "°", useAbsMean: true },
   { label: "LWY", before: "Lwy_n_deg", after: "Lwy_n_cor_deg", unit: "°", useAbsMean: true },
   {
     label: "TWS",
-    before: "Tws_kts",
-    after: "Tws_cor_kph",
-    unit: "kph",
-    beforeScale: KTS_TO_KPH,
+    before: CalParquet.twsKnots,
+    after: CalParquet.twsCorMetric,
+    unit: CalTableUnitToken.speedMetric,
+    beforeScale: CAL_KNOTS_TO_METRIC_SPEED,
     afterScale: 1,
   },
   { label: "TWD", before: "Twd_deg", after: "Twd_cor_deg", unit: "°" },
@@ -246,25 +250,24 @@ function findCalibrationPairForField(field: string): BeforeAfterPairConfig | und
   if (field === "Awa_n_fused_deg") {
     return { label: "AWA", before: "Awa_n_fused_deg", after: "Awa_n_cor_deg", unit: "°", useAbsMean: true };
   }
-  if (field === "Aws_fused_norm_kph" || field === "Aws_fused_kph") {
-    const before = field === "Aws_fused_norm_kph" ? "Aws_fused_norm_kph" : "Aws_fused_kph";
-    return { label: "AWS", before, after: "Aws_cor_kph", unit: "kph" };
+  if (field === CalParquet.awsFusedNormMetric || field === CalParquet.awsFusedMetric) {
+    const before = field === CalParquet.awsFusedNormMetric ? CalParquet.awsFusedNormMetric : CalParquet.awsFusedMetric;
+    return { label: "AWS", before, after: CalParquet.awsCorMetric, unit: CalTableUnitToken.speedMetric };
   }
   return undefined;
 }
 
-/** Pre-cal fused AWS from corrections parquet; older files may only have Aws_fused_kph. */
 function awsBeforeFieldForData(data: Record<string, unknown>[]): string {
-  if (data.some((d) => getVal(d, "Aws_fused_norm_kph") !== null)) return "Aws_fused_norm_kph";
-  if (data.some((d) => getVal(d, "Aws_fused_kph") !== null)) return "Aws_fused_kph";
-  return "Aws_kph";
+  if (data.some((d) => getVal(d, CalParquet.awsFusedNormMetric) !== null)) return CalParquet.awsFusedNormMetric;
+  if (data.some((d) => getVal(d, CalParquet.awsFusedMetric) !== null)) return CalParquet.awsFusedMetric;
+  return CalParquet.awsMetric;
 }
 
 /** When bow+MHU exist, use fused baseline for AWA/AWS fused rows (same recipe as pipeline). */
 function buildEffectiveBeforeAfterPairs(data: Record<string, unknown>[]): BeforeAfterPairConfig[] {
   const fusedAwa = data.some((d) => getVal(d, "Awa_n_fused_deg") !== null);
   const awsBefore = awsBeforeFieldForData(data);
-  const fusedAws = awsBefore !== "Aws_kph";
+  const fusedAws = awsBefore !== CalParquet.awsMetric;
   return CALIBRATION_BEFORE_AFTER_PAIRS.map((p) => {
     if (p.label === "AWA" && fusedAwa) return { ...p, before: "Awa_n_fused_deg" };
     if (p.label === "AWS" && fusedAws) return { ...p, before: awsBefore };
@@ -274,7 +277,7 @@ function buildEffectiveBeforeAfterPairs(data: Record<string, unknown>[]): Before
 
 /**
  * Map a raw channel value to what we average in the **Before vs After** summary tables only.
- * Angles: |·| for signed boat-frame °. TWS/BSP before: scale kts→kph where configured.
+ * Angles: |·| for signed boat-frame °. TWS/BSP before: scale knots→metric speed where configured.
  * Port vs stbd tables use raw values (same as violins).
  */
 function calibrationValueForMean(field: string, raw: number, channelIsBefore: boolean): number {
@@ -714,18 +717,22 @@ export default function CalibrationPage() {
 
   const twsViolinValueField = createMemo((): { field: string; yLabel: string } => {
     const data = channelData();
-    if (!data.length) return { field: "Tws_kts", yLabel: "TWS (kts)" };
-    if (data.some((d) => getVal(d, "Tws_kts") !== null)) return { field: "Tws_kts", yLabel: "TWS (kts)" };
-    if (data.some((d) => getVal(d, "Tws_cor_kph") !== null)) return { field: "Tws_cor_kph", yLabel: "TWS (kph)" };
-    return { field: "Tws_kts", yLabel: "TWS (kts)" };
+    const P = CalParquet;
+    const L = CalAxisLabel;
+    if (!data.length) return { field: P.twsKnots, yLabel: L.twsKnots };
+    if (data.some((d) => getVal(d, P.twsKnots) !== null)) return { field: P.twsKnots, yLabel: L.twsKnots };
+    if (data.some((d) => getVal(d, P.twsCorMetric) !== null)) return { field: P.twsCorMetric, yLabel: L.twsMetric };
+    return { field: P.twsKnots, yLabel: L.twsKnots };
   });
 
   const bspViolinValueField = createMemo((): { field: string; yLabel: string } => {
     const data = channelData();
-    if (!data.length) return { field: "Bsp_kph", yLabel: "BSP (kph)" };
-    if (data.some((d) => getVal(d, "Bsp_kph") !== null)) return { field: "Bsp_kph", yLabel: "BSP (kph)" };
-    if (data.some((d) => getVal(d, "Bsp_kts") !== null)) return { field: "Bsp_kts", yLabel: "BSP (kts)" };
-    return { field: "Bsp_kph", yLabel: "BSP (kph)" };
+    const P = CalParquet;
+    const L = CalAxisLabel;
+    if (!data.length) return { field: P.bspMetric, yLabel: L.bspMetric };
+    if (data.some((d) => getVal(d, P.bspMetric) !== null)) return { field: P.bspMetric, yLabel: L.bspMetric };
+    if (data.some((d) => getVal(d, P.bspKnots) !== null)) return { field: P.bspKnots, yLabel: L.bspKnots };
+    return { field: P.bspMetric, yLabel: L.bspMetric };
   });
 
   const violinTwsWindSector = createMemo(() =>
@@ -1477,7 +1484,7 @@ export default function CalibrationPage() {
         <section class="calibration-violins">
           <h3>TWS & BSP by sector</h3>
           <p class="calibration-legend">
-            {CAL_LEGEND_SECTOR}. TWS left, BSP right. Red port / green stbd (TWA sign). Units from data (TWS kts, BSP kph typical).
+            {CAL_LEGEND_SECTOR}. {CAL_VIOLIN_UNITS_NOTE}
           </p>
           <div class="calibration-violin-metric-row">
             <div class="calibration-violin-split">

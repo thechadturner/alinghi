@@ -2,18 +2,14 @@ import { TimeSeriesRendererProps, RendererResult } from "./types";
 import { TrackPoint } from "../hooks/useTrackRendering";
 import { selectedEvents, selectedRanges } from "../../../../store/selectionStore";
 import { getColorByIndex } from "../../../../utils/colorScale";
+import { mapTimelineChannelValue } from "../../../../utils/speedUnits";
 
 export function renderSegmentedTimeSeries(props: TimeSeriesRendererProps): RendererResult {
-  const { data, svg, xScale, yScale, lineGenerator, samplingFrequency, channel, getColor, getThickness } = props;
-  
-  // Helper function to get channel value from data point (case-insensitive)
-  const getChannelValue = (d: any): number => {
-    const val = d[channel] ?? d[channel.toLowerCase()] ?? d[channel.toUpperCase()];
-    if (val === undefined || val === null || isNaN(Number(val))) {
-      return 0; // Return 0 instead of NaN to prevent rendering errors
-    }
-    return Number(val);
-  };
+  const { data, svg, xScale, yScale, lineGenerator, samplingFrequency, channel, config, getColor, getThickness } = props;
+  const mapTypeStr = String(config?.maptype ?? "DEFAULT");
+
+  const getChannelValue = (d: any): number =>
+    mapTimelineChannelValue(d as Record<string, unknown>, channel, mapTypeStr);
   
   try {
     // Get current selections

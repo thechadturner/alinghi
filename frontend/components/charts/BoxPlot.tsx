@@ -5,6 +5,7 @@ import { isDark } from "../../store/themeStore";
 import { getColorByIndex, resolveDataField } from "../../utils/colorScale";
 import { buildColorGrouping } from "../../utils/colorGrouping";
 import { debug as logDebug, error as logError, warn as logWarn } from "../../utils/console";
+import { CHART_FIELD_AGGREGATE_SUFFIX_RE } from "../../utils/speedUnits";
 
 /** Set to true to enable verbose BoxPlot debug logs (e.g. field resolution, grouping). */
 const BOXPLOT_DEBUG = false;
@@ -53,7 +54,7 @@ export default function BoxPlot(props: BoxPlotProps) {
   const getValue = (d: any, valueField: string, aggregateType: string = 'AVG'): number | null => {
     if (!d || !valueField) return null;
     
-    // If aggregate type is specified and not AVG, try to use suffixed field (e.g., Bsp_kts_std)
+    // If aggregate type is specified and not AVG, try to use suffixed field (e.g. channel_std)
     const normalizedAggregateType = (aggregateType || 'AVG').toUpperCase();
     if (normalizedAggregateType !== 'AVG') {
       const suffix = normalizedAggregateType.toLowerCase();
@@ -83,8 +84,8 @@ export default function BoxPlot(props: BoxPlotProps) {
       return Number(val);
     }
     
-    // Remove common suffixes like "_kts", "_deg", "_avg" to find base field
-    const baseField = valueField.replace(/_(kts|deg|avg|min|max|perc)$/i, '');
+    // Remove common channel suffixes to find base field
+    const baseField = valueField.replace(CHART_FIELD_AGGREGATE_SUFFIX_RE, '');
     if (baseField !== valueField) {
       val = resolveDataField(d, baseField);
       if (val !== undefined && val !== null && !isNaN(Number(val))) {

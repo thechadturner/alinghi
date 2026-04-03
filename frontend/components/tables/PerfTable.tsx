@@ -313,12 +313,12 @@ export default function PerfTable(props: PerfTableProps) {
       }
     }
 
-    // TWS bin filter - use lowercase with underscores for HuniDB (e.g., 'tws_kph')
+    // TWS bin filter — use lowercase with underscores for HuniDB
     if (twsBin !== 'ALL') {
       const twsBinNum = parseFloat(twsBin);
       if (!isNaN(twsBinNum)) {
         // Convert TWS field name to HuniDB format (lowercase with underscores)
-        // e.g., "Tws_kph" -> "tws_kph"
+        // e.g. mixed-case channel -> lowercase key
         const twsFieldForQuery = twsFieldName.toLowerCase().replace(/-/g, '_');
         const escapedTwsField = escapeIdentifier(twsFieldForQuery);
         conditions.push(`${escapedTwsField} > ? AND ${escapedTwsField} <= ?`);

@@ -1,14 +1,14 @@
 {
     "api_token": "8493d8284a19ae9f5a23cafdec7de5bfccdce799d651d053e81bc2adc75a4002",
-    "class_name": "GP50",
-    "project_id": 1,
-    "dataset_id": 73,
-    "date": "20260213",
-    "source_name": "GER",
+    "class_name": "AC40",
+    "project_id": 2,
+    "dataset_id": 2,
+    "date": "20260330",
+    "source_name": "AC40-SUI1",
     "start_time": null,
     "end_time": null,
     "batch": false,
     "verbose": true,
-    "day_type": "\"TRAINING\"",
-    "race_type": "\"INSHORE\""
+    "day_type": "[\"TRAINING\", \"RACING\"]",
+    "race_type": "[\"INSHORE\", \"COASTAL\", \"OFFSHORE\"]"
 }

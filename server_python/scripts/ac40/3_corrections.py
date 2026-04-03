@@ -63,6 +63,12 @@ BOW_AWA_SENSOR = 'Awa_bow_deg'
 BOW_AWS_SENSOR = 'Aws_bow_kts'
 LEEWAY_SENSOR = 'Lwy_deg'
 
+# Target speed from AC40 (knots); merged as Bsp_tgt_kts for VMG / Bsp % helpers.
+TARGET_FETCH_CHANNELS = [
+    {'name': 'ts', 'type': 'float'},
+    {'name': 'AC40_Tgt_Speed_kts', 'type': 'float'},
+]
+
 # Channel specs for calibration / fallback (API field names).
 AC40_CALIBRATION_CHANNELS = [
     {'name': 'ts', 'type': 'float'},
@@ -215,13 +221,6 @@ def _reindex_fill_numeric_columns(df_idx: pd.DataFrame) -> None:
             df_idx[col] = s.ffill().bfill()
         else:
             df_idx[col] = s.interpolate(method='linear', limit_direction='both')
-
-
-# Target speed from AC40 (knots); merged as Bsp_tgt_kts for VMG / Bsp % helpers.
-TARGET_FETCH_CHANNELS = [
-    {'name': 'AC40_Tgt_Speed_kts', 'type': 'float'},
-]
-
 
 def get_processed_data_ts_range(class_name, project_id, date, source_name):
     """Load processed_data_racesight.parquet and return (ts_min, ts_max, ts_series)."""
@@ -436,6 +435,7 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
         step_sec=step_sec,
         model_update_interval_sec=model_update_interval_sec,
         min_samples_per_model=min_samples_per_model,
+        verbose=verbose,
     )
 
     df_final = results['data']
@@ -902,38 +902,65 @@ def save_corrections_parquet(df_out, class_name, project_id, date, source_name):
     return path
 
 
+LOG_SCRIPT = "3_corrections.py"
+
+
 if __name__ == "__main__":
+    parameters_json = {}
+    # Set True to run from IDE / CLI without argv JSON (edit values in the branch below). Same pattern as 3_systems.py.
+    USE_MANUAL_TEST_INPUTS = False
+
     try:
-        parameters_str = sys.argv[1]
-        parameters_json = json.loads(parameters_str)
+        if USE_MANUAL_TEST_INPUTS:
+            class_name = "AC40"
+            project_id = 2
+            dataset_id = 2
+            date = "20260330"
+            source_name = "AC40-SUI1"
+            start_time = None
+            end_time = None
+            verbose = True
+            window_sec = 30 * 60
+            step_sec = 60
+            model_update_interval_sec = 30 * 60
+            min_samples_per_model = 100
+            speed_unit = None
+            parameters_json = {"verbose": verbose}
+        else:
+            parameters_str = sys.argv[1]
+            parameters_json = json.loads(parameters_str)
 
-        u.log(api_token, "3_corrections.py", "info", "parameters", parameters_str)
+            u.log(api_token, LOG_SCRIPT, "info", "parameters", parameters_str)
 
-        class_name = parameters_json.get('class_name')
-        project_id = parameters_json.get('project_id')
-        dataset_id = parameters_json.get('dataset_id')
-        date = parameters_json.get('date')
-        source_name = parameters_json.get('source_name')
-        start_time = parameters_json.get('start_time')
-        end_time = parameters_json.get('end_time')
-        verbose = parameters_json.get('verbose', False)
-        if parameters_json.get('use_perf_model') is False:
-            u.log(api_token, "3_corrections.py", "warning", "parameters",
+            class_name = parameters_json.get("class_name")
+            project_id = parameters_json.get("project_id")
+            dataset_id = parameters_json.get("dataset_id")
+            date = parameters_json.get("date")
+            source_name = parameters_json.get("source_name")
+            start_time = parameters_json.get("start_time")
+            end_time = parameters_json.get("end_time")
+            if start_time == "":
+                start_time = None
+            if end_time == "":
+                end_time = None
+            verbose = parameters_json.get("verbose", False)
+            window_sec = parameters_json.get("window_sec", 30 * 60)
+            step_sec = parameters_json.get("step_sec", 60)
+            model_update_interval_sec = parameters_json.get("model_update_interval_sec", 30 * 60)
+            min_samples_per_model = parameters_json.get("min_samples_per_model", 100)
+            speed_unit = parameters_json.get("speed_unit")
+
+        if parameters_json.get("use_perf_model") is False:
+            u.log(api_token, LOG_SCRIPT, "warning", "parameters",
                   "use_perf_model=False is ignored; only performance-model AWA calibration is supported.")
-        if parameters_json.get('use_state_matched') or parameters_json.get('rolling_awa_balance'):
-            u.log(api_token, "3_corrections.py", "warning", "parameters",
+        if parameters_json.get("use_state_matched") or parameters_json.get("rolling_awa_balance"):
+            u.log(api_token, LOG_SCRIPT, "warning", "parameters",
                   "V2 calibration parameters (use_state_matched, rolling_awa_balance, ...) are ignored.")
-
-        window_sec = parameters_json.get('window_sec', 30 * 60)
-        step_sec = parameters_json.get('step_sec', 60)
-        model_update_interval_sec = parameters_json.get('model_update_interval_sec', 30 * 60)
-        min_samples_per_model = parameters_json.get('min_samples_per_model', 100)
-        speed_unit = parameters_json.get('speed_unit')
 
         print("Starting corrections (bow-wand AWA calibration)...", flush=True)
 
         if not all([class_name, project_id, date, source_name]):
-            u.log(api_token, "3_corrections.py", "error", "args",
+            u.log(api_token, LOG_SCRIPT, "error", "args",
                   "Missing class_name, project_id, date, or source_name")
             print("Script Failed: Missing class_name, project_id, date, or source_name", flush=True)
             sys.exit(1)
@@ -964,7 +991,7 @@ if __name__ == "__main__":
             if df_out is None or len(df_out) == 0:
                 raise ValueError("Pipeline returned no data")
         except Exception as pipeline_error:
-            u.log(api_token, "3_corrections.py", "error", "pipeline", f"Corrections pipeline failed: {pipeline_error}")
+            u.log(api_token, LOG_SCRIPT, "error", "pipeline", f"Corrections pipeline failed: {pipeline_error}")
             proc_min, proc_max, proc_ts = get_canonical_ts_for_corrections(class_name, project_id, date, source_name)
             fallback_start = proc_min if proc_min is not None else start_ts
             fallback_end = proc_max if proc_max is not None else end_ts
@@ -983,11 +1010,11 @@ if __name__ == "__main__":
                 if 'Awa_offset_deg' not in df_out.columns:
                     df_out['Awa_offset_deg'] = 0.0
             if df_out is None or len(df_out) == 0:
-                u.log(api_token, "3_corrections.py", "error", "pipeline", "Pipeline and fallback had no data")
+                u.log(api_token, LOG_SCRIPT, "error", "pipeline", "Pipeline and fallback had no data")
                 print("Script Failed: No correction data and no fallback data", flush=True)
                 sys.exit(1)
             if verbose:
-                u.log(api_token, "3_corrections.py", "warning", "fallback",
+                u.log(api_token, LOG_SCRIPT, "warning", "fallback",
                       "Using uncorrected fallback data for _cor channels")
             used_fallback = True
 
@@ -1005,38 +1032,27 @@ if __name__ == "__main__":
         print(f"Corrections saved: {len(df_out)} records" + (" (fallback)" if used_fallback else ""), flush=True)
 
         if dataset_id:
-            # Register the Calibration dataset page (same pattern as Maneuvers/Performance)
+            # Register Calibration on this dataset (dataset/reports page in ac40.pages — not day/reports / day_pages).
             jsondata = {"class_name": class_name, "project_id": project_id, "dataset_id": dataset_id, "page_name": "CALIBRATION"}
             res = u.post_api_data(api_token, ":8059/api/datasets/page", jsondata)
             if res.get("success"):
-                u.log(api_token, "3_corrections.py", "info", "Page Loaded!", "page_name: CALIBRATION")
+                u.log(api_token, LOG_SCRIPT, "info", "Page Loaded!", "page_name: CALIBRATION")
             else:
-                u.log(api_token, "3_corrections.py", "warning", "Page load failed", "page_name: CALIBRATION")
-
-            date_norm = str(date).replace("-", "").replace("/", "").strip() if date else None
-            if date_norm and len(date_norm) == 8:
-                day_page_payload = {"class_name": class_name, "project_id": project_id, "date": date_norm, "page_name": "CALIBRATION"}
-                day_res = u.post_api_data(api_token, ":8059/api/datasets/day-page", day_page_payload)
-                if day_res.get("success"):
-                    u.log(api_token, "3_corrections.py", "info", "Day page upserted", "page_name: CALIBRATION")
-                else:
-                    u.log(api_token, "3_corrections.py", "warning", "Day page upsert failed", day_res.get("message", "unknown"))
+                u.log(api_token, LOG_SCRIPT, "warning", "Page load failed", "page_name: CALIBRATION")
 
         sys.exit(0)
 
     except Exception as error:
         import traceback
         error_trace = traceback.format_exc()
-        u.log(api_token, "3_corrections.py", "error", "corrections", "script exception error:" + str(error))
-        u.log(api_token, "3_corrections.py", "error", "corrections", "traceback:" + error_trace)
-        try:
-            verbose = parameters_json.get('verbose', False)
-        except NameError:
-            verbose = False
+        u.log(api_token, LOG_SCRIPT, "error", "corrections", "script exception error:" + str(error))
+        u.log(api_token, LOG_SCRIPT, "error", "corrections", "traceback:" + error_trace)
         try:
             print(f"Script Failed: {str(error)}", flush=True)
-            if verbose:
+            if parameters_json.get("verbose", False):
                 print(error_trace, flush=True)
         except UnicodeEncodeError:
             print(f"Script Failed: {str(error).encode('ascii', errors='replace').decode('ascii')}", flush=True)
+            if parameters_json.get("verbose", False):
+                print(error_trace.encode("ascii", errors="replace").decode("ascii"), flush=True)
         sys.exit(1)

@@ -272,7 +272,7 @@ export default function Donut(props: Donut180DotProps) {
   // Calculate maxDataValue from all data when we have it (timeseriesData or liveGaugeData)
   createEffect(() => {
     const allData = allDataForMean();
-    const valueChannel = config?.valueChannel || config?.channel || 'Bsp_kts';
+    const valueChannel = config?.valueChannel || config?.channel || bspName();
     
     if (allData && allData.length > 0) {
       const allValues = allData
@@ -609,9 +609,9 @@ export default function Donut(props: Donut180DotProps) {
     <div class="media-container" style={containerStyle}>
       <div class="gauge-component" style={`position: relative; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; overflow: hidden; background-color: ${gaugeBackgroundColor}; border-radius: 6px;`}>
         {/* Single display label: custom label when provided, otherwise channel name */}
-        <Show when={config?.labelPosition !== 'bottom' && (config?.label ?? config?.valueChannel ?? config?.channel ?? 'Bsp_kts')}>
+        <Show when={config?.labelPosition !== 'bottom' && (config?.label ?? config?.valueChannel ?? config?.channel ?? bspName())}>
           <div style={`position: absolute; top: ${labelPadding}; right: ${labelPadding}; z-index: 10; font-size: ${labelFontSize}; font-weight: 500; color: ${gaugeColor()}; text-align: right; pointer-events: none;`}>
-            {config?.label ?? config?.valueChannel ?? config?.channel ?? 'Bsp_kts'}
+            {config?.label ?? config?.valueChannel ?? config?.channel ?? bspName()}
           </div>
         </Show>
         
@@ -638,9 +638,9 @@ export default function Donut(props: Donut180DotProps) {
         />
         
         {/* Label below gauge - only when position is explicitly bottom */}
-        <Show when={config?.labelPosition === 'bottom' && (config?.label ?? config?.valueChannel ?? config?.channel ?? 'Bsp_kts')}>
+        <Show when={config?.labelPosition === 'bottom' && (config?.label ?? config?.valueChannel ?? config?.channel ?? bspName())}>
           <div style={`margin-top: 8px; font-size: ${labelFontSize}; font-weight: 500; color: ${gaugeColor()}; text-align: center;`}>
-            {config?.label ?? config?.valueChannel ?? config?.channel ?? 'Bsp_kts'}
+            {config?.label ?? config?.valueChannel ?? config?.channel ?? bspName()}
           </div>
         </Show>
         

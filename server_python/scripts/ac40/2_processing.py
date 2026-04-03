@@ -46,6 +46,9 @@ api_token = os.getenv('SYSTEM_KEY')
 if not api_token:
     raise RuntimeError("SYSTEM_KEY is missing from environment configuration.")
 
+LOG_SCRIPT = "2_processing.py"
+
+
 def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
     df = pd.DataFrame()
     try:
@@ -91,7 +94,7 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
                 inplace=True,
             )
 
-            u.log(api_token, "2_processing.py", "info", "get_data", str(len(dfi))+" records found!")
+            u.log(api_token, LOG_SCRIPT, "info", "get_data", str(len(dfi))+" records found!")
 
             if dfi['ts'].dtype == 'Float64':
                 dfi['ts'] = dfi['ts'].astype('float64')
@@ -104,7 +107,7 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
                     dfi['ts'] = dfi['ts'].round(3)
 
             dfo = u.remove_gaps(dfi,'Bsp_kts','ts')
-            u.log(api_token, "2_processing.py", "info", "get_data", "Gaps removed!")
+            u.log(api_token, LOG_SCRIPT, "info", "get_data", "Gaps removed!")
             
             # BASIC FILTERS
             # Exclude datetime columns from fillna(0) as they are timezone-aware and incompatible with 0
@@ -146,7 +149,7 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
         else:
             return df
     except Exception as e:
-        u.log(api_token, "2_processing.py", "error", "processing data", "script exception error:"+str(e))
+        u.log(api_token, LOG_SCRIPT, "error", "processing data", "script exception error:"+str(e))
         return df
 
 def remove_keys_with_value(obj, target_value):
@@ -296,11 +299,11 @@ def getDatasetInfo(df):
 
             if (res['success']):
                 if (len(tags_str) > 20):
-                    u.log(api_token, "2_processing.py", "info", "getDatasetInfo", "Dataset info generated successfully!")
+                    u.log(api_token, LOG_SCRIPT, "info", "getDatasetInfo", "Dataset info generated successfully!")
                 else:
-                    u.log(api_token, "2_processing.py", "error", "getDatasetInfo", "Failed to generate dataset info!")
+                    u.log(api_token, LOG_SCRIPT, "error", "getDatasetInfo", "Failed to generate dataset info!")
             else:
-                u.log(api_token, "2_processing.py", "error", "getDatasetInfo", "Failed to generate dataset info!")
+                u.log(api_token, LOG_SCRIPT, "error", "getDatasetInfo", "Failed to generate dataset info!")
 
 def insertDatasetEvent(event): 
     et = event['EventType']
@@ -398,7 +401,7 @@ def _fill_df_from_events(df, events, tag_key, column, value_normalizer=None):
             val = tags.get(tag_key)
             parsed.append((start_ts, end_ts, val))
         except (ValueError, TypeError) as e:
-            u.log(api_token, "2_processing.py", "warning", "_fill_df_from_events", f"Skip event: {e}")
+            u.log(api_token, LOG_SCRIPT, "warning", "_fill_df_from_events", f"Skip event: {e}")
             continue
     parsed.sort(key=lambda x: x[0])
     for idx in df.index:
@@ -651,7 +654,7 @@ def compute_trimmed_sailing_ranges(df, non_sailing_gap_min_sec=NON_SAILING_GAP_M
     df_sorted = df.sort_values('ts').reset_index(drop=True)
     gaps = _find_long_non_sailing_gaps(df_sorted, non_sailing_gap_min_sec)
     if gaps and len(gaps) > 0:
-        u.log(api_token, "2_processing.py", "info", "compute_trimmed_sailing_ranges",
+        u.log(api_token, LOG_SCRIPT, "info", "compute_trimmed_sailing_ranges",
               f"Found {len(gaps)} long non-sailing gap(s) (>= {non_sailing_gap_min_sec / 60:.0f} min)")
     sessions = _sailing_sessions_from_gaps(df_sorted, gaps)
     ranges = []
@@ -660,7 +663,7 @@ def compute_trimmed_sailing_ranges(df, non_sailing_gap_min_sec=NON_SAILING_GAP_M
         if r is not None:
             ranges.append(r)
     if len(ranges) > 1:
-        u.log(api_token, "2_processing.py", "info", "compute_trimmed_sailing_ranges",
+        u.log(api_token, LOG_SCRIPT, "info", "compute_trimmed_sailing_ranges",
               f"Keeping {len(ranges)} sailing session(s) after trimming start/end of each")
     return ranges
 
@@ -704,7 +707,7 @@ def fetch_existing_crew_and_headsail_for_dataset(c_class_name, c_project_id, c_d
                 if start is not None and end is not None and code:
                     events_out.append({'EventType': 'Headsail', 'Event': code, 'Start': start, 'End': end})
     except Exception as e:
-        u.log(api_token, "2_processing.py", "warning", "fetch_existing_crew_and_headsail", str(e))
+        u.log(api_token, LOG_SCRIPT, "warning", "fetch_existing_crew_and_headsail", str(e))
     return events_out
 
 
@@ -723,7 +726,7 @@ def fetch_existing_race_and_prestart(c_class_name, c_project_id, c_dataset_id):
         if prestart_resp and prestart_resp.get('success') and isinstance(prestart_resp.get('data'), list):
             existing_prestart = prestart_resp['data']
     except Exception as e:
-        u.log(api_token, "2_processing.py", "warning", "fetch_existing_race_and_prestart", str(e))
+        u.log(api_token, LOG_SCRIPT, "warning", "fetch_existing_race_and_prestart", str(e))
     return existing_race, existing_prestart
 
 
@@ -762,7 +765,7 @@ def getConfiguration(df, preserve_events=True):
                 existing_headsail = headsail_resp['data']
             existing_race, existing_prestart = fetch_existing_race_and_prestart(class_name, project_id, dataset_id)
         except Exception as e:
-            u.log(api_token, "2_processing.py", "warning", "getConfiguration", "Could not fetch existing CREW/HEADSAIL/RACE/PRESTART events: " + str(e))
+            u.log(api_token, LOG_SCRIPT, "warning", "getConfiguration", "Could not fetch existing CREW/HEADSAIL/RACE/PRESTART events: " + str(e))
 
     # Derive date for config API from this dataset's data and timezone (config can change through the day)
     timezone_str = None
@@ -773,7 +776,7 @@ def getConfiguration(df, preserve_events=True):
             if tz and isinstance(tz, str) and tz.strip():
                 timezone_str = tz.strip()
     except Exception as e:
-        u.log(api_token, "2_processing.py", "warning", "getConfiguration", "Could not get dataset timezone, using UTC date: "+str(e))
+        u.log(api_token, LOG_SCRIPT, "warning", "getConfiguration", "Could not get dataset timezone, using UTC date: "+str(e))
 
     date_dt = u.get_utc_datetime_from_ts(df['ts'].iloc[10])
     if timezone_str:
@@ -782,7 +785,7 @@ def getConfiguration(df, preserve_events=True):
             local_dt = date_dt.astimezone(tz)
             date = local_dt.strftime('%Y-%m-%d')
         except Exception as e:
-            u.log(api_token, "2_processing.py", "warning", "getConfiguration", "Invalid timezone '"+timezone_str+"', using UTC date: "+str(e))
+            u.log(api_token, LOG_SCRIPT, "warning", "getConfiguration", "Invalid timezone '"+timezone_str+"', using UTC date: "+str(e))
             date = date_dt.strftime('%Y-%m-%d')
     else:
         date = date_dt.strftime('%Y-%m-%d')
@@ -1245,49 +1248,62 @@ def apply_race_status_channel(df):
     return df
 
 if __name__ == "__main__":
+    parameters_json = {}
+    # Set True to run from IDE / CLI without argv JSON (edit values in the branch below). Same pattern as 3_systems.py / 3_corrections.py.
+    USE_MANUAL_TEST_INPUTS = False
+
     try:
-        # parameters_str = sys.argv[1]
-        # parameters_json = json.loads(parameters_str)
+        if USE_MANUAL_TEST_INPUTS:
+            class_name = "AC40"
+            project_id = 2
+            dataset_id = 2
+            date = "20260330"
+            source_name = "AC40-SUI1"
+            start_time = None
+            end_time = None
+            events_json = [
+                {
+                    "Event": "Active",
+                    "Start": "2026-03-30T01:20:40.000Z",
+                    "End": "2026-03-30T20:58:18.000Z",
+                    "EventType": "Dataset",
+                },
+            ]
+            batch = False
+            verbose = True
+            preserve_events = True
+            day_type = ["TRAINING", "RACING"]
+            race_type = ["INSHORE", "COASTAL", "OFFSHORE"]
+            parameters_json = {"verbose": verbose}
+        else:
+            parameters_str = sys.argv[1]
+            parameters_json = json.loads(parameters_str)
 
-        # #LOG
-        # u.log(api_token, "2_processing.py", "info", "parameters", parameters_str)
+            u.log(api_token, LOG_SCRIPT, "info", "parameters", parameters_str)
 
-        # class_name = parameters_json.get('class_name')
-        # project_id = parameters_json.get('project_id')
-        # dataset_id = parameters_json.get('dataset_id')
-        # date = parameters_json.get('date')
-        # source_name = parameters_json.get('source_name')
-        # start_time = parameters_json.get('start_time')
-        # end_time = parameters_json.get('end_time')
-        # if start_time == '':
-        #     start_time = None
-        # if end_time == '':
-        #     end_time = None
-        # events_json = parameters_json.get('events', [])
-        # batch = parameters_json.get('batch', False)
-        # verbose = parameters_json.get('verbose', False)
-        # preserve_events = parameters_json.get('preserve_events', True)
+            class_name = parameters_json.get("class_name")
+            project_id = parameters_json.get("project_id")
+            dataset_id = parameters_json.get("dataset_id")
+            date = parameters_json.get("date")
+            source_name = parameters_json.get("source_name")
+            start_time = parameters_json.get("start_time")
+            end_time = parameters_json.get("end_time")
+            if start_time == "":
+                start_time = None
+            if end_time == "":
+                end_time = None
+            events_json = parameters_json.get("events", [])
+            batch = parameters_json.get("batch", False)
+            verbose = parameters_json.get("verbose", False)
+            preserve_events = parameters_json.get("preserve_events", True)
 
-        # day_type = parameters_json.get('day_type', ['TRAINING', 'RACING'])
-        # if not isinstance(day_type, list):
-        #     day_type = [day_type] if day_type is not None else ['TRAINING', 'RACING']
-        # race_type = parameters_json.get('race_type', ['INSHORE', 'COASTAL', 'OFFSHORE'])
-        # if not isinstance(race_type, list):
-        #     race_type = [race_type] if race_type is not None else ['INSHORE', 'COASTAL', 'OFFSHORE']
+            day_type = parameters_json.get("day_type", ["TRAINING", "RACING"])
+            race_type = parameters_json.get("race_type", ["INSHORE", "COASTAL", "OFFSHORE"])
 
-        class_name = "AC40"
-        project_id = 2
-        dataset_id = 1
-        date = "20260328"
-        source_name = "AC40-SUI1"
-        start_time = None
-        end_time = None
-        events_json = [{"Event": "Active", "Start": "2026-03-28T01:20:40.000Z", "End": "2026-03-28T20:58:18.000Z", "EventType": "Dataset"}]
-        batch = False
-        verbose = True
-        preserve_events = True
-        day_type = 'TRAINING'
-        race_type = 'INSHORE'
+        if not isinstance(day_type, list):
+            day_type = [day_type] if day_type is not None else ["TRAINING", "RACING"]
+        if not isinstance(race_type, list):
+            race_type = [race_type] if race_type is not None else ["INSHORE", "COASTAL", "OFFSHORE"]
 
         s.set_item('class_name', class_name)
         s.set_item('project_id', project_id)
@@ -1303,13 +1319,13 @@ if __name__ == "__main__":
 
         if verbose:
             print("Querying data...", flush=True)
-        print("2_processing.py: calling get_data", flush=True)
+        print(f"{LOG_SCRIPT}: calling get_data", flush=True)
 
         df = get_data(class_name, project_id, date, source_name, None, None)
 
-        print("2_processing.py: get_data returned", flush=True)
+        print(f"{LOG_SCRIPT}: get_data returned", flush=True)
         #LOG
-        u.log(api_token, "2_processing.py", "info", "processing data", str(len(df))+ " records retrieved...")
+        u.log(api_token, LOG_SCRIPT, "info", "processing data", str(len(df))+ " records retrieved...")
 
         if len(df) > 0:
             if verbose:
@@ -1337,10 +1353,10 @@ if __name__ == "__main__":
                                     dataset_list = [(did, s, st, et) for (did, s, st, et) in dataset_list if int(did) == want_id]
                                 except (ValueError, TypeError):
                                     pass
-                            u.log(api_token, "2_processing.py", "info", "processing data", f"Batch date mode: {len(dataset_list)} dataset(s) for date {date_norm}")
-                            print(f"2_processing.py: batch date mode, {len(dataset_list)} dataset(s) to process", flush=True)
+                            u.log(api_token, LOG_SCRIPT, "info", "processing data", f"Batch date mode: {len(dataset_list)} dataset(s) for date {date_norm}")
+                            print(f"{LOG_SCRIPT}: batch date mode, {len(dataset_list)} dataset(s) to process", flush=True)
                     except Exception as e:
-                        u.log(api_token, "2_processing.py", "warning", "processing data", "Failed to fetch datasets for date: " + str(e))
+                        u.log(api_token, LOG_SCRIPT, "warning", "processing data", "Failed to fetch datasets for date: " + str(e))
                 if not dataset_list:
                     dataset_list = [(dataset_id, source_name, None, None)]
             else:
@@ -1352,7 +1368,7 @@ if __name__ == "__main__":
                 start_time = cur_start_time
                 end_time = cur_end_time
                 if batch and len(dataset_list) > 1:
-                    print(f"2_processing.py: processing dataset {loop_idx + 1} of {len(dataset_list)} (dataset_id={cur_dataset_id})", flush=True)
+                    print(f"{LOG_SCRIPT}: processing dataset {loop_idx + 1} of {len(dataset_list)} (dataset_id={cur_dataset_id})", flush=True)
                 s.set_item('dataset_id', cur_dataset_id)
                 s.set_item('source_name', cur_source_name)
                 # For batch date mode (no start/end in params), fetch data for this dataset's range from API
@@ -1361,7 +1377,7 @@ if __name__ == "__main__":
                     end_ts_cur = u.get_timestamp_from_str(cur_end_time) if isinstance(cur_end_time, str) else cur_end_time
                     df = get_data(class_name, project_id, date, cur_source_name, start_ts_cur, end_ts_cur)
                     if len(df) == 0:
-                        u.log(api_token, "2_processing.py", "warning", "processing data", f"No data for dataset_id={cur_dataset_id}, skipping")
+                        u.log(api_token, LOG_SCRIPT, "warning", "processing data", f"No data for dataset_id={cur_dataset_id}, skipping")
                         continue
 
                 if start_time is not None and end_time is not None:
@@ -1370,7 +1386,7 @@ if __name__ == "__main__":
                     param_end_ts = u.get_timestamp_from_str(end_time) if isinstance(end_time, str) else end_time
                     
                     if param_start_ts is None or param_end_ts is None or pd.isna(param_start_ts) or pd.isna(param_end_ts):
-                        u.log(api_token, "2_processing.py", "error", "processing data", f"Invalid datetime format: start_time={start_time}, end_time={end_time}")
+                        u.log(api_token, LOG_SCRIPT, "error", "processing data", f"Invalid datetime format: start_time={start_time}, end_time={end_time}")
                         print("Scripts Failed: Invalid datetime format", flush=True)
                         sys.exit(1)
                     
@@ -1378,7 +1394,7 @@ if __name__ == "__main__":
                     window_df = df.loc[(df['ts'] >= param_start_ts) & (df['ts'] <= param_end_ts)].copy()
                     ranges = compute_trimmed_sailing_ranges(window_df)
                     if not ranges:
-                        u.log(api_token, "2_processing.py", "info", "All data filtered out (no Bsp_kts > 5 in time range)", str(u.dt.now()))
+                        u.log(api_token, LOG_SCRIPT, "info", "All data filtered out (no Bsp_kts > 5 in time range)", str(u.dt.now()))
                         print("Scripts Failed: No sailing data in specified time range (no Bsp_kts > 5 or no valid sessions)", flush=True)
                         sys.exit(1)
                     df1 = _df_filter_by_ranges(df, ranges)
@@ -1387,12 +1403,12 @@ if __name__ == "__main__":
                     # Full file: detect long non-sailing gaps (>= 30 min), trim start/end of each sailing session, keep union of ranges
                     ranges = compute_trimmed_sailing_ranges(df)
                     if not ranges:
-                        u.log(api_token, "2_processing.py", "info", "All data filtered out (no Bsp_kts > 5)", str(u.dt.now()))
+                        u.log(api_token, LOG_SCRIPT, "info", "All data filtered out (no Bsp_kts > 5)", str(u.dt.now()))
                         print("Scripts Failed: No sailing data (no Bsp_kts > 5 or no valid sessions)", flush=True)
                         sys.exit(1)
                     df1 = _df_filter_by_ranges(df, ranges)
                     if len(df1) == 0:
-                        u.log(api_token, "2_processing.py", "info", "All data filtered out after session trimming", str(u.dt.now()))
+                        u.log(api_token, LOG_SCRIPT, "info", "All data filtered out after session trimming", str(u.dt.now()))
                         print("Scripts Failed: No data after session trimming", flush=True)
                         sys.exit(1)
                 
@@ -1433,9 +1449,9 @@ if __name__ == "__main__":
 
                     #LOG
                     if res["success"] == True:
-                        u.log(api_token, "2_processing.py", "info", "processing data", "Dataset Events Updated!")
+                        u.log(api_token, LOG_SCRIPT, "info", "processing data", "Dataset Events Updated!")
                     else:
-                        u.log(api_token, "2_processing.py", "error", "processing data", res["message"])
+                        u.log(api_token, LOG_SCRIPT, "error", "processing data", res["message"])
 
                     getDatasetInfo(df1)
 
@@ -1450,10 +1466,10 @@ if __name__ == "__main__":
                     df2 = processData(df1, events_json_iter, preserve_events=preserve_events)
 
                     #LOG
-                    u.log(api_token, "2_processing.py", "info", "processing data", str(len(df))+ " records processed...")
+                    u.log(api_token, LOG_SCRIPT, "info", "processing data", str(len(df))+ " records processed...")
 
                     if len(df2) > 0:
-                        chosen_columns = ['Datetime', 'ts', 'Grade', 'Headsail_code', 'Name', 'Crew_count', 'Wing_code', 'Rudder_code', 'Daggerboard_code', 'Config_code', 'Maneuver_type', 'Phase_id', 'Period_id', 'Race_status', 'Foiling_state', 'Accel_rate_mps2', 'Yaw_rate_dps']
+                        chosen_columns = ['Datetime', 'ts', 'Grade', 'Race_number', 'Leg_number', 'Headsail_code', 'Crew_count', 'Wing_code', 'Rudder_code', 'Daggerboard_code', 'Config_code', 'Maneuver_type', 'Phase_id', 'Period_id', 'Race_status', 'Foiling_state', 'Accel_rate_mps2', 'Yaw_rate_dps']
                         
                         # Filter to only include columns that actually exist in df3
                         chosen_columns = [col for col in chosen_columns if col in df2.columns]
@@ -1464,7 +1480,7 @@ if __name__ == "__main__":
                             # Convert to datetime64[ns, UTC] if it's object type
                             if df_selected['Datetime'].dtype == 'object':
                                 df_selected['Datetime'] = pd.to_datetime(df_selected['Datetime'], utc=True, errors='coerce')
-                                u.log(api_token, "2_processing.py", "info", "processing data", "Converted Datetime column from object to datetime64[ns, UTC]")
+                                u.log(api_token, LOG_SCRIPT, "info", "processing data", "Converted Datetime column from object to datetime64[ns, UTC]")
                             # Ensure it's timezone-aware UTC
                             if df_selected['Datetime'].dtype.name.startswith('datetime64'):
                                 if df_selected['Datetime'].dt.tz is None:
@@ -1484,7 +1500,7 @@ if __name__ == "__main__":
                             os.remove(event_file_path)
 
                         #LOG
-                        u.log(api_token, "2_processing.py", "info", "processing data", "processed data saved to parquet...")
+                        u.log(api_token, LOG_SCRIPT, "info", "processing data", "processed data saved to parquet...")
                         df_selected.to_parquet(event_file_path, engine='pyarrow')
                         print(str(len(df_selected))+" records saved to parquet", flush=True)
 
@@ -1492,7 +1508,7 @@ if __name__ == "__main__":
                         jsondata = {"class_name": class_name,"project_id": project_id, "dataset_id": dataset_id, "page_name": "TIME SERIES"}
                         res = u.post_api_data(api_token, ":8059/api/datasets/page", jsondata)
 
-                        u.log(api_token, "2_processing.py", "info", "processing data", "script completed successfully!")
+                        u.log(api_token, LOG_SCRIPT, "info", "processing data", "script completed successfully!")
 
                         # Update dataset date_modified to trigger cache refresh
                         u.update_dataset_date_modified(api_token, class_name, project_id, dataset_id=dataset_id)
@@ -1503,17 +1519,17 @@ if __name__ == "__main__":
                             print("Script Completed:", u.dt.now(), flush=True)
                         sys.exit(0)
                     else:
-                        u.log(api_token, "2_processing.py", "info", "processData returned empty dataframe", str(u.dt.now()))
+                        u.log(api_token, LOG_SCRIPT, "info", "processData returned empty dataframe", str(u.dt.now()))
                         print(f"Scripts Failed: processData returned {len(df2)} records (expected > 0)", flush=True)
                         sys.exit(1)
                 else:
-                    u.log(api_token, "2_processing.py", "info", "All data filtered out", str(u.dt.now()))
+                    u.log(api_token, LOG_SCRIPT, "info", "All data filtered out", str(u.dt.now()))
                     print("Scripts Failed:", u.dt.now(), flush=True)
                     sys.exit(1)
             if batch and len(dataset_list) > 1:
                 print("Script Completed (batch):", len(dataset_list), "datasets processed.", u.dt.now(), flush=True)
         else:
-            u.log(api_token, "2_processing.py", "info", "No data found", str(u.dt.now()))
+            u.log(api_token, LOG_SCRIPT, "info", "No data found", str(u.dt.now()))
             print(
                 "Scripts Failed: No rows loaded (get_data returned empty). "
                 "Typical causes: file server channel-groups 404 'Source not found' (no parquet folder for this "
@@ -1526,16 +1542,16 @@ if __name__ == "__main__":
     except Exception as error:
         import traceback
         error_trace = traceback.format_exc()
-        u.log(api_token, "2_processing.py", "error", "processing data", "script exception error:"+str(error))
-        u.log(api_token, "2_processing.py", "error", "processing data", "traceback:"+error_trace)
+        u.log(api_token, LOG_SCRIPT, "error", "processing data", "script exception error:"+str(error))
+        u.log(api_token, LOG_SCRIPT, "error", "processing data", "traceback:"+error_trace)
         # Use errors='replace' to handle any Unicode encoding issues on Windows
         try:
             print(f"Scripts Failed: {str(error)}", flush=True)
-            if verbose:
+            if parameters_json.get("verbose", False):
                 print(error_trace, flush=True)
         except UnicodeEncodeError:
             # Fallback: replace problematic characters with '?'
             print(f"Scripts Failed: {str(error).encode('ascii', errors='replace').decode('ascii')}", flush=True)
-            if verbose:
+            if parameters_json.get("verbose", False):
                 print(error_trace.encode('ascii', errors='replace').decode('ascii'), flush=True)
         sys.exit(1)

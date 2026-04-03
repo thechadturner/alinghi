@@ -2,10 +2,12 @@ import { createEffect, onMount, onCleanup } from "solid-js";
 import * as d3 from "d3";
 import { round } from "../../../../utils/global";
 import { defaultChannelsStore } from "../../../../store/defaultChannelsStore";
+import { persistantStore } from "../../../../store/persistantStore";
+import { speedUnitShortLabel } from "../../../../utils/speedUnits";
 import { debug as logDebug } from "../../../../utils/console";
 
 interface WindArrowProps {
-  /** True Wind Speed in kph */
+  /** True wind speed magnitude (display unit from project settings). */
   tws?: number;
   /** True Wind Direction in degrees (0-360) */
   twd?: number;
@@ -800,7 +802,7 @@ export default function WindArrow(props: WindArrowProps) {
     while (rotation < -360) rotation += 360;
 
     // Update wind speed text
-    const twsFormatted = round(effectiveTws, 1) + " kph";
+    const twsFormatted = `${round(effectiveTws, 1)} ${speedUnitShortLabel(persistantStore.defaultUnits())}`;
     windText.text(twsFormatted);
 
     // Update compass rotation

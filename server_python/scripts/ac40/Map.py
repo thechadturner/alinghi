@@ -100,7 +100,7 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
 
             print(len(dfi),'records returned...', flush=True)
 
-            df = u.remove_gaps(dfi,'Bsp_kph','ts')
+            df = u.remove_gaps(dfi,'Bsp_kts','ts')
             return df
         else:
             return df
@@ -209,12 +209,12 @@ def start(api_token, project_id, dataset_id, class_name, date, source_name, star
                         datetime_str = str(u.get_datetime_obj(row['Datetime']))
                         lat = u.number(row['Lat_dd'])
                         lon = u.number(row['Lng_dd'])
-                        bsp = u.number(row['Bsp_kph'])
-                        tws = u.number(row['Tws_kph'])
+                        bsp = u.number(row['Bsp_kts'])
+                        tws = u.number(row['Tws_kts'])
                         twd = u.number(row['Twd_deg'])
                         twa = u.number(row['Twa_deg'])
                         hdg = u.number(row['Hdg_deg'])
-                        vmg = u.number(row['Vmg_kph'])
+                        vmg = u.number(row['Vmg_kts'])
                         vmg_perc = u.number(row['Vmg_perc'])
                         race = u.number(row['Race_number'])
                         leg = u.number(row['Leg_number'])
@@ -235,12 +235,12 @@ def start(api_token, project_id, dataset_id, class_name, date, source_name, star
                         values['Datetime'] = datetime_str
                         values['Lat_dd'] = float(lat_str)
                         values['Lng_dd'] = float(lon_str)
-                        values['Bsp_kph'] = float(bsp_str)
+                        values['Bsp_kts'] = float(bsp_str)
                         values['Hdg_deg'] = float(hdg_str)
-                        values['Tws_kph'] = float(tws_str)
+                        values['Tws_kts'] = float(tws_str)
                         values['Twd_deg'] = float(twd_str)
                         values['Twa_deg'] = float(twa_str)
-                        values['Vmg_kph'] = float(vmg)
+                        values['Vmg_kts'] = float(vmg)
                         values['Vmg_perc'] = float(vmg_perc)
                         values['State'] = int(state)
                         values['Phase_id'] = int(phase)
@@ -267,9 +267,9 @@ def start(api_token, project_id, dataset_id, class_name, date, source_name, star
                         datetime_str = str(u.get_datetime_obj(row['Datetime']))
                         lat = u.number(row['Lat_dd'])
                         lon = u.number(row['Lng_dd'])
-                        bsp = u.number(row['Bsp_kph'])
+                        bsp = u.number(row['Bsp_kts'])
                         hdg = u.number(row['Hdg_deg'])
-                        tws = u.number(row['Tws_kph'])
+                        tws = u.number(row['Tws_kts'])
                         twd = u.number(row['Twd_deg'])
                         
                         race = u.number(row['Race_number'])
@@ -287,9 +287,9 @@ def start(api_token, project_id, dataset_id, class_name, date, source_name, star
                         values_day['Datetime'] = datetime_str
                         values_day['Lat_dd'] = float(lat_str)
                         values_day['Lng_dd'] = float(lon_str)
-                        values_day['Bsp_kph'] = float(bsp_str)
+                        values_day['Bsp_kts'] = float(bsp_str)
                         values_day['Hdg_deg'] = float(hdg_str)
-                        values_day['Tws_kph'] = float(tws_str)
+                        values_day['Tws_kts'] = float(tws_str)
                         values_day['Twd_deg'] = float(twd_str)
                         values_day['Race_number'] = int(race)
                         values_day['Leg_number'] = int(leg)

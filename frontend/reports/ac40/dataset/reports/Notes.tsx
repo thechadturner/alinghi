@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show, For } from "solid-js";
+import { createSignal, createMemo, onMount, Show, For } from "solid-js";
 import * as d3 from "d3";
 import DOMPurify from "dompurify";
 
@@ -8,6 +8,7 @@ import { apiEndpoints } from "@config/env";
 import { error as logError } from "../../../../utils/console";
 import { logPageLoad } from "../../../../utils/logging";
 import Loading from "../../../../components/utilities/Loading";
+import { speedUnitBracketUpper } from "../../../../utils/speedUnits";
 
 const { selectedClassName, selectedProjectId, selectedDatasetId } = persistantStore;
 
@@ -68,6 +69,8 @@ export default function NotesPage() {
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
   const [hasContent, setHasContent] = createSignal(false);
+
+  const speedMaxColumnHeader = createMemo(() => `SPEED ${speedUnitBracketUpper(persistantStore.defaultUnits())}`);
 
   // Helper function to fetch a dataset object
   const fetchDatasetObject = async (objectName: string): Promise<DatasetObject> => {
@@ -477,7 +480,7 @@ export default function NotesPage() {
             <table id="max-stats_table" class="table table-bordered table-striped">
               <thead class="thead-dark">
                 <tr>
-                  <th class="head">SPEED [KTS]</th>
+                  <th class="head">{speedMaxColumnHeader()}</th>
                   <th class="head">G-FORCE</th>
                   <th class="head">TRIM [DEG]</th>
                   <th class="head">HEEL [DEG]</th>

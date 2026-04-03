@@ -1,6 +1,7 @@
 import { createSignal, onMount, onCleanup, createEffect, Show, For, createMemo } from "solid-js";
 import * as d3 from "d3";
 import { persistantStore } from "../../../../../store/persistantStore";
+import { cheatSheetDatasetChannelHeaders, cheatSheetWindColumnsHint } from "../../../cheatSheetColumnLabels";
 import { sourcesStore } from "../../../../../store/sourcesStore";
 import { apiEndpoints } from "@config/env";
 import { getData, setupMediaContainerScaling } from "../../../../../utils/global";
@@ -35,28 +36,6 @@ const METRIC_OPTIONS: { label: string; value: string }[] = [
   { label: "JIB_CUNNO", value: "jib_cunno" },
   { label: "JIB_LEAD", value: "jib_lead" },
 ];
-
-/** Custom column headers when grouping by Channel (API key -> display label). Same set as METRIC_OPTIONS + CONFIG. */
-const CHANNEL_COLUMN_HEADERS: Record<string, string> = {
-    config: "CONFIG",
-    bsp: "BSP [KPH]",
-    twa: "TWA [DEG]",
-    vmg: "VMG [KPH]",
-    heel_n: "HEEL_N [DEG]",
-    pitch: "PITCH [DEG]",
-    rh_lwd: "RH_LWD [MM]",
-    rud_rake: "RUD_RAKE [DEG]",
-    rud_diff: "RUD_DIFF [DEG]",
-    db_cant: "DB_CANT [DEG]",
-    db_cant_eff: "DB_CANT_EFF [DEG]",
-    db_cant_stow: "DB_CANT_STOW [DEG]",
-    wing_ca1: "WING_CA1 [DEG]",
-    wing_twist: "WING_TWIST [DEG]",
-    wing_clew: "WING_CLEW [MM]",
-    jib_sht: "JIB_SHT [KGF]",
-    jib_cunno: "JIB_CUNNO [KGF]",
-    jib_lead: "JIB_LEAD [DEG]",
-  };
 
 type GroupBy = "channel" | "wind";
 type LegType = "upwind" | "downwind" | "reaching";
@@ -145,6 +124,8 @@ export default function CheatSheetPage() {
   const [isHoveredManeuver, setIsHoveredManeuver] = createSignal(false);
   const [showCopyManeuver, setShowCopyManeuver] = createSignal(false);
   const [copySuccessManeuver, setCopySuccessManeuver] = createSignal(false);
+
+  const channelColumnHeaders = createMemo(() => cheatSheetDatasetChannelHeaders(persistantStore.defaultUnits()));
 
   createEffect(() => {
     if (isHovered()) {
@@ -514,7 +495,7 @@ export default function CheatSheetPage() {
   /** Display label for table column: use CHANNEL_COLUMN_HEADERS when grouping by channel, else key as-is (wind: config -> CONFIG, bin numbers stay). */
   const getColumnHeader = (key: string): string => {
     if (groupBy() === "channel") {
-      return CHANNEL_COLUMN_HEADERS[key.toLowerCase()] ?? key;
+      return channelColumnHeaders()[key.toLowerCase()] ?? key;
     }
     if (key.toLowerCase() === "config") return "CONFIG";
     return key;
@@ -680,7 +661,7 @@ export default function CheatSheetPage() {
                 <p class="cheat-sheet-table-explanation">
                   Outliers are removed using IQR (values between the 25th and 75th percentiles). From that cleaned set we take the upper 10% by{" "}
                   {legType() === "reaching" ? "BSP polar%" : "VMG%"} and show the mean per CONFIG.
-                  {groupBy() === "wind" && " Columns are bins of TWS [kph]."}
+                  {groupBy() === "wind" && cheatSheetWindColumnsHint(persistantStore.defaultUnits())}
                 </p>
               </Show>
 
@@ -886,7 +867,7 @@ export default function CheatSheetPage() {
                   <Show when={rowsManeuver().length > 0}>
                     <p class="cheat-sheet-table-explanation">
                       From the 25th and 75th percentiles of Loss_total_tgt we take the lowest 10% of loss and show the mean per CONFIG.
-                      {groupByManeuver() === "wind" && " Columns are bins of TWS [kph]."}
+                      {groupByManeuver() === "wind" && cheatSheetWindColumnsHint(persistantStore.defaultUnits())}
                     </p>
                   </Show>
 

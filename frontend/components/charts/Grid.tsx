@@ -876,7 +876,7 @@ export default function Grid(props: GridProps) {
                                 )}
                             </div>
                             <div>
-                                <span class="font-medium text-gray-700 dark:text-gray-300">Grid Size:</span> {xAxisBins()} × {yAxisBins()} bins ({(effectiveXStep() ?? chartConfig()?.series?.[0]?.xaxis?.interval ?? 2)}° × {(effectiveYStep() ?? chartConfig()?.series?.[0]?.yaxis?.interval ?? 2)}kts intervals)
+                                <span class="font-medium text-gray-700 dark:text-gray-300">Grid Size:</span> {xAxisBins()} × {yAxisBins()} bins ({(effectiveXStep() ?? chartConfig()?.series?.[0]?.xaxis?.interval ?? 2)}° × {(effectiveYStep() ?? chartConfig()?.series?.[0]?.yaxis?.interval ?? 2)} per axis step)
                             </div>
                         </div>
                     </div>

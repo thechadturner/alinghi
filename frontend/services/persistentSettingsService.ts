@@ -1,10 +1,11 @@
 import { getData, postData, cleanQuotes } from '../utils/global';
 import { debug, error as logError, warn } from '../utils/console';
+import { normalizeSpeedDisplayUnit, type SpeedDisplayUnit } from '../utils/speedUnits';
 
 // Define the structure of persistent settings
 export interface PersistentSettings {
   'teamshare-theme': 'dark' | 'light' | 'medium';
-  'defaultUnits'?: 'knots' | 'meters';
+  'defaultUnits'?: SpeedDisplayUnit;
   colorType: string;
   selectedClassName: string;
   selectedDatasetId: number;
@@ -463,6 +464,10 @@ class PersistentSettingsService {
       }
       cleaned.performanceHistoryDateRange = dateRange;
     }
+
+    if (cleaned['defaultUnits'] !== undefined) {
+      cleaned['defaultUnits'] = normalizeSpeedDisplayUnit(cleaned['defaultUnits']);
+    }
     
     return cleaned;
   }
@@ -482,11 +487,17 @@ class PersistentSettingsService {
       'selectedProjectId', 'selectedSourceId', 'selectedSourceName', 'selectedYear'
     ];
     
-    // Also load defaultUnits from 'teamshare-units' localStorage key for backward compatibility
+    // Legacy teamshare-units → normalized kts/kph (prefer explicit defaultUnits key when set below)
     try {
-      const unitsValue = localStorage.getItem('teamshare-units');
-      if (unitsValue === 'knots' || unitsValue === 'meters') {
-        settings['defaultUnits'] = unitsValue;
+      const unitsRaw = localStorage.getItem('teamshare-units');
+      if (unitsRaw != null && unitsRaw !== '') {
+        let parsed: unknown = unitsRaw;
+        try {
+          parsed = JSON.parse(unitsRaw);
+        } catch {
+          /* raw string */
+        }
+        settings['defaultUnits'] = normalizeSpeedDisplayUnit(parsed);
       }
     } catch (error) {
       // Ignore error

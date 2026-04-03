@@ -12,6 +12,7 @@ import { debug as logDebug, warn as logWarn } from '../utils/console';
 import { huniDBStore } from './huniDBStore';
 import { apiEndpoints } from '@config/env';
 import { getData } from '../utils/global';
+import { speedUnitSuffix } from '../utils/speedUnits';
 
 export interface DefaultChannels {
   // Core navigation
@@ -61,16 +62,12 @@ let currentProjectKey = '';
 let initializationPromise: Promise<void> | null = null;
 
 /**
- * Get class-specific fallback channel names
- * AC40 uses _kph (kilometers per hour)
+ * Fallback channel names when API default_channels is missing.
+ * Speed suffix follows persisted user preference (kts / kph).
  */
-const getDefaultFallbacks = (className?: string): Record<string, string> => {
-  const classLower = className?.toLowerCase() || '';
-  const isAC40 = classLower === 'ac40';
-  
-  // AC40 uses _kph
-  const speedUnit = isAC40 ? 'kph' : 'kts';
-  
+const getDefaultFallbacks = (_className?: string): Record<string, string> => {
+  const speedUnit = speedUnitSuffix(persistantStore.defaultUnits());
+
   return {
     bsp_name: `Bsp_${speedUnit}`,
     tws_name: `Tws_${speedUnit}`,
@@ -97,7 +94,7 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
   const initializeDefaultChannels = async (signal?: AbortSignal): Promise<void> => {
     const className = persistantStore.selectedClassName();
     const projectId = persistantStore.selectedProjectId();
-    
+
     if (!className || !projectId) {
       logDebug('DefaultChannelsStore: No className or projectId, skipping initialization', { className, projectId });
       setDefaultChannels(null);
@@ -107,7 +104,7 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
     }
 
     const projectKey = `${className}:${projectId}`;
-    
+
     // If we already have channels for this project, don't refetch
     if (currentProjectKey === projectKey && defaultChannels() !== null) {
       logDebug('DefaultChannelsStore: Default channels already loaded for this project');
@@ -119,12 +116,12 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
       // First, try to get from HuniDB cache
       logDebug('DefaultChannelsStore: Checking HuniDB cache', { className, projectId });
       const cached = await huniDBStore.getObject(className, 'default_channels');
-      
+
       if (cached) {
         setDefaultChannels(cached);
         setIsReady(true);
         currentProjectKey = projectKey;
-        
+
         logDebug('DefaultChannelsStore: Default channels loaded from HuniDB cache', {
           channels: cached,
           bsp_name: cached.bsp_name,
@@ -145,11 +142,11 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
         logDebug('DefaultChannelsStore: User not logged in, skipping API request');
         return;
       }
-      
+
       logDebug('DefaultChannelsStore: Cache miss, fetching default channels from API', { className, projectId });
       const apiUrl = `${apiEndpoints.app.classes}/object?class_name=${encodeURIComponent(className)}&project_id=${projectId}&object_name=default_channels`;
       logDebug('DefaultChannelsStore: API URL', { apiUrl });
-      
+
       const response = await getData(apiUrl, signal);
 
       logDebug('DefaultChannelsStore: API response', {
@@ -198,7 +195,7 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
           return;
         }
       }
-      
+
       // Store in HuniDB for future use
       try {
         await huniDBStore.storeObject(className, 'default_channels', fetchedChannels);
@@ -207,11 +204,11 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
         logWarn('DefaultChannelsStore: Error storing default_channels in cache', cacheError);
         // Continue anyway - don't fail if cache write fails
       }
-      
+
       setDefaultChannels(fetchedChannels);
       setIsReady(true);
       currentProjectKey = projectKey;
-      
+
       logDebug('DefaultChannelsStore: Default channels loaded from API', {
         channels: fetchedChannels,
         bsp_name: fetchedChannels.bsp_name,
@@ -260,10 +257,10 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
   createEffect(() => {
     const className = persistantStore.selectedClassName();
     const projectId = persistantStore.selectedProjectId();
-    
+
     const projectKey = `${className}:${projectId}`;
     const abortController = new AbortController();
-    
+
     // Only fetch if project changed or channels not ready
     if (currentProjectKey !== projectKey || !isReady()) {
       if (className && projectId) {
@@ -278,7 +275,7 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
         currentProjectKey = '';
       }
     }
-    
+
     // Cleanup: abort request when effect re-runs or is disposed
     onCleanup(() => {
       abortController.abort();
@@ -295,11 +292,11 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
       const className = persistantStore.selectedClassName();
       const classFallbacks = getDefaultFallbacks(className);
       const defaultFallback = fallback || classFallbacks[channelKey] || channelKey;
-      
+
       const channels = defaultChannels();
       const isStoreReady = isReady();
       const value = channels?.[channelKey] || defaultFallback;
-      
+
       // Log warning if store is ready and API returned data but specific channel is missing
       // Don't warn if channels object is empty (API didn't return default_channels - using fallbacks is expected)
       // Skip warning for vmg_perc_name - it's not in API default_channels but fallback (VMG_PERC) is correct for HuniDB storage
@@ -311,12 +308,12 @@ export const defaultChannelsStore = createRoot<DefaultChannelsStore>(() => {
           className
         });
       }
-      
+
       // Log debug when store initializes and we have actual values
       if (isStoreReady && channels && channels[channelKey] && channels[channelKey] !== defaultFallback) {
         logDebug(`DefaultChannelsStore: Using actual channel name for ${channelKey}: ${channels[channelKey]}`);
       }
-      
+
       return value;
     };
   };

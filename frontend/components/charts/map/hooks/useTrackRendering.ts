@@ -10,6 +10,7 @@ import { defaultChannelsStore } from "../../../../store/defaultChannelsStore";
 import { apiEndpoints } from "../../../../config/env";
 import { getData } from "../../../../utils/global";
 import { debug } from "../../../../utils/console";
+import { bspValueFromRow, twsValueFromRow, vmgPercValueFromRow, vmgValueFromRow } from "../../../../utils/speedUnits";
 
 // Helper function to filter data for map - only applies selectedRange (brush) and cutEvents, not selectedRanges (events)
 const applyMapDataFilter = (data: any[]): any[] => {
@@ -245,7 +246,9 @@ export function useTrackRendering(config: TrackConfig) {
           const twsField = twsName();
           const twdField = twdName();
           
-          const [minTWS, maxTWS] = getOneSigmaRange(data, (p) => +(p[twsField]));
+          const [minTWS, maxTWS] = getOneSigmaRange(data, (p) =>
+            twsValueFromRow(p as Record<string, unknown>, twsField, 0)
+          );
           const [minTWD, maxTWD] = getOneSigmaRange(data, (p) => +(p[twdField]));
 
           myLinearColor.domain([minTWD, (minTWD + maxTWD) / 2, maxTWD]);
@@ -265,15 +268,16 @@ export function useTrackRendering(config: TrackConfig) {
           myLinearColor.clamp(true);
 
           const bspField = bspName();
-          const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => +(p[bspField]));
+          const [minBSP, maxBSP] = getOneSigmaRange(data, (p) =>
+            bspValueFromRow(p as Record<string, unknown>, bspField, 0)
+          );
           myLinearThickness.domain([minBSP, maxBSP]);
           myLinearThickness.range(["0.1", "3"]);
         } else if (maptype() === "VMG") {
           const vmgField = vmgName();
-          let [minVMG, maxVMG] = getOneSigmaRange(data, (p) => {
-            const val = p[vmgField] ?? p[vmgField.toLowerCase()] ?? p[vmgField.toUpperCase()] ?? p.Vmg ?? p.vmg;
-            return val !== undefined && val !== null ? Number(val) : 0;
-          });
+          let [minVMG, maxVMG] = getOneSigmaRange(data, (p) =>
+            vmgValueFromRow(p as Record<string, unknown>, vmgField, 0)
+          );
 
           myLinearColor.domain([minVMG,
             minVMG + (maxVMG - minVMG) * 0.50,
@@ -283,7 +287,9 @@ export function useTrackRendering(config: TrackConfig) {
           myLinearColor.clamp(true);
 
           const bspField = bspName();
-          const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => +(p[bspField]));
+          const [minBSP, maxBSP] = getOneSigmaRange(data, (p) =>
+            bspValueFromRow(p as Record<string, unknown>, bspField, 0)
+          );
           myLinearThickness.domain([minBSP, maxBSP]);
           myLinearThickness.range(["0.1", "3"]);
         }
@@ -307,10 +313,9 @@ export function useTrackRendering(config: TrackConfig) {
         const twsField = twsName();
         const twdField = twdName();
         
-        const [minTWS, maxTWS] = getOneSigmaRange(data, (p) => {
-          const val = p[twsField];
-          return val !== undefined && val !== null ? Number(val) : 0;
-        });
+        const [minTWS, maxTWS] = getOneSigmaRange(data, (p) =>
+          twsValueFromRow(p as Record<string, unknown>, twsField, 0)
+        );
         const [minTWD, maxTWD] = getOneSigmaRange(data, (p) => {
           const val = p[twdField];
           return val !== undefined && val !== null ? Number(val) : 0;
@@ -340,15 +345,16 @@ export function useTrackRendering(config: TrackConfig) {
         myLinearColor.clamp(true);
 
         const bspField = bspName();
-        const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => +(p[bspField]));
+        const [minBSP, maxBSP] = getOneSigmaRange(data, (p) =>
+          bspValueFromRow(p as Record<string, unknown>, bspField, 0)
+        );
         myLinearThickness.domain([minBSP, maxBSP]);
         myLinearThickness.range(["0.1", "3"]);
       } else if (maptype() === "VMG") {
         const vmgField = vmgName();
-        let [minVMG, maxVMG] = getOneSigmaRange(data, (p) => {
-          const val = p[vmgField] ?? p[vmgField.toLowerCase()] ?? p[vmgField.toUpperCase()] ?? p.Vmg ?? p.vmg;
-          return val !== undefined && val !== null ? Number(val) : 0;
-        });
+        let [minVMG, maxVMG] = getOneSigmaRange(data, (p) =>
+          vmgValueFromRow(p as Record<string, unknown>, vmgField, 0)
+        );
 
         // Ensure valid domain
         const validMinVMG = isNaN(minVMG) || !isFinite(minVMG) ? 0 : minVMG;
@@ -362,10 +368,9 @@ export function useTrackRendering(config: TrackConfig) {
         myLinearColor.clamp(true);
 
         const bspField = bspName();
-        const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => {
-          const val = p[bspField];
-          return val !== undefined && val !== null ? Number(val) : 0;
-        });
+        const [minBSP, maxBSP] = getOneSigmaRange(data, (p) =>
+          bspValueFromRow(p as Record<string, unknown>, bspField, 0)
+        );
         const validMinBSP = isNaN(minBSP) || !isFinite(minBSP) ? 0 : minBSP;
         const validMaxBSP = isNaN(maxBSP) || !isFinite(maxBSP) || maxBSP === validMinBSP ? validMinBSP + 1 : maxBSP;
         myLinearThickness.domain([validMinBSP, validMaxBSP]);
@@ -422,18 +427,16 @@ export function useTrackRendering(config: TrackConfig) {
       const color = myLinearColor(Number(twdVal));
       return color !== undefined ? color : "lightgrey";
     } else if (maptype() === "VMG%") {
-      // Use vmg_perc_name channel (same as old VMG behavior)
       const vmgPercField = vmgPercName();
-      const vmgPercVal = d[vmgPercField] ?? d[vmgPercField.toLowerCase()] ?? d[vmgPercField.toUpperCase()] ?? d.Vmg_perc ?? d.vmg_perc;
-      if (vmgPercVal === undefined || vmgPercVal === null || isNaN(Number(vmgPercVal))) return "lightgrey";
-      const color = myLinearColor(Number(vmgPercVal));
+      const vmgPercVal = vmgPercValueFromRow(d as Record<string, unknown>, vmgPercField, Number.NaN);
+      if (!Number.isFinite(vmgPercVal)) return "lightgrey";
+      const color = myLinearColor(vmgPercVal);
       return color !== undefined ? color : "lightgrey";
     } else if (maptype() === "VMG") {
-      // Use vmg_name channel (new option)
       const vmgField = vmgName();
-      const vmgVal = d[vmgField] ?? d[vmgField.toLowerCase()] ?? d[vmgField.toUpperCase()] ?? d.Vmg ?? d.vmg;
-      if (vmgVal === undefined || vmgVal === null || isNaN(Number(vmgVal))) return "lightgrey";
-      const color = myLinearColor(Number(vmgVal));
+      const vmgVal = vmgValueFromRow(d as Record<string, unknown>, vmgField, Number.NaN);
+      if (!Number.isFinite(vmgVal)) return "lightgrey";
+      const color = myLinearColor(vmgVal);
       return color !== undefined ? color : "lightgrey";
     } else if (maptype() === "STATE") {
       // State coloring: 0=red, 1=orange, 2=blue
@@ -492,12 +495,12 @@ export function useTrackRendering(config: TrackConfig) {
         return 2;
       } else if (maptype() === "WIND") {
         const twsField = twsName();
-        const twsVal = d[twsField];
-        return myLinearThickness(twsVal);
+        const twsVal = twsValueFromRow(d as Record<string, unknown>, twsField, Number.NaN);
+        return myLinearThickness(Number.isFinite(twsVal) ? twsVal : 0) || 2;
       } else if (maptype() === "VMG%" || maptype() === "VMG") {
         const bspField = bspName();
-        const bspVal = d[bspField] ?? d[bspField.toLowerCase()] ?? d[bspField.toUpperCase()] ?? d.Bsp ?? d.bsp;
-        return myLinearThickness(bspVal) || 2;
+        const bspVal = bspValueFromRow(d as Record<string, unknown>, bspField, Number.NaN);
+        return myLinearThickness(Number.isFinite(bspVal) ? bspVal : 0) || 2;
       } else if (maptype() === "PHASE") {
         return 2;
       } else {

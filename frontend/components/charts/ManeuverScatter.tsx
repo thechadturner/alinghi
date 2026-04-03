@@ -17,6 +17,7 @@ import { getColorByIndex } from "../../utils/colorScale";
 import { buildColorGrouping } from "../../utils/colorGrouping";
 import { user } from "../../store/userStore";
 import { persistantStore } from "../../store/persistantStore";
+import { speedUnitBracketUpper } from "../../utils/speedUnits";
 import { selectedGradesManeuvers, setSelectedGradesManeuvers } from "../../store/filterStore";
 import { getCurrentDatasetTimezone } from "../../store/datasetTimezoneStore";
 import { getStrokeColor as getThemeStrokeColor, isDark } from "../../store/themeStore";
@@ -757,7 +758,7 @@ export default function ManeuverScatter(props: ManeuverScatterProps) {
         .attr("font-size", "16px")
         .attr("user-select", "none")
         .attr("pointer-events", "none")
-        .text("TWS [KPH]");
+        .text(`TWS ${speedUnitBracketUpper(persistantStore.defaultUnits())}`);
 
       // Helper function to check if hover effects should be disabled
       // Optimized: only check flags, no DOM queries (which can cause stalls)
@@ -822,8 +823,9 @@ export default function ManeuverScatter(props: ManeuverScatterProps) {
             tooltipRows += `
                 <tr><td>SOURCE</td><td>${String(d.source_name)}</td></tr>`;
           }
+          const twsHdr = `TWS ${speedUnitBracketUpper(persistantStore.defaultUnits())}`;
           tooltipRows += `
-                <tr><td>TWS [KPH]</td><td>${xVal}</td></tr>
+                <tr><td>${twsHdr}</td><td>${xVal}</td></tr>
                 <tr><td>${yLabel}</td><td>${yVal}</td></tr>`;
 
           const html = `<table class='table-striped'>${tooltipRows}

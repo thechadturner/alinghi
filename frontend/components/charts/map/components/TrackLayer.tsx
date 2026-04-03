@@ -9,11 +9,11 @@ import { warn, error as logError, debug } from "../../../../utils/console";
 import { formatTime } from "../../../../utils/global";
 import { renderSegmentedTracks } from "../renderers/SegmentedTrackRenderer";
 import { renderContinuousTracks } from "../renderers/ContinuousTrackRenderer";
-import { 
-  getSampleRate, 
-  getExpandedViewportBounds, 
-  isPointInViewport, 
-  sampleTrack, 
+import {
+  getSampleRate,
+  getExpandedViewportBounds,
+  isPointInViewport,
+  sampleTrack,
   shouldRedrawForZoom,
   getCombinedSampleRate
 } from "../utils/lodUtils";
@@ -21,6 +21,7 @@ import {
 import { persistantStore } from "../../../../store/persistantStore";
 import { getCurrentDatasetTimezone } from "../../../../store/datasetTimezoneStore";
 import { getInterpolatedPointAtTime } from "../../../../utils/trackInterpolation";
+import { bspValueFromRow, mapSpeedChannelTooltipLabelHtml, twsValueFromRow } from "../../../../utils/speedUnits";
 const { selectedClassName } = persistantStore;
 
 // Extend Window interface for timeout properties
@@ -55,7 +56,7 @@ export interface TrackLayerProps {
 export default function TrackLayer(props: TrackLayerProps) {
   // Read maptype directly from store to ensure reactivity when color option changes
   const { colorType: maptype } = persistantStore;
-  
+
   // Configuration for track rendering - use store maptype for reactivity
   const config = {
     maptype: maptype(),
@@ -65,10 +66,10 @@ export default function TrackLayer(props: TrackLayerProps) {
   };
 
   const { initScales, getColor, getThickness, applyFilters, getTimestamp, sourceColor, sourceColorLoaded } = useTrackRendering(config as TrackConfig);
-  
+
   // Get dynamic channel names from store
   const { latName, lngName, twsName, bspName } = defaultChannelsStore;
-  
+
   // Helper function to get Lat/Lng values with case-insensitive fallback
   const getLat = (d: any): number | undefined => {
     if (!d) return undefined;
@@ -78,7 +79,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     const numVal = Number(val);
     return isNaN(numVal) ? undefined : numVal;
   };
-  
+
   const getLng = (d: any): number | undefined => {
     if (!d) return undefined;
     const lngField = lngName();
@@ -96,7 +97,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     }
     return getColor(d, prev, effectiveCfg);
   };
-  
+
   let trackOverlay: d3.Selection<SVGGElement, unknown, HTMLElement, any> | null = null;
   let svg: d3.Selection<SVGSVGElement, unknown, HTMLElement, any> | null = null;
   let overlayContainer: HTMLElement | null = null;
@@ -105,7 +106,7 @@ export default function TrackLayer(props: TrackLayerProps) {
   let isInitialized = false; // Flag to prevent premature renders during initialization
   let animationFrameId: number | null = null;
   let isUpdating = false;
-  
+
   // LOD: Track original unfiltered data and last render zoom level
   let originalData: TrackPoint[] = [];
   let lastRenderZoom: number | null = null;
@@ -113,29 +114,29 @@ export default function TrackLayer(props: TrackLayerProps) {
   // Helper function to filter data by time window
   const filterDataByTimeWindow = (data: TrackPoint[], currentTime: Date, windowMinutes: number): TrackPoint[] => {
     if (windowMinutes === 0) return data; // Full window - return all data
-    
+
     // Calculate window start (windowMinutes before currentTime)
     const windowStart = new Date(currentTime.getTime() - (windowMinutes * 60 * 1000));
     const windowEnd = currentTime;
-    
+
     // No future preview - show track only up to current time
-    
+
     // Filter data to include only past window up to current time
     const filteredData = data.filter(d => {
       const timestamp = getTimestamp(d);
       return timestamp >= windowStart && timestamp <= windowEnd;
     });
-    
+
     return filteredData;
   };
 
   // Helper function to calculate opacity based on data age
   const getDataOpacity = (dataPoint: TrackPoint, currentTime: Date, windowMinutes: number): number => {
     if (windowMinutes === 0) return 1.0; // Full opacity for full window
-    
+
     const dataTime = getTimestamp(dataPoint);
     const oneMinuteMs = 60 * 1000; // 1 minute in milliseconds
-    
+
     if (dataTime <= currentTime) {
       // Past data - taper to 0.4 within 1 minute of selected time
       const timeDiff = currentTime.getTime() - dataTime.getTime();
@@ -167,13 +168,27 @@ export default function TrackLayer(props: TrackLayerProps) {
     const bspField = bspName();
     const twdField = twdName();
     const twaField = twaName();
+    const displayUnit = persistantStore.defaultUnits();
+    const twsLabelHtml =
+      mapSpeedChannelTooltipLabelHtml(twsField, displayUnit) ?? "TWS";
+    const bspLabelHtml =
+      mapSpeedChannelTooltipLabelHtml(bspField, displayUnit) ?? "BSP";
+    const row = point as unknown as Record<string, unknown>;
+    const twsTooltip = (() => {
+      const n = twsValueFromRow(row, twsField, Number.NaN);
+      return Number.isFinite(n) ? String(n) : '';
+    })();
+    const bspTooltip = (() => {
+      const n = bspValueFromRow(row, bspField, Number.NaN);
+      return Number.isFinite(n) ? String(n) : '';
+    })();
 
-    if (selectedClassName() === 'gp50') {
+    if (selectedClassName() === 'ac40') {
       return `<table class='table-striped'>
         <tr><td>TIME</td><td>${formatTime(point.Datetime, timezone)}</td></tr>
-        <tr><td>TWS</td><td>${point[twsField] || ''}</td></tr>
+        <tr><td>${twsLabelHtml}</td><td>${twsTooltip}</td></tr>
         <tr><td>TWD</td><td>${point[twdField] || ''}</td></tr>
-        <tr><td>BSP</td><td>${point[bspField] || ''}</td></tr>
+        <tr><td>${bspLabelHtml}</td><td>${bspTooltip}</td></tr>
         <tr><td>TWA</td><td>${point[twaField] || ''}</td></tr>
         <tr><td>GRADE</td><td>${point.grade || point.Grade || ''}</td></tr>
         <tr><td>RACE</td><td>${point.race_number || point.Race_number || ''}</td></tr>
@@ -184,9 +199,9 @@ export default function TrackLayer(props: TrackLayerProps) {
     } else {
       return `<table class='table-striped'>
         <tr><td>TIME</td><td>${formatTime(point.Datetime, timezone)}</td></tr>
-        <tr><td>TWS</td><td>${point[twsField] || ''}</td></tr>
+        <tr><td>${twsLabelHtml}</td><td>${twsTooltip}</td></tr>
         <tr><td>TWD</td><td>${point[twdField] || ''}</td></tr>
-        <tr><td>BSP</td><td>${point[bspField] || ''}</td></tr>
+        <tr><td>${bspLabelHtml}</td><td>${bspTooltip}</td></tr>
         <tr><td>TWA</td><td>${point[twaField] || ''}</td></tr>
         <tr><td>GRADE</td><td>${point.grade || point.Grade || ''}</td></tr>
         <tr><td>RACE</td><td>${point.race_number || point.Race_number || ''}</td></tr>
@@ -204,7 +219,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       debug('TrackLayer: createTrackOverlay - no map available');
       return;
     }
-    
+
     // Check if map is loaded
     if (!props.map.isStyleLoaded()) {
       props.map.on('styledata', () => {
@@ -217,7 +232,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     if (existingContainer) {
       d3.select(existingContainer).selectAll(".track-overlay").remove();
     }
-    
+
     // Create SVG overlay - attach to mapboxgl-canvas-container like RaceCourseLayer
     let container: HTMLElement | null = null;
     try {
@@ -225,7 +240,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     } catch (e) {
       debug('TrackLayer: getCanvasContainer failed, trying .map element', e);
     }
-    
+
     if (!container) {
       try {
         container = props.map.getContainer() as HTMLElement;
@@ -233,18 +248,18 @@ export default function TrackLayer(props: TrackLayerProps) {
         debug('TrackLayer: getContainer fallback failed', e);
       }
     }
-    
+
     if (!container) {
       debug('TrackLayer: Container not found');
       return;
     }
-    
+
     const mapRect = container.getBoundingClientRect();
     const clientWidth = container.clientWidth || mapRect.width;
     const clientHeight = container.clientHeight || mapRect.height;
     const width = mapRect.width || clientWidth || 0;
     const height = mapRect.height || clientHeight || 0;
-    
+
     overlayContainer = container;
     svg = d3.select(container)
       .append("svg")
@@ -261,7 +276,7 @@ export default function TrackLayer(props: TrackLayerProps) {
 
     trackOverlay = svg.append("g").attr("class", "track-layer");
     debug('TrackLayer: trackOverlay created:', !!trackOverlay);
-    
+
     // If data is already available and we're initialized, render immediately
     // This handles the case where data arrived before the overlay was created
     if (isInitialized && props.data && props.data.length > 0 && props.map) {
@@ -275,7 +290,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       }, 0);
     }
     debug('TrackLayer: trackOverlay created:', trackOverlay);
-    
+
     // Add a background rectangle that allows map interactions to pass through
     svg.append("rect")
       .attr("class", "map-interaction-background")
@@ -283,7 +298,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       .attr("height", "100%")
       .attr("fill", "transparent")
       .style("pointer-events", "none");
-    
+
     // Add resize handler to update SVG dimensions
     const resizeHandler = () => {
       const newRect = container.getBoundingClientRect();
@@ -291,10 +306,10 @@ export default function TrackLayer(props: TrackLayerProps) {
         svg.attr("width", newRect.width).attr("height", newRect.height);
       }
     };
-    
+
     (window as any).trackLayerResizeHandler = resizeHandler;
     window.addEventListener('resize', resizeHandler);
-    
+
     return trackOverlay;
   };
 
@@ -305,36 +320,36 @@ export default function TrackLayer(props: TrackLayerProps) {
       debug('[TrackLayer] Skipping render - source color not loaded yet');
       return;
     }
-    
+
     if (!trackOverlay) {
       debug('[TrackLayer] Skipping render - trackOverlay is null');
       return;
     }
-    
+
     if (!svg) {
       debug('[TrackLayer] Skipping render - svg is null');
       return;
     }
-    
+
     if (!props.map) {
       debug('[TrackLayer] Skipping render - props.map is null');
       return;
     }
-    
+
     if (isDrawing) {
       debug('[TrackLayer] Skipping render - already drawing');
       return;
     }
-    
+
     isDrawing = true;
 
     try {
       // LOD: Store original data for redraw logic
       originalData = data;
-      
+
       // LOD: Get current zoom level (from prop or map)
       const currentZoom = props.zoomLevel ?? props.map.getZoom();
-      
+
       // LOD: Check if we need to redraw based on zoom level crossing even boundaries
       const needsRedraw = forceRedraw || shouldRedrawForZoom(currentZoom, lastRenderZoom);
 
@@ -345,7 +360,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       const timeForFilter = effectiveTime ?? currentTime;
       const currentTimeWindow = timeWindow();
       const shouldRenderForTimeWindow = currentTimeWindow > 0;
-      
+
       // Early return if no redraw needed and not forced (saves processing 26k+ points)
       // Note: forceRedraw=true is used when selection changes, so we always render in that case
       // When timeWindow is 0, we can skip if zoom hasn't changed (normal LOD behavior)
@@ -353,18 +368,18 @@ export default function TrackLayer(props: TrackLayerProps) {
         isDrawing = false;
         return;
       }
-      
+
       if (shouldRenderForTimeWindow) {
         debug('[TrackLayer] Forcing render due to active time window:', currentTimeWindow);
       }
-      
+
       // Initialize scales and apply filters
       // Note: applyFilters only filters by selectedRange (brush) and cutEvents, not selectedRanges (events)
       // This allows the map to show full dataset with overlay for event selections
       untrack(() => { initScales(data, config); });
       const dataAfterBrush = applyFilters(data);
       let filteredData = dataAfterBrush;
-      
+
       // Apply time window filtering if time window is active
       const beforeTimeWindowFilter = filteredData.length;
       if (currentTimeWindow > 0 && timeForFilter) {
@@ -381,11 +396,11 @@ export default function TrackLayer(props: TrackLayerProps) {
       } else {
         debug(`[TrackLayer] Time window filter skipped: timeWindow=${currentTimeWindow}, hasCurrentTime=${!!currentTime}`);
       }
-      
+
       // LOD: Apply sampling based on current zoom level and point density
       const viewportBounds = getExpandedViewportBounds(props.map);
       const pointsBeforeLOD = filteredData.length;
-      
+
       // Get combined sample rate (maximum of zoom-based and density-based)
       const lodInfo = getCombinedSampleRate(
         currentZoom,
@@ -396,32 +411,32 @@ export default function TrackLayer(props: TrackLayerProps) {
         5000 // threshold: 5000 points
       );
       const sampleRate = lodInfo.sampleRate;
-      
+
       // Apply sampling to data
       if (sampleRate > 1 && filteredData.length > 0) {
         // Sample the entire dataset as a single track
         filteredData = sampleTrack(filteredData, sampleRate, currentZoom);
       }
-      
+
       // Calculate statistics for logging
       const totalPointsInData = data.reduce((sum, point) => sum + 1, 0);
       const totalPointsDrawn = filteredData.reduce((sum, point) => sum + 1, 0);
       const percentage = totalPointsInData > 0 ? ((totalPointsDrawn / totalPointsInData) * 100).toFixed(1) : '0.0';
-      
+
       // Enhanced logging with density information
-      const densityInfo = lodInfo.pointCountInViewport > 0 
+      const densityInfo = lodInfo.pointCountInViewport > 0
         ? `, Points in viewport: ${lodInfo.pointCountInViewport}, Density rate: ${lodInfo.densitySampleRate}x`
         : '';
       debug(`[TrackLayer] Map LOD: Zoom ${currentZoom.toFixed(2)}, Zoom rate: ${lodInfo.zoomSampleRate}x${densityInfo}, Combined rate: ${sampleRate}x, Points before LOD: ${pointsBeforeLOD}, Total points in data: ${totalPointsInData}, Points drawn: ${totalPointsDrawn} (${percentage}%)`);
-      
+
       // Update lastRenderZoom to track current zoom level
       lastRenderZoom = currentZoom;
-      
+
       // LOD: Update config with zoom level so it's available for gap detection in update functions
       config.zoomLevel = currentZoom;
-      
+
       debug(`[TrackLayer] Before coordinate validation: ${filteredData.length} points`);
-      
+
       // Validate that we have points with valid coordinates
       let validPoints: TrackPoint[] = [];
       let invalidCount = 0;
@@ -437,40 +452,40 @@ export default function TrackLayer(props: TrackLayerProps) {
           }
         }
       });
-      
+
       debug(`[TrackLayer] Coordinate validation: ${validPoints.length} valid out of ${filteredData.length} total points (${invalidCount} invalid)`);
-      
+
       if (validPoints.length < 2) {
         debug(`[TrackLayer] Not enough valid points to render: ${validPoints.length} valid out of ${filteredData.length} total`);
         return;
       }
-      
+
       debug(`[TrackLayer] Validation passed, proceeding with ${validPoints.length} points`);
-      
+
       // Use validated points
       filteredData = validPoints;
       currentFilteredData = filteredData; // Store for render function
-      
+
       debug(`[TrackLayer] After validation: ${filteredData.length} points ready to render`);
 
       // Choose renderer based on maptype
       // Read props.maneuversEnabled - now tracked in the unified effect above
       // This will be reactive when the effect re-runs due to maneuversEnabled changes
       const maneuversEnabledValue = props.maneuversEnabled ?? true;
-      
+
       // LOD: Adjust samplingFrequency based on the sample rate we applied
       // If we sampled at 4x, the effective frequency is 1/4 of original
       // This ensures gap detection works correctly with sampled data
       const effectiveSamplingFrequency = props.samplingFrequency / sampleRate;
-      
+
       // LOD: Disable showGaps in config when zoom < 16 to prevent getColor/getThickness from returning transparent/0
-      const effectiveConfig = { 
-        ...config, 
+      const effectiveConfig = {
+        ...config,
         sourceColor: sourceColor(), // Pass the actual source color
         zoomLevel: currentZoom, // Pass zoom level for gap detection control
         showGaps: currentZoom >= 16 ? config.showGaps : false // Disable gap detection in color/thickness functions at low zoom
       };
-      
+
       const rendererProps = {
         data: filteredData,
         map: props.map,
@@ -491,7 +506,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       };
 
       debug(`[TrackLayer] About to render: filteredData.length=${filteredData.length}, maptype=${config.maptype}, hasMap=${!!props.map}, hasTrackOverlay=${!!trackOverlay}`);
-      
+
       let result;
       if (config.maptype === "DEFAULT") {
         // Use continuous renderer for DEFAULT mode
@@ -527,36 +542,36 @@ export default function TrackLayer(props: TrackLayerProps) {
   let lastZoom = 0;
   let lastBearing = 0;
   let lastPitch = 0;
-  
+
   const UPDATE_THROTTLE_MS = 16; // ~60fps
   const MOVEMENT_THRESHOLD = 0.1; // pixels
   const ZOOM_THRESHOLD = 0.01;
   const ROTATION_THRESHOLD = 0.1; // degrees
-  
+
   // Detect if map is currently moving
   const checkMapMovement = () => {
     if (!props.map) return false;
-    
+
     const currentCenter = props.map.getCenter();
     const currentZoom = props.map.getZoom();
     const currentBearing = props.map.getBearing();
     const currentPitch = props.map.getPitch();
-    
+
     const centerMoved = Math.abs(currentCenter.lng - lastMapCenter.lng) > MOVEMENT_THRESHOLD ||
-                       Math.abs(currentCenter.lat - lastMapCenter.lat) > MOVEMENT_THRESHOLD;
+      Math.abs(currentCenter.lat - lastMapCenter.lat) > MOVEMENT_THRESHOLD;
     const zoomChanged = Math.abs(currentZoom - lastZoom) > ZOOM_THRESHOLD;
     const bearingChanged = Math.abs(currentBearing - lastBearing) > ROTATION_THRESHOLD;
     const pitchChanged = Math.abs(currentPitch - lastPitch) > ROTATION_THRESHOLD;
-    
+
     const moving = centerMoved || zoomChanged || bearingChanged || pitchChanged;
-    
+
     if (moving) {
       lastMapCenter = currentCenter;
       lastZoom = currentZoom;
       lastBearing = currentBearing;
       lastPitch = currentPitch;
     }
-    
+
     return moving;
   };
 
@@ -586,7 +601,7 @@ export default function TrackLayer(props: TrackLayerProps) {
   // Hybrid track position update logic
   const performHybridTrackPositionUpdate = () => {
     if (!trackOverlay || !props.map || currentFilteredData.length === 0 || isUpdating) return;
-    
+
     isUpdating = true;
 
     if (isMapMoving) {
@@ -596,7 +611,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       // When stationary, do full coordinate updates for accuracy
       performFullCoordinateUpdate();
     }
-    
+
     isUpdating = false;
   };
 
@@ -631,14 +646,14 @@ export default function TrackLayer(props: TrackLayerProps) {
       const currentZoom = props.zoomLevel ?? props.map?.getZoom() ?? 16;
       const disableGapDetection = currentZoom < 16;
       const gapThresholdMs = disableGapDetection ? Infinity : 3000;
-      
+
       // For segmented lines, update each line element
       // Track which line index we're updating (skip gaps)
       let lineIndex = 0;
       for (let i = 1; i < currentFilteredData.length && lineIndex < lines.size(); i++) {
         const prev = currentFilteredData[i - 1];
         const curr = currentFilteredData[i];
-        
+
         // Check for time gap - if > threshold, skip this segment (unless small gap at consecutive leg boundary)
         // When zoom < 12, gap detection is disabled (gapThresholdMs = Infinity)
         if (prev && curr && prev.Datetime && curr.Datetime) {
@@ -656,19 +671,19 @@ export default function TrackLayer(props: TrackLayerProps) {
             continue;
           }
         }
-        
+
         const line = lines.nodes()[lineIndex];
         if (line && prev && curr) {
           const prevLat = getLat(prev);
           const prevLng = getLng(prev);
           const currLat = getLat(curr);
           const currLng = getLng(curr);
-          
+
           if (prevLat === undefined || prevLng === undefined || currLat === undefined || currLng === undefined) {
             lineIndex++;
             continue;
           }
-          
+
           const x1 = props.map.project([prevLng, prevLat]).x;
           const y1 = props.map.project([prevLng, prevLat]).y;
           const x2 = props.map.project([currLng, currLat]).x;
@@ -682,7 +697,7 @@ export default function TrackLayer(props: TrackLayerProps) {
           lineIndex++;
         }
       }
-      
+
       // Hide any remaining lines that shouldn't be visible (due to gaps or fewer segments)
       for (let i = lineIndex; i < lines.size(); i++) {
         const line = lines.nodes()[i];
@@ -710,17 +725,17 @@ export default function TrackLayer(props: TrackLayerProps) {
           if (dLat === undefined || dLng === undefined) return 0;
           return props.map.project([dLng, dLat]).y;
         });
-      
+
       // Create continuous segments with gap detection (same logic as ContinuousTrackRenderer)
       const segments = createContinuousSegmentsForUpdate(currentFilteredData, props.samplingFrequency, config);
-      
+
       // Update each path with new coordinates
       // Selection overlay paths have data bound via .datum(), use that data
       // Regular paths use the segments array
-      paths.each(function(d, i) {
+      paths.each(function (d, i) {
         const pathElement = d3.select(this);
         const isSelection = pathElement.classed("selection-overlay");
-        
+
         if (isSelection && d) {
           // For selection paths, the data is bound via .datum(segment)
           // This data will be automatically available as 'd' parameter
@@ -778,11 +793,11 @@ export default function TrackLayer(props: TrackLayerProps) {
   const createContinuousSegmentsForUpdate = (data: TrackPoint[], samplingFrequency: number, config: any): TrackPoint[][] => {
     const segments: TrackPoint[][] = [];
     let currentSegment: TrackPoint[] = [];
-    
+
     // LOD: Disable gap detection when zoom < 16 to prevent breaking sampled tracks
     const zoomLevel = config.zoomLevel ?? props.map?.getZoom() ?? 16;
     const disableGapDetection = zoomLevel < 16;
-    
+
     const expectedInterval = 1000 / samplingFrequency;
     const gapThreshold = disableGapDetection ? Infinity : (config.gapThreshold || (expectedInterval * 3));
 
@@ -800,7 +815,7 @@ export default function TrackLayer(props: TrackLayerProps) {
           timeDiff > gapThreshold &&
           timeDiff <= LEG_BOUNDARY_BRIDGE_MS &&
           Math.abs((currLeg ?? 0) - (prevLeg ?? 0)) === 1;
-        
+
         // Break segment only on time gaps (not on grade/event changes for continuous rendering)
         // When zoom < 12, gap detection is disabled (gapThreshold = Infinity). Don't break for small leg-boundary gaps.
         if (timeDiff > gapThreshold && !bridgeLegBoundary) {
@@ -868,7 +883,7 @@ export default function TrackLayer(props: TrackLayerProps) {
   // Handle track mouse over for tooltip
   const handleTrackMouseOver = (event: MouseEvent, point: TrackPoint) => {
     const tooltipContent = getTooltipContent(point);
-    
+
     // Use viewport coordinates (clientX/clientY) since tooltip uses position: fixed
     setTooltip({
       visible: true,
@@ -892,7 +907,7 @@ export default function TrackLayer(props: TrackLayerProps) {
   let lastSelectedRangeHash: string | null = null;
   let lastUnifiedDataLength = 0;
   let lastMaptype: string | null = null;
-  
+
   // Unified effect to render tracks when data, maptype, or global filters change
   createEffect(() => {
     const currentData = props.data;
@@ -907,12 +922,12 @@ export default function TrackLayer(props: TrackLayerProps) {
     const colorLoaded = sourceColorLoaded();
     // Watch maneuversEnabled to trigger re-render when zoom or toggle changes
     const currentManeuversEnabled = props.maneuversEnabled;
-    
+
     // Check if data length changed significantly (e.g., brush clear going from filtered to full data)
     const currentDataLength = currentData?.length || 0;
     const dataLengthChanged = currentDataLength !== lastUnifiedDataLength;
     const significantDataChange = dataLengthChanged && Math.abs(currentDataLength - lastUnifiedDataLength) > (lastUnifiedDataLength * 0.1); // 10% change threshold
-    
+
     // Check if selectedRange changed to force redraw
     const currentSelectedRangeHash = JSON.stringify(currentSelectedRange || []);
     const selectedRangeChanged = currentSelectedRangeHash !== lastSelectedRangeHash;
@@ -925,7 +940,7 @@ export default function TrackLayer(props: TrackLayerProps) {
         newLength: currentSelectedRange?.length || 0
       });
     }
-    
+
     // Also check if hasSelection changed (going from true to false when clearing)
     let lastHasSelection = window.lastTrackLayerHasSelection;
     const hasSelectionChanged = currentHasSelection !== lastHasSelection;
@@ -936,7 +951,7 @@ export default function TrackLayer(props: TrackLayerProps) {
         new: currentHasSelection
       });
     }
-    
+
     // Check if maptype (color scheme) changed to force redraw
     const maptypeChanged = currentMaptype !== lastMaptype;
     if (maptypeChanged) {
@@ -946,39 +961,39 @@ export default function TrackLayer(props: TrackLayerProps) {
         new: currentMaptype
       });
     }
-    
+
     // Force redraw if selectedRange, hasSelection, maptype, or data length changed significantly
     const shouldForceRedraw = selectedRangeChanged || hasSelectionChanged || significantDataChange || maptypeChanged;
-    
+
     // Update last data length for next comparison
     if (dataLengthChanged) {
       lastUnifiedDataLength = currentDataLength;
     }
-    
+
     if (!currentData || currentData.length === 0 || !trackOverlay || !currentMap) {
       debug('TrackLayer: Skipping render - data:', currentData?.length, 'trackOverlay:', !!trackOverlay, 'map:', !!currentMap);
       return;
     }
-    
+
     // Don't render until source color is loaded
     if (!colorLoaded) {
       debug('TrackLayer: Skipping render - source color not loaded yet');
       return;
     }
-    
+
     // Skip render during initialization to prevent multiple renders
     if (!isInitialized) {
       debug('TrackLayer: Skipping render during initialization');
       return;
     }
-    
+
     // When timeWindow is 0, add debouncing to prevent excessive redraws during animation
     if (currentTimeWindow === 0) {
       // Clear any existing timeout
       if (window.trackRenderTimeout) {
         clearTimeout(window.trackRenderTimeout);
       }
-      
+
       // Debounce track rendering for better performance during animation
       // But if selection changed, render immediately to show full track
       const delay = shouldForceRedraw ? 0 : 100;
@@ -1006,7 +1021,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     if (!colorLoaded) {
       return;
     }
-    
+
     // Only re-render tracks when time window changes, not when selectedTime changes during animation
     if (currentData && currentData.length > 0 && trackOverlay && currentTimeWindow > 0) {
 
@@ -1015,7 +1030,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       if (window.trackRedrawTimeout) {
         clearTimeout(window.trackRedrawTimeout);
       }
-      
+
       // Set new timeout for delayed redraw
       window.trackRedrawTimeout = setTimeout(() => {
         debug('TrackLayer: Delayed track redraw for time window:', currentTimeWindow, 'minutes');
@@ -1033,16 +1048,16 @@ export default function TrackLayer(props: TrackLayerProps) {
       lastZoom = props.map.getZoom();
       lastBearing = props.map.getBearing();
       lastPitch = props.map.getPitch();
-      
+
       // Use 'render' event for smooth, frame-synced updates during map movements
       props.map.on("render", updateTrackPositions);
-      
+
       // Add movement detection events
       props.map.on("movestart", () => {
         isMapMoving = true;
         debug('TrackLayer: Map movement started - using transform-based updates');
       });
-      
+
       props.map.on("zoomstart", () => {
         isMapMoving = true;
         debug('TrackLayer: Map zoom started - using transform-based updates');
@@ -1051,17 +1066,17 @@ export default function TrackLayer(props: TrackLayerProps) {
           trackOverlay.style('opacity', '0');
         }
       });
-      
+
       props.map.on("rotatestart", () => {
         isMapMoving = true;
         debug('TrackLayer: Map rotation started - using transform-based updates');
       });
-      
+
       props.map.on("pitchstart", () => {
         isMapMoving = true;
         debug('TrackLayer: Map pitch started - using transform-based updates');
       });
-      
+
       // Keep other events for immediate updates when needed
       props.map.on("moveend", () => {
         isMapMoving = false;
@@ -1075,7 +1090,7 @@ export default function TrackLayer(props: TrackLayerProps) {
           updateTrackPositions();
         }
       });
-      
+
       props.map.on("zoomend", () => {
         isMapMoving = false;
         debug('TrackLayer: Map zoom ended - switching to full coordinate updates');
@@ -1092,32 +1107,32 @@ export default function TrackLayer(props: TrackLayerProps) {
           updateTrackPositions();
         }
       });
-      
+
       props.map.on("rotateend", () => {
         isMapMoving = false;
         debug('TrackLayer: Map rotation ended - switching to full coordinate updates');
         updateTrackPositions();
       });
-      
+
       props.map.on("pitchend", () => {
         isMapMoving = false;
         debug('TrackLayer: Map pitch ended - switching to full coordinate updates');
         updateTrackPositions();
       });
-      
+
       props.map.on("viewreset", updateTrackPositions);
     }
   });
 
   onMount(() => {
     debug('TrackLayer: onMount called with maptype:', config.maptype);
-    
+
     // Set initialization flag before creating overlay
     // This allows the overlay creation to trigger a render if data is already available
     isInitialized = true;
-    
+
     createTrackOverlay();
-    
+
     // Render data if it's already available and overlay was created synchronously
     // (If overlay creation was async, the render will happen in createTrackOverlay)
     if (props.data && props.data.length > 0 && props.map && trackOverlay) {
@@ -1135,7 +1150,7 @@ export default function TrackLayer(props: TrackLayerProps) {
     const currentMap = props.map;
     const currentData = props.data;
     const colorLoaded = sourceColorLoaded();
-    
+
     // Only proceed if initialized and both map and data are available
     if (!isInitialized) return;
     if (!currentMap || !currentData || currentData.length === 0) return;
@@ -1144,7 +1159,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       debug('TrackLayer: Map and data available but source color not loaded yet');
       return;
     }
-    
+
     // If overlay doesn't exist yet, try to create it
     if (!trackOverlay) {
       debug('TrackLayer: Map and data available but no overlay, creating overlay...');
@@ -1152,13 +1167,13 @@ export default function TrackLayer(props: TrackLayerProps) {
       // After creating overlay, check again (will be handled by the render in createTrackOverlay or next effect run)
       return;
     }
-    
+
     // Only render if data length actually changed or this is the first render
     // This prevents re-rendering when props.data gets a new array reference but same content
     const dataLengthChanged = currentData.length !== lastDataLength;
     if (!hasRenderedInitialData || dataLengthChanged) {
       debug('TrackLayer: Map and data availability effect - map:', !!currentMap, 'data length:', currentData.length, 'sourceColorLoaded:', colorLoaded, 'dataLengthChanged:', dataLengthChanged);
-      
+
       // Use a small delay to ensure map is fully ready
       const timeoutId = setTimeout(() => {
         if (currentMap && currentData && currentData.length > 0 && trackOverlay) {
@@ -1171,7 +1186,7 @@ export default function TrackLayer(props: TrackLayerProps) {
           hasRenderedInitialData = true;
         }
       }, 100);
-      
+
       return () => clearTimeout(timeoutId);
     }
   });
@@ -1181,12 +1196,12 @@ export default function TrackLayer(props: TrackLayerProps) {
     const currentTime = selectedTime();
     const currentTimeWindow = timeWindow();
     const colorLoaded = sourceColorLoaded();
-    
+
     if (!props.map || !props.data || props.data.length === 0) return;
     if (!isInitialized) return;
     // Don't render until source color is loaded
     if (!colorLoaded) return;
-    
+
     if (currentTime && currentTimeWindow > 0) {
       debug('TrackLayer: selectedTime changed with active timeWindow - re-rendering');
       renderTracks(props.data);
@@ -1205,11 +1220,11 @@ export default function TrackLayer(props: TrackLayerProps) {
     const currentTriggerSelection = triggerSelection();
     const currentData = props.data;
     const colorLoaded = sourceColorLoaded();
-    
+
     // Create hash of selection state to detect actual changes
     const eventsHash = currentSelectedEvents ? JSON.stringify([...currentSelectedEvents].sort((a, b) => a - b)) : '';
     const rangesHash = currentSelectedRanges ? JSON.stringify(currentSelectedRanges.map(r => ({ start: r.start_time, end: r.end_time })).sort((a, b) => a.start.localeCompare(b.start))) : '';
-    
+
     // On first check, just store the hash and don't render (initial state)
     if (isFirstSelectionCheck) {
       lastSelectedEventsHash = eventsHash;
@@ -1217,7 +1232,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       isFirstSelectionCheck = false;
       return;
     }
-    
+
     const selectionChanged = eventsHash !== lastSelectedEventsHash || rangesHash !== lastSelectedRangesHash || currentTriggerSelection;
 
     // Don't render until source color is loaded
@@ -1225,7 +1240,7 @@ export default function TrackLayer(props: TrackLayerProps) {
       debug('TrackLayer: Selection effect - source color not loaded yet');
       return;
     }
-    
+
     // Only re-render if selection actually changed or triggerSelection is set
     if (selectionChanged && currentData && currentData.length > 0 && trackOverlay) {
       debug('TrackLayer: Reinitializing scales due to selection change');
@@ -1233,11 +1248,11 @@ export default function TrackLayer(props: TrackLayerProps) {
       debug('TrackLayer: Re-rendering tracks due to selection change');
       // Pass forceRedraw=true to ensure render happens even if zoom hasn't changed
       renderTracks(currentData, true);
-      
+
       // Update hashes to track current state
       lastSelectedEventsHash = eventsHash;
       lastSelectedRangesHash = rangesHash;
-      
+
       // Clear triggerSelection after handling it (similar to ManeuverMap)
       if (currentTriggerSelection) {
         setTriggerSelection(false);

@@ -247,7 +247,7 @@ export default function LiveTable() {
   };
 
   // Get available channels from all sources (union)
-  // Only returns channels matching pattern like "Vmg_kph" (uppercase, underscore, lowercase)
+  // Only returns channels matching mixed-case underscore names (e.g. Vmg_* metrics)
   /**
    * Fetch a sample data point from Redis to discover channels
    * Fetches merged data for common channels to get the full data object with all channels

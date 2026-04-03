@@ -9,8 +9,10 @@ import { postData, putData, getData, deleteData } from "../utils/global";
 
 import { user } from "../store/userStore";
 import { persistantStore } from "../store/persistantStore";
+import { normalizeSpeedDisplayUnit } from "../utils/speedUnits";
 import { apiEndpoints } from "@config/env";
 import { toastStore } from "../store/toastStore";
+import UnitsToggle from "../components/utilities/UnitsToggle";
 import { sourcesStore } from "../store/sourcesStore";
 import { themeStore } from "../store/themeStore";
 import { Source, getSourceFallbackColor } from "../utils/colorScale";
@@ -114,6 +116,10 @@ export default function ProjectInfo() {
       setProjectName(() => data.project_name);
       setSelectedClassId(() => data.class_id);
       setSelectedClassName(() => data.class_name.toLowerCase());
+
+      if (data.speed_units) {
+        persistantStore.setDefaultUnits(normalizeSpeedDisplayUnit(data.speed_units));
+      }
 
       // Retrieve project header from project_objects
       try {
@@ -360,7 +366,8 @@ export default function ProjectInfo() {
       const response = await putData(`${apiEndpoints.app.projects}`, {
           project_id: selectedProjectId(),
           project_name: projectName(),
-          class_id: selectedClassId()
+          class_id: selectedClassId(),
+          speed_units: persistantStore.defaultUnits()
       }, controller.signal);
 
       if (!response.success) throw new Error("Failed to update project");
@@ -854,6 +861,10 @@ export default function ProjectInfo() {
                       />
                     </div>
                     <p class="form-help-text">Data class cannot be changed after project creation</p>
+                    <div class="project-info-units-toggle-wrap">
+                      <p class="form-help-text project-info-units-hint">Default wind and boat speed units for charts and tables</p>
+                      <UnitsToggle />
+                    </div>
                   </div>
                   
                   <div class="flex gap-3" style="margin-top: 16px;">

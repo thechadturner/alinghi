@@ -76,17 +76,17 @@ if __name__ == "__main__":
         success_status = []
 
         # #Execute Scripts One by One
-        # import Map
-        # success = Map.start(api_token, project_id, dataset_id, class_name, date, source_name, start_time, end_time, verbose)
-        # success_status.append(success)
+        import Map
+        success = Map.start(api_token, project_id, dataset_id, class_name, date, source_name, start_time, end_time, verbose)
+        success_status.append(success)
 
         # import Maneuvers
         # success = Maneuvers.start(api_token, project_id, dataset_id, class_name, date, source_name, start_time, end_time, verbose)
         # success_status.append(success)
 
-        import Performance
-        success = Performance.start(api_token, project_id, dataset_id, class_name, date, source_name, start_time, end_time, verbose)
-        success_status.append(success)
+        # import Performance
+        # success = Performance.start(api_token, project_id, dataset_id, class_name, date, source_name, start_time, end_time, verbose)
+        # success_status.append(success)
 
         # import Race
         # success = Race.start(api_token, project_id, dataset_id, class_name, date, source_name, verbose)

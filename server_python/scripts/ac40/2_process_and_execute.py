@@ -116,11 +116,13 @@ if __name__ == "__main__":
 
         # class_name = 'AC40'
         # project_id = 1
-        # dataset_id = 7
-        # date = '2026-01-17'
-        # source_name = 'GER'
+        # dataset_id = 2
+        # date = '2026-03-30'
+        # source_name = 'AC40-SUI1'
         # batch = False
         # verbose = True
+        # day_type = 'TRAINING'
+        # race_type = 'INSHORE'
         
         if verbose:
             print("Querying data...", flush=True)

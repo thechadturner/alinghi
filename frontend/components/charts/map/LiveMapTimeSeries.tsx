@@ -7,6 +7,8 @@ import { selectedRacesTimeseries as globalSelectedRaces, selectedLegsTimeseries 
 import { streamingStore } from "../../../store/streamingStore";
 import { liveConfigStore } from "../../../store/liveConfigStore";
 import { defaultChannelsStore } from "../../../store/defaultChannelsStore";
+import { persistantStore } from "../../../store/persistantStore";
+import { bspValueFromRow, speedUnitSuffix } from "../../../utils/speedUnits";
 import { debug as logDebug, warn as logWarn } from "../../../utils/console";
 import { themeStore } from "../../../store/themeStore";
 import { formatTime } from "../../../utils/global";
@@ -28,21 +30,21 @@ interface Dimensions {
 export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   // Don't destructure props to maintain reactivity!
   const { samplingFrequency, onStableSelectedTimeChange, onMapUpdate } = props;
-  
+
   // Constants
   const GAP_THRESHOLD_MS = 10000; // 10 seconds
-  
+
   let chartContainer: HTMLElement | null = null;
   let svg: any = null;
   let xScale: any = null;
   let yScale: any = null;
   let brush: any = null;
   let brushGroup: any = null;
-  
+
   // Abort controller and mount tracking for cleanup
   let abortController: AbortController | null = null;
   let isMounted = true;
-  
+
   // Brush state management
   let isBrushActive = false;
   let isClearingBrush = false;
@@ -53,15 +55,15 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   let lastMapUpdateSignature: string | null = null;
   let prevSelectedTime: Date | null = null;
   let lastFilterSignature = '';
-  
+
   const [dimensions, setDimensions] = createSignal<Dimensions>({ width: 0, height: 0 });
   const margin = { top: 10, right: 10, bottom: 30, left: 50 };
-  
+
   // Get timezone for axis formatting
   const getTimezone = () => getCurrentDatasetTimezone();
 
   const sourceKey = (d: any): number | undefined => d?.source_id;
-  
+
   // Create reactive accessor for selectedSourceIds
   const selectedSourceIds = (): Set<number> | undefined => props.selectedSourceIds;
 
@@ -86,7 +88,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       logDebug('[LiveMapTimeSeries] ⚠️ Component unmounted or aborted, skipping loadInitialData');
       return;
     }
-    
+
     const selected = selectedSourceIds();
     if (selected.size === 0) {
       return;
@@ -100,15 +102,15 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       const currentTime = selectedTime();
       const defaultTime = new Date('1970-01-01T12:00:00Z');
       const isValidTime = currentTime && currentTime.getTime() !== defaultTime.getTime() && !isNaN(currentTime.getTime());
-      
+
       // Use selectedTime if valid, otherwise fallback to Date.now()
       const endTime = isValidTime ? currentTime.getTime() : Date.now();
-      
+
       // Calculate minutes for the API call
       // If timeWindow is 0, fetch all available data (24 hours)
       // If timeWindow > 0, fetch data for that specific window
       const minutes = currentTimeWindow > 0 ? currentTimeWindow : 0;
-      
+
       logDebug('[LiveMapTimeSeries] 🔄 Loading initial data from Redis', {
         timeWindow: currentTimeWindow,
         minutes,
@@ -116,11 +118,11 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         selectedTime: isValidTime ? currentTime.toISOString() : 'invalid (using Date.now())',
         sourceCount: selected.size
       });
-      
+
       // Load data from Redis respecting the timeWindow setting
       // This ensures timeline and tracks fill up to the timeWindow specified, then stream live data
       await streamingStore.loadInitialDataFromRedis(selected, minutes, endTime);
-      
+
       // Check again after async operation
       if (!isMounted || abortController?.signal.aborted) {
         logDebug('[LiveMapTimeSeries] ⚠️ Component unmounted or aborted after loadInitialDataFromRedis');
@@ -197,13 +199,13 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     const selected = selectedSourceIds();
     const currentTime = selectedTime();
     const currentlyPlaying = isPlaying();
-    
+
     if (selected.size === 0) return [];
 
     // Watch for new websocket data updates (reactive signal)
     // This ensures the memo re-evaluates when websocket data arrives
     const newDataMap = streamingStore.getNewData()();
-    
+
     // Track the size and latest timestamp to ensure reactivity
     // Access the map to track changes
     let totalNewDataPoints = 0;
@@ -296,7 +298,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       const windowEnd = new Date(referenceTime.getTime());
       return [windowStart, windowEnd];
     }
-    
+
     // If timeWindow is 0, show all available data
     // NOTE: This is NOT affected by brush selection - brush only filters map, not chart
     if (groups.length === 0) {
@@ -331,45 +333,45 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   const valueExtent = createMemo(() => {
     const groups = groupedData();
     if (groups.length === 0) return [0, 100];
-    
-    // Use default channel name for Bsp (Bsp_kph for GP50, Bsp_kts for AC75)
-    const bspFieldName = defaultChannelsStore.bspName() || 'Bsp_kph';
-    
+
+    const bspFieldName =
+      defaultChannelsStore.bspName() || `Bsp_${speedUnitSuffix(persistantStore.defaultUnits())}`;
+
     let minVal = Infinity;
     let maxVal = -Infinity;
-    
+
     for (const group of groups) {
       for (const d of group.data) {
         // Try default channel name first, then fallback to old normalized names for compatibility
-        const val = d[bspFieldName] ?? d.Bsp_kph ?? d.Bsp_kts ?? d.Bsp ?? d.bsp ?? 0;
+        const val = bspValueFromRow(d as Record<string, unknown>, bspFieldName, 0);
         if (Number.isFinite(val)) {
           if (val < minVal) minVal = val;
           if (val > maxVal) maxVal = val;
         }
       }
     }
-    
+
     // Ensure we have valid values
     if (!Number.isFinite(minVal) || !Number.isFinite(maxVal) || minVal === Infinity) {
       return [0, 100];
     }
-    
+
     return [minVal * 0.95, maxVal * 1.05]; // Add 5% padding
   });
 
   // Initialize SVG
   const initSVG = () => {
     if (!chartContainer) return;
-    
+
     const bbox = chartContainer.getBoundingClientRect();
     // Add extra height for x-axis labels that extend below the axis
     const labelPadding = 20;
     const svgHeight = bbox.height + labelPadding;
     setDimensions({ width: bbox.width, height: bbox.height });
-    
+
     // Remove existing SVG
     d3.select(chartContainer).selectAll("svg").remove();
-    
+
     svg = d3.select(chartContainer)
       .append("svg")
       .attr("width", bbox.width)
@@ -379,18 +381,18 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       .style("left", "0")
       .style("z-index", "10")
       .style("pointer-events", "auto");
-    
+
     // Create scales
     // NOTE: Scale range should match MapTimeSeries pattern for consistency
     // MapTimeSeries uses range [0, width - margin.left - margin.right] for xScale
     // and positions axes using transforms, not range offsets
     const [minTime, maxTime] = timeExtent();
     const [minVal, maxVal] = valueExtent();
-    
+
     // Calculate effective width/height (excluding margins); clamp to avoid negative brush/rect dimensions (e.g. on resize)
     const effectiveWidth = Math.max(0, bbox.width - margin.left - margin.right);
     const effectiveHeight = Math.max(0, bbox.height - margin.top - margin.bottom);
-    
+
     // Validate time extent
     if (!minTime || !maxTime || isNaN(minTime.getTime()) || isNaN(maxTime.getTime()) || minTime.getTime() === maxTime.getTime()) {
       logWarn('LiveMapTimeSeries: Invalid time extent, using default', {
@@ -407,7 +409,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         .domain([minTime, maxTime])
         .range([0, effectiveWidth]);
     }
-    
+
     yScale = d3.scaleLinear()
       .domain([minVal, maxVal])
       .range([effectiveHeight, 0]);
@@ -415,10 +417,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     const getThemeColor = (lightColor, darkColor) => {
       return themeStore.isDark() ? darkColor : lightColor;
     };
-    
+
     // Add axes
     const axiscolor = getThemeColor('#374151', '#cbd5e1');
-    
+
     // Create axes with explicit styling
     const timezone = getTimezone();
     const xAxis = d3.axisBottom(xScale)
@@ -431,7 +433,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         return String(d);
       });
     const yAxis = d3.axisLeft(yScale).ticks(5);
-    
+
     // X-axis
     // NOTE: Transform includes margin.left offset since xScale range starts at 0
     const xAxisGroup = svg.append("g")
@@ -439,10 +441,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       .attr("data-axis", "x")
       .attr("transform", `translate(${margin.left}, ${bbox.height - margin.bottom})`)
       .call(xAxis);
-    
+
     // Force style on all text elements
     xAxisGroup.selectAll("text")
-      .each(function() {
+      .each(function () {
         d3.select(this)
           .attr("fill", axiscolor)
           .style("fill", axiscolor)
@@ -451,7 +453,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       });
     xAxisGroup.selectAll("path, line")
       .style("stroke", axiscolor);
-    
+
     // Y-axis
     // NOTE: Transform includes margin.left offset since xScale range starts at 0
     const yAxisGroup = svg.append("g")
@@ -459,10 +461,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       .attr("data-axis", "y")
       .attr("transform", `translate(${margin.left}, ${margin.top})`)
       .call(yAxis);
-    
+
     // Force style on all text elements
     yAxisGroup.selectAll("text")
-      .each(function() {
+      .each(function () {
         d3.select(this)
           .attr("fill", axiscolor)
           .style("fill", axiscolor)
@@ -471,7 +473,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       });
     yAxisGroup.selectAll("path, line")
       .style("stroke", axiscolor);
-    
+
     // Add brush functionality
     // NOTE: Brush extent should match MapTimeSeries pattern for consistency
     // MapTimeSeries uses [0, 0] to [effectiveWidth, effectiveHeight] since scale range starts at 0
@@ -482,7 +484,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         [0, 0],
         [effectiveWidth, effectiveHeight],
       ]);
-    
+
     // Create the brush group
     // NOTE: Transform includes margin offsets since brush extent is relative to scale range (starts at 0)
     brushGroup = svg.append("g")
@@ -490,12 +492,12 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       .attr("transform", `translate(${margin.left}, ${margin.top})`)
       .call(brush)
       .on("contextmenu", (event) => event.preventDefault());
-    
+
     // Hide brush handles and selection - only allow click on overlay
     brushGroup.selectAll(".handle, .selection")
       .style("display", "none")
       .style("pointer-events", "none");
-    
+
     // Add click handler to the brush overlay
     // NOTE: Clicking on timeline pauses playback and sets selectedTime
     // IMPORTANT: When timeWindow > 0, updating selectedTime causes zooming
@@ -508,12 +510,12 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         const time = xScale.invert(mouseX);
         const currentTimeWindow = timeWindow();
         const currentlyPlaying = isPlaying();
-        
+
         // Pause playback when clicking on timeline
         if (currentlyPlaying) {
           setIsPlaying(false);
         }
-        
+
         // Only update selectedTime if timeWindow is 0 (no zooming mode)
         // When timeWindow > 0, updating selectedTime causes timeExtent to recalculate and zoom
         if (currentTimeWindow === 0) {
@@ -523,13 +525,13 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
             if (onStableSelectedTimeChange) {
               onStableSelectedTimeChange(new Date(time));
             }
-            
+
             setTimeout(() => {
               releaseTimeControl('livemaptimeseries');
             }, 100);
           }
         }
-        
+
         // When paused, LiveTrackLayer will handle updates based on selectedTime
         // No need to send data updates when paused
       })
@@ -539,13 +541,13 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         event.stopPropagation();
         handleBrushClear();
       });
-    
+
     // Brush handlers disabled - only allow click to change selected time
     // brush.on("brush", brushed).on("end", brushEnded).on("start", null);
-    
+
     // Brush selection restoration disabled - brush events are disabled
     // restoreBrushSelection();
-    
+
     // Expose clearBrush globally so it can be called from playbackStore
     if (typeof window !== 'undefined') {
       window.clearMapBrush = clearBrush;
@@ -558,20 +560,20 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   // The chart scale domain remains unchanged - brush only sets selectedRange for map filtering
   const restoreBrushSelection = () => {
     if (!brushGroup || !xScale) return;
-    
+
     const currentSelectedRange = selectedRange();
     const currentCutEvents = cutEvents();
-    
+
     if (currentSelectedRange && currentSelectedRange.length > 0) {
       const rangeItem = currentSelectedRange[0];
       const startTime = new Date(rangeItem.start_time);
       const endTime = new Date(rangeItem.end_time);
-      
+
       // Convert time to brush coordinates (xScale range starts at 0, no margin offset needed)
       // Brush group has transform translate(margin.left, margin.top), so coordinates are relative
       const x0 = xScale(startTime);
       const x1 = xScale(endTime);
-      
+
       // Restore brush selection - this only updates the brush visual, NOT the chart scale domain
       brushGroup.call(brush.move, [x0, x1]);
     } else if (currentCutEvents && currentCutEvents.length > 0) {
@@ -584,7 +586,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   // Helper function to update time selection
   const updateTimeSelection = (time) => {
     if (requestTimeControl('livemaptimeseries')) {
-      try { (window).skipBoatHaloOnce = true; } catch {}
+      try { (window).skipBoatHaloOnce = true; } catch { }
       if (!isManualTimeChange()) setIsManualTimeChange(true);
       const newTime = new Date(time);
       const current = selectedTime();
@@ -595,7 +597,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         onStableSelectedTimeChange(newTime);
       }
       prevSelectedTime = newTime;
-      
+
       setTimeout(() => {
         releaseTimeControl('livemaptimeseries');
       }, 100);
@@ -609,7 +611,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     setSelectedEvents([]);
     setHasSelection(false);
     setIsCut(cutEvents().length > 0);
-    
+
     const filteredDataMap = streamingStore.getFilteredData(selectedSourceIds());
     const allData = [];
     if (filteredDataMap && filteredDataMap instanceof Map) {
@@ -617,14 +619,14 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         allData.push(...data);
       }
     }
-    
+
     if (allData && allData.length > 0) {
       lastMapUpdateSignature = null;
       const timestampedData = allData.map((d, index) => ({
         ...d,
         _clearTimestamp: Date.now() + index
       }));
-      
+
       if (onMapUpdate) {
         onMapUpdate(timestampedData);
       }
@@ -636,9 +638,9 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     if (isClearingBrush) {
       return;
     }
-    
+
     isClearingBrush = true;
-    
+
     try {
       if (brushGroup) {
         isProgrammaticallyUpdatingBrush = true;
@@ -672,13 +674,13 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       // Ensure startTime is the minimum (earlier) time
       const startTime = x0 < x1 ? new Date(x0) : new Date(x1);
       const endTime = x0 < x1 ? new Date(x1) : new Date(x0);
-      
+
       // Set selectedRange (should already be set during brushing, but ensure it's set)
-      const range = {"type": "range", "start_time": startTime.toISOString(), "end_time": endTime.toISOString()};
+      const range = { "type": "range", "start_time": startTime.toISOString(), "end_time": endTime.toISOString() };
       setSelectedRange([range]);
       setHasSelection(true);
       setIsCut(false);
-      
+
       // IMPORTANT: Only update selectedTime if timeWindow is 0 (no zooming mode)
       // When timeWindow > 0, updating selectedTime causes timeExtent to recalculate and zoom
       // LiveTrackLayer will filter tracks based on selectedRange, so we don't need to update selectedTime
@@ -695,7 +697,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
           }, 100);
         }
       }
-      
+
       // LiveTrackLayer reads from streamingStore and filters by selectedRange
       // No need to send data via onMapUpdate - LiveTrackLayer handles it
     } else {
@@ -704,7 +706,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         const clickTime = new Date(x0);
         updateTimeSelection(x0);
       }
-      
+
       setSelectedRange([]);
       setHasSelection(false);
     }
@@ -717,29 +719,29 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   // Only set selectedRange - LiveTrackLayer will filter tracks based on selectedRange
   function brushed(event) {
     if (brushTimeout) clearTimeout(brushTimeout);
-    
+
     brushTimeout = setTimeout(() => {
       if (isBrushActive) return;
       isBrushActive = true;
       isBrushing = true; // Mark that we're brushing to prevent timeExtent from updating
-      
+
       try {
         if (event && event.selection) {
           // event.selection is in brush coordinates (relative to brush group transform)
           // xScale range starts at 0, so we can directly invert
           const [x0, x1] = event.selection.map(xScale.invert);
           const selectionDuration = Math.abs(x1 - x0);
-          
+
           // IMPORTANT: Do NOT call updateTimeSelection() here - that updates selectedTime
           // which causes timeExtent to recalculate and zoom the chart when timeWindow > 0
           // Only set selectedRange - LiveTrackLayer will filter tracks based on this
           if (selectionDuration > 1000) {
             const startTime = x0 < x1 ? new Date(x0) : new Date(x1);
             const endTime = x0 < x1 ? new Date(x1) : new Date(x0);
-            
+
             // Set selectedRange for LiveTrackLayer to filter tracks
             // LiveTrackLayer reads from streamingStore and filters by selectedRange
-            const range = {"type": "range", "start_time": startTime, "end_time": endTime};
+            const range = { "type": "range", "start_time": startTime, "end_time": endTime };
             setSelectedRange([range]);
             setHasSelection(true);
             setIsCut(false);
@@ -760,19 +762,19 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   function brushEnded(event) {
     // Mark that brushing has ended - timeExtent can now update based on selectedTime
     isBrushing = false;
-    
+
     if (isProgrammaticallyUpdatingBrush) {
       isProgrammaticallyUpdatingBrush = false;
       return;
     }
-    
+
     if (!event || !event.selection) {
       handleBrushClear();
       if (brushGroup) {
         try {
           isProgrammaticallyUpdatingBrush = true;
           brushGroup.call(brush.move, null);
-        } catch(e) { /* noop */ }
+        } catch (e) { /* noop */ }
       }
     } else {
       const [x0, x1] = event.selection.map(xScale.invert);
@@ -783,12 +785,12 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   // Update axes when scales change
   const updateAxes = () => {
     if (!svg || !xScale || !yScale) return;
-    
+
     const getThemeColor = (lightColor, darkColor) => {
       return themeStore.isDark() ? darkColor : lightColor;
     };
     const axiscolor = getThemeColor('#374151', '#cbd5e1');
-    
+
     // Update x-axis
     const timezone = getTimezone();
     const xAxis = d3.axisBottom(xScale)
@@ -801,12 +803,12 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         return String(d);
       });
     const xAxisGroup = svg.select("g.axes[data-axis='x']");
-    
+
     xAxisGroup.call(xAxis);
-    
+
     // Force style on all text elements
     xAxisGroup.selectAll("text")
-      .each(function() {
+      .each(function () {
         d3.select(this)
           .attr("fill", axiscolor)
           .style("fill", axiscolor)
@@ -815,16 +817,16 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       });
     xAxisGroup.selectAll("path, line")
       .style("stroke", axiscolor);
-    
+
     // Update y-axis
     const yAxis = d3.axisLeft(yScale).ticks(5);
     const yAxisGroup = svg.select("g.axes[data-axis='y']");
-    
+
     yAxisGroup.call(yAxis);
-    
+
     // Force style on all text elements
     yAxisGroup.selectAll("text")
-      .each(function() {
+      .each(function () {
         d3.select(this)
           .attr("fill", axiscolor)
           .style("fill", axiscolor)
@@ -838,15 +840,15 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   // Render all series
   const render = () => {
     if (!svg || !xScale || !yScale) return;
-    
+
     const groups = groupedData();
-    
+
     // Update axes to reflect current scale domains
     updateAxes();
-    
+
     // Gap threshold: 10 seconds
     const gapThresholdMs = GAP_THRESHOLD_MS;
-    
+
     // Helper to check if there's a gap between two points
     const hasGap = (d, i, data) => {
       if (i === 0) return true; // Always define first point
@@ -855,43 +857,43 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       const gap = currTime - prevTime;
       return gap > gapThresholdMs;
     };
-    
-    // Use default channel name for Bsp (Bsp_kph for GP50, Bsp_kts for AC75)
-    const bspFieldName = defaultChannelsStore.bspName() || 'Bsp_kph';
-    
+
+    const bspFieldName =
+      defaultChannelsStore.bspName() || `Bsp_${speedUnitSuffix(persistantStore.defaultUnits())}`;
+
     // Line generator with gap detection
     // Get x-axis domain to filter out points outside the scale bounds
     const xDomain = xScale.domain();
     const xMin = xDomain[0]?.getTime() ?? -Infinity;
     const xMax = xDomain[1]?.getTime() ?? Infinity;
-    
+
     const lineGenerator = d3.line()
       .x((d) => margin.left + xScale(getTimestamp(d))) // Add margin.left since xScale range starts at 0
       .y((d) => {
         // Try default channel name first, then fallback to old normalized names for compatibility
-        const val = d[bspFieldName] ?? d.Bsp_kph ?? d.Bsp_kts ?? d.Bsp ?? d.bsp ?? 0;
+        const val = bspValueFromRow(d as Record<string, unknown>, bspFieldName, 0);
         return margin.top + yScale(val);
       })
       .defined((d, i, data) => {
         // Try default channel name first, then fallback to old normalized names for compatibility
-        const val = d[bspFieldName] ?? d.Bsp_kph ?? d.Bsp_kts ?? d.Bsp ?? d.bsp;
+        const val = bspValueFromRow(d as Record<string, unknown>, bspFieldName, Number.NaN);
         if (!Number.isFinite(val)) return false;
-        
+
         // Check if timestamp is within x-axis domain bounds
         const timestamp = getTimestamp(d).getTime();
         if (timestamp < xMin || timestamp > xMax) return false;
-        
+
         // Create gap if time difference > threshold
         return !hasGap(d, i, data);
       });
-    
+
     // Render using SVG
     const paths = svg.selectAll("path.series-line")
       .data(groups, (d) => d.sourceId);
-    
+
     // Exit: remove paths for deselected sources
     paths.exit().remove();
-    
+
     // Enter: create new paths for new sources
     const pathsEnter = paths.enter()
       .append("path")
@@ -899,7 +901,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       .attr("data-source-id", (d) => d.sourceId)
       .style("fill", "none")
       .style("stroke-width", "1px");
-    
+
     // Update: merge enter and update selections
     pathsEnter.merge(paths)
       .attr("data-source-id", (d) => d.sourceId)
@@ -908,7 +910,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         if (!d.data || d.data.length === 0) return '';
         return lineGenerator(d.data);
       });
-    
+
     // Render cursor line
     renderCursor();
   };
@@ -916,14 +918,14 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   // Render cursor line for selectedTime
   const renderCursor = () => {
     if (!svg || !xScale) return;
-    
+
     const currentTime = selectedTime();
     if (!currentTime || !(currentTime instanceof Date)) {
       // Remove cursor if time is invalid
       svg.selectAll(".time-cursor").remove();
       return;
     }
-    
+
     // Check if xScale domain is valid
     const domain = xScale.domain();
     if (!domain || domain.length < 2) {
@@ -931,14 +933,14 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       svg.selectAll(".time-cursor").remove();
       return;
     }
-    
+
     const dims = dimensions();
     if (!dims || dims.width === 0 || dims.height === 0) {
       // Dimensions not ready, remove cursor
       svg.selectAll(".time-cursor").remove();
       return;
     }
-    
+
     // Calculate x position - xScale should handle domain mapping
     let x: number;
     try {
@@ -953,10 +955,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       svg.selectAll(".time-cursor").remove();
       return;
     }
-    
+
     // Add margin.left since xScale range starts at 0
     const xWithMargin = margin.left + x;
-    
+
     // Validate x position is within reasonable range (allow some overflow for edge cases)
     // The cursor should be visible if it's anywhere near the chart area
     if (xWithMargin < -100 || xWithMargin > dims.width + 100) {
@@ -964,10 +966,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       svg.selectAll(".time-cursor").remove();
       return;
     }
-    
+
     // Remove existing cursor
     svg.selectAll(".time-cursor").remove();
-    
+
     // Add new cursor (line extends 15px higher above chart, ends 15px above bottom so it's raised)
     const cursorExtraHeight = 15;
     const cursorY1 = margin.top - cursorExtraHeight;
@@ -1023,10 +1025,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     // Create abort controller for this component instance
     abortController = new AbortController();
     isMounted = true;
-    
+
     // Listen for resize
     window.addEventListener('resize', handleResize);
-    
+
     // Initial load attempt (may run before selectedSourceIds is restored - effect above handles that case)
     loadInitialData().catch(e => {
       // Ignore abort errors
@@ -1047,7 +1049,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     if (!isMounted || abortController?.signal.aborted) {
       return;
     }
-    
+
     const currentTimeWindow = Number(timeWindow());
     const selected = selectedSourceIds();
 
@@ -1056,38 +1058,38 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       lastTimeWindow = currentTimeWindow;
       return;
     }
-    
+
     // Track that we're fetching to prevent re-triggering during fetch
     isFetchingData = true;
     lastTimeWindow = currentTimeWindow;
-    
+
     // Store current playing state to restore after fetch
     const wasPlaying = isPlaying();
-    
+
     try {
       // Check again before pausing
       if (!isMounted || abortController?.signal.aborted) {
         return;
       }
-      
+
       // Pause playback
       if (wasPlaying) {
         setIsPlaying(false);
         logDebug('[LiveMapTimeSeries] ⏸️ Paused playback for timeWindow change');
       }
-      
+
       // Calculate time range based on selectedTime and timeWindow
       const currentTime = selectedTime();
       const defaultTime = new Date('1970-01-01T12:00:00Z');
       const isValidTime = currentTime && currentTime.getTime() !== defaultTime.getTime() && !isNaN(currentTime.getTime());
-      
+
       // Use selectedTime if valid, otherwise fallback to Date.now()
       const endTime = isValidTime ? currentTime.getTime() : Date.now();
-      
+
       // Calculate minutes for the API call
       // If timeWindow is 0, fetch all available data (24 hours)
       const minutes = currentTimeWindow > 0 ? currentTimeWindow : 0;
-      
+
       logDebug('[LiveMapTimeSeries] 🔄 TimeWindow changed, fetching data from Redis', {
         timeWindow: currentTimeWindow,
         minutes,
@@ -1095,21 +1097,21 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         selectedTime: isValidTime ? currentTime.toISOString() : 'invalid (using Date.now())',
         sourceCount: selected.size
       });
-      
+
       // Fetch data for the selected time window
       await streamingStore.loadInitialDataFromRedis(selected, minutes, endTime);
-      
+
       // Check again after async operation
       if (!isMounted || abortController?.signal.aborted) {
         logDebug('[LiveMapTimeSeries] ⚠️ Component unmounted or aborted after loadInitialDataFromRedis');
         return;
       }
-      
+
       logDebug('[LiveMapTimeSeries] ✅ Data fetched for timeWindow, chart will update automatically');
-      
+
       // Chart will automatically re-render via groupedData() memo reactivity
       // No manual update needed - SolidJS will handle it
-      
+
     } catch (err: any) {
       // Ignore abort errors
       if (err?.name === 'AbortError' || abortController?.signal.aborted) {
@@ -1132,7 +1134,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
           }, 100);
         }
       }
-      
+
       // Reset fetching flag
       isFetchingData = false;
     }
@@ -1147,10 +1149,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     if (!isMounted || abortController?.signal.aborted) {
       return;
     }
-    
+
     const [minTime, maxTime] = timeExtent();
     const [minVal, maxVal] = valueExtent();
-    
+
     if (xScale && yScale && svg && isMounted && !abortController?.signal.aborted) {
       // Update scale domains - brush selection does NOT affect this
       // The chart always shows the full available time range
@@ -1158,14 +1160,14 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
       if (minTime && maxTime && !isNaN(minTime.getTime()) && !isNaN(maxTime.getTime()) && minTime.getTime() !== maxTime.getTime()) {
         xScale.domain([minTime, maxTime]);
       }
-      
+
       if (Number.isFinite(minVal) && Number.isFinite(maxVal) && minVal !== maxVal) {
         yScale.domain([minVal * 0.95, maxVal * 1.05]);
       }
-      
+
       // Update axes smoothly
       updateAxes();
-      
+
       // Always re-render when scales update (data needs to be re-positioned)
       render();
     }
@@ -1177,11 +1179,11 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     if (!isMounted || abortController?.signal.aborted) {
       return;
     }
-    
+
     const groups = groupedData();
     const currentTime = selectedTime();
     const currentlyPlaying = isPlaying();
-    
+
     if (groups.length > 0 && chartContainer && isMounted && !abortController?.signal.aborted) {
       // Data is available, initialize SVG (first time) or re-render (updates)
       // Also re-render when selectedTime changes (for pause/play scenarios)
@@ -1206,10 +1208,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     if (!isMounted || abortController?.signal.aborted) {
       return;
     }
-    
+
     const selected = selectedSourceIds();
     const currentlyPlaying = isPlaying();
-    
+
     if (selected.size === 0) {
       if (onMapUpdate && isMounted && !abortController?.signal.aborted) {
         onMapUpdate([]);
@@ -1245,7 +1247,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     // Track these to ensure effect re-runs when new data arrives
     const _newCount = newDataCount;
     const _newTs = latestNewTimestamp;
-    
+
     // Get RAW data for map updates - LiveTrackLayer will filter by selectedRange when rendering
     // Do NOT filter here - we send full data and let LiveTrackLayer handle brush filtering
     // NOTE: This effect is ONLY for map updates via onMapUpdate, NOT for chart rendering
@@ -1261,7 +1263,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         totalDataCount += data.length;
       }
     }
-    
+
     // Track total count and latest timestamp to ensure reactivity
     const latestTimestamp = allData.length > 0
       ? Math.max(...allData.map(d => getTimestamp(d).getTime()))
@@ -1299,11 +1301,11 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     if (!isMounted || abortController?.signal.aborted) {
       return;
     }
-    
+
     // Watch selectedTime to ensure cursor updates when it changes
     const _time = selectedTime();
     const _timeExtent = timeExtent(); // Access timeExtent to ensure reactivity when scale domain changes
-    
+
     // Only render if we have valid time, svg, and xScale
     if (_time && svg && xScale && isMounted && !abortController?.signal.aborted) {
       renderCursor();
@@ -1317,31 +1319,31 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
     if (!isMounted || abortController?.signal.aborted) {
       return;
     }
-    
+
     const currentTime = selectedTime();
     const currentlyPlaying = isPlaying();
     const selected = selectedSourceIds();
-    
+
     // Only check when playing (animation is active)
     if (!currentlyPlaying || selected.size === 0) {
       return;
     }
-    
+
     // Get latest timestamp from available data
     const latestTimestamp = streamingStore.getLatestTimestamp(selected);
     if (!latestTimestamp) {
       return; // No data yet
     }
-    
+
     const currentTimeMs = currentTime instanceof Date ? currentTime.getTime() : 0;
     if (currentTimeMs === 0) {
       return;
     }
-    
+
     // Check if we've reached the end of available data (within 1 second threshold)
     const timeDiff = latestTimestamp - currentTimeMs;
     const END_THRESHOLD_MS = 1000; // 1 second
-    
+
     if (timeDiff <= END_THRESHOLD_MS && timeDiff >= -END_THRESHOLD_MS) {
       // We've reached the end of available data
       logDebug('[LiveMapTimeSeries] Reached end of available data, fetching missing data and resuming', {
@@ -1349,7 +1351,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         latestTimestamp: latestTimestamp,
         timeDiff: timeDiff
       });
-      
+
       // Fetch missing data from Redis using the current time window so we don't replace
       // a 2-min buffer with 1 min (gapMinutes would be 1 when gap is small, causing track to shrink).
       const fetchMissingData = async () => {
@@ -1357,7 +1359,7 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
         if (!isMounted || abortController?.signal.aborted) {
           return;
         }
-        
+
         try {
           const now = Date.now();
           // Use the selected time window so the refetch keeps the same visible length (e.g. 2 min).
@@ -1366,12 +1368,12 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
           const windowMin = Number(timeWindow());
           const minutes = windowMin > 0 ? windowMin : 0;
           await streamingStore.loadInitialDataFromRedis(selected, minutes, now);
-          
+
           // Check again after async operation
           if (!isMounted || abortController?.signal.aborted) {
             return;
           }
-          
+
           // After fetching, check if there's newer data
           const newLatestTimestamp = streamingStore.getLatestTimestamp(selected);
           if (newLatestTimestamp && newLatestTimestamp > latestTimestamp) {
@@ -1390,10 +1392,10 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
           logWarn('[LiveMapTimeSeries] Error fetching missing data:', err);
         }
       };
-      
+
       // Fetch in background (don't block)
       fetchMissingData();
-      
+
       // Note: We don't need to manually resume websocket - it's already connected
       // The playback interval will continue and selectedTime will advance as new data arrives
     }
@@ -1402,30 +1404,30 @@ export default function LiveMapTimeSeries(props: LiveMapTimeSeriesProps) {
   // Cleanup
   onCleanup(() => {
     logDebug('[LiveMapTimeSeries] 🧹 onCleanup called - aborting all operations');
-    
+
     // Mark as unmounted immediately to stop all operations
     isMounted = false;
-    
+
     // Abort all pending async operations
     if (abortController) {
       abortController.abort();
       abortController = null;
     }
-    
+
     // Clear brush timeout
     if (brushTimeout) {
       clearTimeout(brushTimeout);
       brushTimeout = null;
     }
-    
+
     // Remove resize listener
     window.removeEventListener('resize', handleResize);
-    
+
     logDebug('[LiveMapTimeSeries] ✅ Cleanup complete');
   });
 
   return (
-    <div 
+    <div
       ref={(el) => (chartContainer = el)}
       class="chart-container"
       style="width: 100%; height: 100%; background: var(--color-bg-card);"

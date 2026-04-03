@@ -38,6 +38,7 @@ import { streamingStore } from "../../../store/streamingStore";
 import { streamingService } from "../../../services/streamingService";
 import { sourcesStore } from "../../../store/sourcesStore";
 import { defaultChannelsStore } from "../../../store/defaultChannelsStore";
+import { speedUnitSuffix } from "../../../utils/speedUnits";
 import { tooltip, setTooltip } from "../../../store/globalStore";
 import { persistantStore } from "../../../store/persistantStore";
 import { initializeSourceSelections } from "../../../utils/sourceInitialization";
@@ -1188,7 +1189,7 @@ export default function MapContainer(props: MapContainerProps) {
       const lat = latName() || 'Lat_dd';
       const lng = lngName() || 'Lng_dd';
       const hdg = hdgName() || 'Hdg';
-      const bsp = bspName() || 'Bsp_kts';
+      const bsp = bspName() || `Bsp_${speedUnitSuffix(persistantStore.defaultUnits())}`;
       const requiredChannels = ['timestamp', 'Datetime', lat, lng, hdg, bsp, 'Maneuver_type'];
       logDebug(`[MapContainer] Using channel names: lat=${lat}, lng=${lng}, hdg=${hdg}, bsp=${bsp}`);
 

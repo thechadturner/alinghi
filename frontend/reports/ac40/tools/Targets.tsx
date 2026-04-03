@@ -37,7 +37,7 @@ export default function ScatterPage() {
   
   // Use default channel names for axes
   const { twsName, bspName } = defaultChannelsStore;
-  // Create display labels with [KPH] suffix for dropdown
+  // Axis labels for scatter (TWS / BSP from default channel names)
   const axes = createMemo(() => ['TWS', 'BSP']);
   const [xAxis, setXAxis] = createSignal(twsName());
 

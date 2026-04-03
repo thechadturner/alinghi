@@ -17,6 +17,11 @@ import { selectedStatesTimeseries, selectedRacesTimeseries, selectedLegsTimeseri
 import { isDark, theme, getStrokeColor as getThemeStrokeColor } from "../../store/themeStore";
 import { user } from "../../store/userStore";
 import { persistantStore } from "../../store/persistantStore";
+import {
+  axisBracketSuffixForSpeedChannel,
+  fieldBaseKeyForMatching,
+  stripSpeedUnderscoreSuffixFromChannel,
+} from "../../utils/speedUnits";
 import { defaultChannelsStore } from "../../store/defaultChannelsStore";
 import { unifiedDataStore } from "../../store/unifiedDataStore";
 import { huniDBStore } from "../../store/huniDBStore";
@@ -574,27 +579,9 @@ export default function AdvancedScatter(props: AdvancedScatterProps) {
             const xFieldLower = x.toLowerCase();
             const yFieldLower = y.toLowerCase();
             
-            // For target data, fields are typically lowercase without suffix (e.g., "tws", "bsp", "twa")
-            // But channel names from defaultChannelsStore may have suffix (e.g., "Tws_kph", "Bsp_kph", "Twa_deg")
-            // Also handle "_target" suffix which can be added when yaxisTarget is not explicitly set
-            // Extract base field name by removing common suffixes including "_target"
-            // Handle patterns like "Bsp_kph_target" -> "bsp", "tws_kph" -> "tws"
-            // First remove _target suffix, then remove unit suffixes, then remove remaining underscores
-            let xBaseField = xFieldLower;
-            // Remove _target suffix first (e.g., "bsp_kph_target" -> "bsp_kph")
-            xBaseField = xBaseField.replace(/_target$/i, '');
-            // Remove unit suffixes (e.g., "bsp_kph" -> "bsp")
-            xBaseField = xBaseField.replace(/[_\s]*(kph|kts|deg|perc)$/i, '');
-            // Remove any remaining underscores (e.g., "lwy_n" -> "lwy")
-            xBaseField = xBaseField.replace(/[_\s]/g, '');
-            
-            let yBaseField = yFieldLower;
-            // Remove _target suffix first (e.g., "bsp_kph_target" -> "bsp_kph")
-            yBaseField = yBaseField.replace(/_target$/i, '');
-            // Remove unit suffixes (e.g., "bsp_kph" -> "bsp")
-            yBaseField = yBaseField.replace(/[_\s]*(kph|kts|deg|perc)$/i, '');
-            // Remove any remaining underscores (e.g., "lwy_n" -> "lwy")
-            yBaseField = yBaseField.replace(/[_\s]/g, '');
+            // Target fields may be bare bases; channel names may include speed/angle suffixes and `_target`.
+            const xBaseField = fieldBaseKeyForMatching(x);
+            const yBaseField = fieldBaseKeyForMatching(y);
             
             logDebug('AdvancedScatter reduceTargets: Field matching', {
                 x,
@@ -632,12 +619,9 @@ export default function AdvancedScatter(props: AdvancedScatterProps) {
                 } else if (xBaseField in firstItem) {
                     xField = xBaseField;
                 } else {
-                    // Try to find by partial match (e.g., "tws" in "Tws_kph" or vice versa)
-                    // Also handle "_target" suffix in field matching
                     const xMatch = availableFields.find(f => {
                         const fLower = f.toLowerCase();
-                        // Use same extraction logic as xBaseField
-                        let fBase = fLower.replace(/_target$/i, '').replace(/[_\s]*(kph|kts|deg|perc)$/i, '').replace(/[_\s]/g, '');
+                        const fBase = fieldBaseKeyForMatching(f);
                         return fLower === xBaseField || fBase === xBaseField || fLower === x || fLower === xFieldLower;
                     });
                     if (xMatch) {
@@ -659,8 +643,7 @@ export default function AdvancedScatter(props: AdvancedScatterProps) {
                     // Also handle "_target" suffix in field matching
                     const yMatch = availableFields.find(f => {
                         const fLower = f.toLowerCase();
-                        // Use same extraction logic as yBaseField
-                        let fBase = fLower.replace(/_target$/i, '').replace(/[_\s]*(kph|kts|deg|perc)$/i, '').replace(/[_\s]/g, '');
+                        const fBase = fieldBaseKeyForMatching(f);
                         return fLower === yBaseField || fBase === yBaseField || fLower === y || fLower === yFieldLower;
                     });
                     if (yMatch) {
@@ -885,25 +868,14 @@ export default function AdvancedScatter(props: AdvancedScatterProps) {
         const xType = (props.xType || props.aggregate || 'AVG').toUpperCase();
         
         // Determine unit suffix based on channel name (for backward compatibility with default axes)
-        const getUnitSuffix = (channelName: string): string => {
-          const lower = channelName.toLowerCase();
-          if (lower.includes('kph')) return ' [KPH]';
-          if (lower.includes('kts')) return ' [KTS]';
-          // Default based on class (AC40 uses kph, others use kts)
-          const className = persistantStore.selectedClassName()?.toLowerCase() || '';
-          return className === 'ac40' ? ' [KPH]' : ' [KTS]';
-        };
+        const stripSpeedSuffixForAxisLabel = (channelName: string): string =>
+          stripSpeedUnderscoreSuffixFromChannel(channelName);
 
-        // Strip _kph/_KPH from channel name for x-axis label so we don't duplicate it (unit is shown via suffix)
-        const stripKphFromLabel = (channelName: string): string =>
-          channelName.replace(/_kph$/i, '').trim();
-
-        // Use actual x-axis channel name with aggregate type, or fall back to default logic
         const xaxisLabel = props.xaxis && xaxisLower !== bspChannel && xaxisLower !== twsChannel
-            ? `${stripKphFromLabel(props.xaxis).toUpperCase()} [${xType}]`
+            ? `${stripSpeedSuffixForAxisLabel(props.xaxis).toUpperCase()} [${xType}]`
             : (xaxisLower === bspChannel || xaxisLower === 'bsp'
-                ? `${stripKphFromLabel(bspChannel).toUpperCase()}${getUnitSuffix(bspChannel)}`
-                : `${stripKphFromLabel(twsChannel).toUpperCase()}${getUnitSuffix(twsChannel)}`);
+                ? `${stripSpeedSuffixForAxisLabel(bspChannel).toUpperCase()}${axisBracketSuffixForSpeedChannel(bspChannel, persistantStore.defaultUnits())}`
+                : `${stripSpeedSuffixForAxisLabel(twsChannel).toUpperCase()}${axisBracketSuffixForSpeedChannel(twsChannel, persistantStore.defaultUnits())}`);
 
         d3.select(chartRef).selectAll("svg").remove();
 
@@ -1821,7 +1793,7 @@ export default function AdvancedScatter(props: AdvancedScatterProps) {
             cloud_data = (cloudToUse && Array.isArray(cloudToUse) && cloudToUse.length > 0) ? cloudToUse : [];
         }
 
-        // Target data structure: object with field names as keys (e.g., "m3_APW_HSB_LARW.kph_target": [...])
+        // Target data structure: object with field names as keys (often `*.speedUnit_target` from cloud)
         // Only use targets if explicitly specified in chart configuration (taxis prop must be provided)
         let target_data_array: any[] = [];
         // Skip target lookup if taxis is empty (no target specified in chart configuration)
@@ -2150,7 +2122,7 @@ export default function AdvancedScatter(props: AdvancedScatterProps) {
             }
         }
 
-        // Target data structure: object with field names as keys (e.g., "m3_APW_HSB_LARW.kph_target": [...])
+        // Target data structure: object with field names as keys (often `*.speedUnit_target` from cloud)
         // Use the exact field name from chart configuration (taxis prop) to look up the target data
         // The chart configuration specifies the exact field name in yaxisTarget.dataField or yaxisTarget.name
         let target_data_array: any[] = [];

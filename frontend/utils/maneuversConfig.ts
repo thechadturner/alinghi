@@ -11,6 +11,7 @@ import { apiEndpoints } from '@config/env';
 import { persistantStore } from '../store/persistantStore';
 import { sourcesStore } from '../store/sourcesStore';
 import { getColorByIndex } from './colorScale';
+import { speedUnitBracket, speedUnitBracketUpper } from './speedUnits';
 
 export type ManeuversContext = 'dataset' | 'fleet' | 'historical';
 
@@ -86,8 +87,7 @@ function getDatasetTableColumns(phase: string, color: string, className?: string
     secondChan = 'Event';
   }
 
-  // Determine TWS unit based on class name
-  const twsUnit = className?.toLowerCase() === 'ac40' ? '[kph]' : '[kts]';
+  const twsUnit = speedUnitBracket(persistantStore.defaultUnits());
   const twsDesc = `TWS ${twsUnit}`;
 
   // Dataset: always show RACE (race number) after DATETIME; when color is RACE use TACK as second data column to avoid duplicate
@@ -152,8 +152,7 @@ function getFleetTableColumns(phase: string, color: string, className?: string):
     secondChan = 'Event';
   }
 
-  // Determine TWS unit based on class name
-  const twsUnit = className?.toLowerCase() === 'ac40' ? '[kph]' : '[kts]';
+  const twsUnit = speedUnitBracket(persistantStore.defaultUnits());
   const twsDesc = `TWS ${twsUnit}`;
 
   // Fleet: always show RACE (race number) after DATETIME; when color is RACE use TACK as second data column to avoid duplicate
@@ -170,35 +169,71 @@ function getFleetTableColumns(phase: string, color: string, className?: string):
 
 const ACCMAX_TOOLTIP = 'Value at time of maximum acceleration.';
 
-/** TAKEOFF-specific columns for big table and scatter (channel -> header; description = tooltip). Tws_bin first so it is always requested and shown for takeoff. */
-export const TAKEOFF_TABLE_COLUMNS: { channel: string; header: string; description?: string }[] = [
-  { channel: 'Tws_bin', header: 'TWS BIN', description: 'Wind speed bin (KPH)' },
-  { channel: 'Tws_avg', header: 'TWS [KPH]', description: 'Average true wind speed' },
-  { channel: 'Mmg', header: 'Mmg', description: 'Meters made good in direction of wind for duration of takeoff' },
-  { channel: 'Vmg_perc_avg', header: 'Vmg%', description: 'Average VMG% of target for duration of takeoff' },
-  { channel: 'Loss_total_tgt', header: 'Loss total tgt', description: 'Overall maneuver loss in meters relative to target VMG' },
-  { channel: 'Bsp_start', header: 'Start Bsp', description: 'Initial boat speed' },
-  { channel: 'Twa_build', header: 'Build Twa', description: 'True wind angle during acceleration.'  },
-  { channel: 'Time_accel', header: 'Accel Time', description: 'Seconds accelerating from minimum boat speed to pop onto foils' },
-  { channel: 'Exit_time', header: 'Pop Time', description: 'Time from reaching 28 KPH of boat speed to popping onto foils' },
-  { channel: 'Bsp_exit', header: 'Pop Bsp', description: 'Boat speed at time of pop onto foils.' },
-  { channel: 'Twa_exit', header: 'Pop Twa', description: 'True wind angle at time of pop onto foils.' },
-  { channel: 'Pitch_accmax', header: 'ACCMAX Pitch', description: ACCMAX_TOOLTIP },
-  { channel: 'Heel_accmax', header: 'ACCMAX Heel', description: ACCMAX_TOOLTIP },
-  { channel: 'Rake_accmax', header: 'ACCMAX DB Rake', description: ACCMAX_TOOLTIP },
-  { channel: 'Rud_rake_accmax', header: 'ACCMAX Rud Rake', description: ACCMAX_TOOLTIP },
-  { channel: 'Rud_diff_accmax', header: 'ACCMAX Rud Diff', description: ACCMAX_TOOLTIP },
-  { channel: 'Cant_accmax', header: 'ACCMAX Cant', description: ACCMAX_TOOLTIP },
-  { channel: 'Jib_sheet_pct_accmax', header: 'ACCMAX Jib Sht%', description: ACCMAX_TOOLTIP },
-  { channel: 'Jib_lead_ang_accmax', header: 'ACCMAX Jib Lead', description: ACCMAX_TOOLTIP },
-  { channel: 'Jib_cunno_load_accmax', header: 'ACCMAX Jib Cunno', description: ACCMAX_TOOLTIP },
-  { channel: 'Wing_clew_pos_accmax', header: 'ACCMAX Wing Clew', description: ACCMAX_TOOLTIP },
-  { channel: 'Wing_twist_accmax', header: 'ACCMAX Wing Twist', description: ACCMAX_TOOLTIP },
-  { channel: 'Wing_ca1_accmax', header: 'ACCMAX Wing Ca1', description: ACCMAX_TOOLTIP }
+/** Channel order for TAKEOFF table / API (stable; does not depend on unit preference). */
+export const TAKEOFF_CHANNELS: string[] = [
+  'Tws_bin',
+  'Tws_avg',
+  'Mmg',
+  'Vmg_perc_avg',
+  'Loss_total_tgt',
+  'Bsp_start',
+  'Twa_build',
+  'Time_accel',
+  'Exit_time',
+  'Bsp_exit',
+  'Twa_exit',
+  'Pitch_accmax',
+  'Heel_accmax',
+  'Rake_accmax',
+  'Rud_rake_accmax',
+  'Rud_diff_accmax',
+  'Cant_accmax',
+  'Jib_sheet_pct_accmax',
+  'Jib_lead_ang_accmax',
+  'Jib_cunno_load_accmax',
+  'Wing_clew_pos_accmax',
+  'Wing_twist_accmax',
+  'Wing_ca1_accmax'
 ];
 
-/** Channels to request from API when event type is TAKEOFF (only takeoff-relevant columns). */
-export const TAKEOFF_CHANNELS: string[] = TAKEOFF_TABLE_COLUMNS.map((c) => c.channel);
+/**
+ * TAKEOFF-specific columns (channel -> header; description = tooltip).
+ * Headers/descriptions follow global speed unit preference where relevant.
+ */
+export function getTakeoffTableColumnDefs(): { channel: string; header: string; description?: string }[] {
+  const u = persistantStore.defaultUnits();
+  const brU = speedUnitBracketUpper(u);
+  const exitSpeedDesc =
+    u === 'kph'
+      ? 'Time from reaching 28 km/h of boat speed to popping onto foils'
+      : 'Time from reaching ~15 kts of boat speed to popping onto foils';
+
+  return [
+    { channel: 'Tws_bin', header: 'TWS BIN', description: `Wind speed bin ${brU}` },
+    { channel: 'Tws_avg', header: `TWS ${brU}`, description: 'Average true wind speed' },
+    { channel: 'Mmg', header: 'Mmg', description: 'Meters made good in direction of wind for duration of takeoff' },
+    { channel: 'Vmg_perc_avg', header: 'Vmg%', description: 'Average VMG% of target for duration of takeoff' },
+    { channel: 'Loss_total_tgt', header: 'Loss total tgt', description: 'Overall maneuver loss in meters relative to target VMG' },
+    { channel: 'Bsp_start', header: 'Start Bsp', description: 'Initial boat speed' },
+    { channel: 'Twa_build', header: 'Build Twa', description: 'True wind angle during acceleration.' },
+    { channel: 'Time_accel', header: 'Accel Time', description: 'Seconds accelerating from minimum boat speed to pop onto foils' },
+    { channel: 'Exit_time', header: 'Pop Time', description: exitSpeedDesc },
+    { channel: 'Bsp_exit', header: 'Pop Bsp', description: 'Boat speed at time of pop onto foils.' },
+    { channel: 'Twa_exit', header: 'Pop Twa', description: 'True wind angle at time of pop onto foils.' },
+    { channel: 'Pitch_accmax', header: 'ACCMAX Pitch', description: ACCMAX_TOOLTIP },
+    { channel: 'Heel_accmax', header: 'ACCMAX Heel', description: ACCMAX_TOOLTIP },
+    { channel: 'Rake_accmax', header: 'ACCMAX DB Rake', description: ACCMAX_TOOLTIP },
+    { channel: 'Rud_rake_accmax', header: 'ACCMAX Rud Rake', description: ACCMAX_TOOLTIP },
+    { channel: 'Rud_diff_accmax', header: 'ACCMAX Rud Diff', description: ACCMAX_TOOLTIP },
+    { channel: 'Cant_accmax', header: 'ACCMAX Cant', description: ACCMAX_TOOLTIP },
+    { channel: 'Jib_sheet_pct_accmax', header: 'ACCMAX Jib Sht%', description: ACCMAX_TOOLTIP },
+    { channel: 'Jib_lead_ang_accmax', header: 'ACCMAX Jib Lead', description: ACCMAX_TOOLTIP },
+    { channel: 'Jib_cunno_load_accmax', header: 'ACCMAX Jib Cunno', description: ACCMAX_TOOLTIP },
+    { channel: 'Wing_clew_pos_accmax', header: 'ACCMAX Wing Clew', description: ACCMAX_TOOLTIP },
+    { channel: 'Wing_twist_accmax', header: 'ACCMAX Wing Twist', description: ACCMAX_TOOLTIP },
+    { channel: 'Wing_ca1_accmax', header: 'ACCMAX Wing Ca1', description: ACCMAX_TOOLTIP }
+  ];
+}
 
 /**
  * Get table column configuration for DataTable_Big (full table)
@@ -215,9 +250,10 @@ export function getBigTableColumns(context: ManeuversContext, color: string, cla
     const sourceDesc = ['SOURCE'];
     const sourceChan = ['source_name'];
 
-    const takeoffColumns = TAKEOFF_TABLE_COLUMNS.map((c) => c.header);
-    const takeoffDescriptions = TAKEOFF_TABLE_COLUMNS.map((c) => c.description ?? c.header);
-    const takeoffChannels = TAKEOFF_TABLE_COLUMNS.map((c) => c.channel);
+    const takeoffDefs = getTakeoffTableColumnDefs();
+    const takeoffColumns = takeoffDefs.map((c) => c.header);
+    const takeoffDescriptions = takeoffDefs.map((c) => c.description ?? c.header);
+    const takeoffChannels = takeoffDefs.map((c) => c.channel);
 
     return {
       columns: [...baseColumns, ...sourceColumn, ...takeoffColumns],
@@ -268,9 +304,9 @@ export function getBigTableColumns(context: ManeuversContext, color: string, cla
     colorChan = ['Event'];
   }
 
-  // Determine TWS unit based on class name
-  const twsUnit = className?.toLowerCase() === 'ac40' ? '[kph]' : '[kts]';
+  const twsUnit = speedUnitBracket(persistantStore.defaultUnits());
   const twsDesc = `TWS ${twsUnit}`;
+  const bsUnitU = speedUnitBracketUpper(persistantStore.defaultUnits());
 
   const fullColumns = [
     ...baseColumns,
@@ -305,9 +341,9 @@ export function getBigTableColumns(context: ManeuversContext, color: string, cla
     'BASELINE VMG FOR WIND BIN vs. AVERAGE VMG FOR MANEUVER',
     'METERS MADE GOOD IN DIRECTION OF WIND',
     'VMG% OF TARGET [%]',
-    'SPEED AT BUTTON PRESS [KPH]',
-    'BS MIN [KPH]',
-    'BS DROP - BS MIN [KPH]',
+    `SPEED AT BUTTON PRESS ${bsUnitU}`,
+    `BS MIN ${bsUnitU}`,
+    `BS DROP - BS MIN ${bsUnitU}`,
     'MAX TURN RATE [DEG/SEC]',
     'TURN RADIUS [M]',
     'TWA AT MAXIMUM TURN ANGLE',

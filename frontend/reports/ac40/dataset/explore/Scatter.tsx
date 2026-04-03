@@ -171,7 +171,7 @@ export default function ScatterPage(props: ScatterPageProps) {
       optionalFilterChannels.forEach(channel => requiredChannelsSet.add(channel));
       
       // CRITICAL: Use channel names directly from chart objects - they already have the correct case
-      // Chart objects preserve original case like 'Twa_deg', 'Tws_avg_kph', 'Bsp_kph'
+      // Chart objects preserve original case for API channel names (mixed case, underscores).
       // No normalization needed - use them as-is
       // Add chart-specific channels (preserve original case from chart objects)
       chartsData.forEach(chart => {

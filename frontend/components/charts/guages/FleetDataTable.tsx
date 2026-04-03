@@ -7,6 +7,12 @@ import { sourcesStore } from "../../../store/sourcesStore";
 import { apiEndpoints } from "@config/env";
 import { getData, getTimezoneForDate } from "../../../utils/global";
 import { debug, error as logError } from "../../../utils/console";
+import { defaultChannelsStore } from "../../../store/defaultChannelsStore";
+
+const defaultFleetTableChannels = (): string[] => [
+  defaultChannelsStore.bspName(),
+  defaultChannelsStore.twsName(),
+];
 
 const FLEET_DATATABLE_OBJECT = "fleet_datatable";
 const TOP_OFFSET = 70;
@@ -262,7 +268,7 @@ export default function FleetDataTable(props: FleetDataTableProps) {
       const orientation =
         (chart.orientation || "vertical").toString().toLowerCase() === "horizontal" ? "horizontal" : "vertical";
       setConfig({
-        channels: channels.length ? channels : ["Bsp_kts", "Tws_kts"],
+        channels: channels.length ? channels : defaultFleetTableChannels(),
         backgroundColor: chart.backgroundColor ?? "#FFFFFF",
         opacity: typeof chart.opacity === "number" ? chart.opacity : 1,
         position: finalPosition,
@@ -282,7 +288,7 @@ export default function FleetDataTable(props: FleetDataTableProps) {
     const projectId = persistantStore.selectedProjectId?.();
     const date = persistantStore.selectedDate?.();
     const cfg = config();
-    const channels = cfg?.channels?.length ? cfg.channels : ["Bsp_kts", "Tws_kts"];
+    const channels = cfg?.channels?.length ? cfg.channels : defaultFleetTableChannels();
     const sourceIds =
       typeof props.selectedSourceIds === "function" ? props.selectedSourceIds() : props.selectedSourceIds;
 
@@ -571,7 +577,7 @@ export default function FleetDataTable(props: FleetDataTableProps) {
   });
 
   // Reactive getters so JSX updates when config or time changes
-  const channels = () => config()?.channels?.length ? config()!.channels : ["Bsp_kts", "Tws_kts"];
+  const channels = () => config()?.channels?.length ? config()!.channels : defaultFleetTableChannels();
   const backgroundColor = () => {
     const cfg = config();
     const bg = cfg?.backgroundColor ?? "#FFFFFF";

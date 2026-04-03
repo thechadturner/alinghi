@@ -6,6 +6,8 @@ import { setTooltip } from "../../store/globalStore";
 import { defaultChannelsStore } from "../../store/defaultChannelsStore";
 import { isDark } from "../../store/themeStore";
 import { warn } from "../../utils/console";
+import { persistantStore } from "../../store/persistantStore";
+import { fieldBaseKeyForMatching, speedUnitBracketUpper } from "../../utils/speedUnits";
 
 import infoIconUrl from "../../assets/info.svg";
 import warningIconUrl from "../../assets/warning.svg";
@@ -75,11 +77,8 @@ export default function TargetScatter(props: TargetScatterProps) {
         const xFieldLower = x.toLowerCase();
         const yFieldLower = y.toLowerCase();
         
-        // For target data, fields are typically lowercase without suffix (e.g., "tws", "bsp")
-        // But channel names from defaultChannelsStore may have suffix (e.g., "Tws_kph", "Bsp_kph")
-        // Extract base field name by removing common suffixes
-        const xBaseField = xFieldLower.replace(/[_\s]*(kph|kts|deg|perc)$/i, '').replace(/[_\s]/g, '');
-        const yBaseField = yFieldLower.replace(/[_\s]*(kph|kts|deg|perc)$/i, '').replace(/[_\s]/g, '');
+        const xBaseField = fieldBaseKeyForMatching(x);
+        const yBaseField = fieldBaseKeyForMatching(y);
         
         // Filter data where y field is not null (try multiple field name variations)
         let data = collection.filter(d => {
@@ -102,10 +101,8 @@ export default function TargetScatter(props: TargetScatterProps) {
             } else if (xBaseField in firstItem) {
                 xField = xBaseField;
             } else {
-                // Try to find by partial match (e.g., "tws" in "Tws_kph" or vice versa)
-                const xMatch = availableFields.find(f => 
-                    f.toLowerCase() === xBaseField || 
-                    f.toLowerCase().replace(/[_\s]*(kph|kts|deg|perc)$/i, '').replace(/[_\s]/g, '') === xBaseField
+                const xMatch = availableFields.find(f =>
+                    f.toLowerCase() === xBaseField || fieldBaseKeyForMatching(f) === xBaseField
                 );
                 if (xMatch) {
                     xField = xMatch;
@@ -122,9 +119,8 @@ export default function TargetScatter(props: TargetScatterProps) {
                 yField = yBaseField;
             } else {
                 // Try to find by partial match
-                const yMatch = availableFields.find(f => 
-                    f.toLowerCase() === yBaseField || 
-                    f.toLowerCase().replace(/[_\s]*(kph|kts|deg|perc)$/i, '').replace(/[_\s]/g, '') === yBaseField
+                const yMatch = availableFields.find(f =>
+                    f.toLowerCase() === yBaseField || fieldBaseKeyForMatching(f) === yBaseField
                 );
                 if (yMatch) {
                     yField = yMatch;
@@ -237,9 +233,10 @@ export default function TargetScatter(props: TargetScatterProps) {
     const bspChannel = bspName().toLowerCase();
     const xaxisLower = xaxis.toLowerCase();
     
-    let xaxisLabel = 'TWS [KPH]';
+    const speedBr = speedUnitBracketUpper(persistantStore.defaultUnits());
+    let xaxisLabel = `TWS ${speedBr}`;
     if (xaxisLower === bspChannel || xaxisLower === 'bsp') {
-      xaxisLabel = 'BSP [KPH]';
+      xaxisLabel = `BSP ${speedBr}`;
     }
 
     let make_x_gridlines = (xScale) => {

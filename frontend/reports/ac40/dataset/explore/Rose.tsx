@@ -151,7 +151,7 @@ setSelectedPage(objectName);
           className: selectedClassName(),
           datasetId: selectedDatasetId(),
           sourceName: selectedSourceName(),
-          date: formattedDate, // Use dataset date so FILE channel discovery finds parquet channels (Twa_n_deg, Tws_kph, etc.)
+          date: formattedDate, // Use dataset date so FILE channel discovery finds parquet columns
           use_v2: true, // Obsolete - kept for backward compatibility (DuckDB is now the only implementation)
           applyGlobalFilters: applyGlobal
         },

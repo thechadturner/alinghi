@@ -40,6 +40,15 @@ import { applyDataFilter, applyTimelineFilter, filterByTwa } from "../../../util
 import { processD3CalculationsWithWorker } from "../../../utils/workerManager";
 import { unifiedDataStore } from "../../../store/unifiedDataStore";
 import { persistantStore } from "../../../store/persistantStore";
+import {
+  bspValueFromRow,
+  mapTimelineChannelValue,
+  mapTimelineYAxisLabelParts,
+  speedUnitSuffix,
+  twsValueFromRow,
+  vmgPercValueFromRow,
+  vmgValueFromRow,
+} from "../../../utils/speedUnits";
 import { defaultChannelsStore } from "../../../store/defaultChannelsStore";
 import { sourcesStore } from "../../../store/sourcesStore";
 import { selectedDate as selectionSelectedDate } from "../../../store/selectionStore";
@@ -616,8 +625,9 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
         const lng = lngName() || 'Lng';
         const twd = twdName() || 'Twd';
         const twa = twaName() || 'Twa';
-        const tws = twsName() || 'Tws_kts';
-        const bsp = bspName() || 'Bsp_kts';
+        const su = speedUnitSuffix(persistantStore.defaultUnits());
+        const tws = twsName() || `Tws_${su}`;
+        const bsp = bspName() || `Bsp_${su}`;
         const hdg = hdgName() || 'Hdg';
         const requiredChannels = [
           'Datetime', lat, lng, twd, twa, tws, bsp, hdg, 'Grade', 'Vmg_perc',
@@ -957,7 +967,7 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
           const twsField = twsName();
           const twdField = twdName();
           
-          const [minTWS, maxTWS] = getOneSigmaRange(data, (p) => +(p[twsField] ?? p[twsField.toLowerCase()] ?? p[twsField.toUpperCase()] ?? p.Tws ?? p.tws ?? 0));
+          const [minTWS, maxTWS] = getOneSigmaRange(data, (p) => twsValueFromRow(p as Record<string, unknown>, twsField, 0));
           const [minTWD, maxTWD] = getOneSigmaRange(data, (p) => +(p[twdField] ?? p[twdField.toLowerCase()] ?? p[twdField.toUpperCase()] ?? p.Twd ?? p.twd ?? 0));
 
           myLinearColor.domain([minTWD, (minTWD + maxTWD) / 2, maxTWD]);
@@ -976,15 +986,12 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
           myLinearColor.range([colors.blue, colors.lightBlue, colors.yellow, colors.red]);
 
           const bspField = bspName();
-          const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => +(p[bspField] ?? p[bspField.toLowerCase()] ?? p[bspField.toUpperCase()] ?? p.Bsp ?? p.bsp ?? 0));
+          const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => bspValueFromRow(p as Record<string, unknown>, bspField, 0));
           myLinearThickness.domain([minBSP, maxBSP]);
           myLinearThickness.range(["0.1", "3"]);
         } else if (maptype() === "VMG") {
           const vmgField = vmgName();
-          let [minVMG, maxVMG] = getOneSigmaRange(data, (p) => {
-            const val = p[vmgField] ?? p[vmgField.toLowerCase()] ?? p[vmgField.toUpperCase()] ?? p.Vmg ?? p.vmg;
-            return val !== undefined && val !== null ? Number(val) : 0;
-          });
+          let [minVMG, maxVMG] = getOneSigmaRange(data, (p) => vmgValueFromRow(p as Record<string, unknown>, vmgField, 0));
 
           myLinearColor.domain([minVMG,
             minVMG + (maxVMG - minVMG) * 0.50,
@@ -995,7 +1002,7 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
           myLinearColor.clamp(true);
 
           const bspField = bspName();
-          const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => +(p[bspField] ?? p[bspField.toLowerCase()] ?? p[bspField.toUpperCase()] ?? p.Bsp ?? p.bsp ?? 0));
+          const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => bspValueFromRow(p as Record<string, unknown>, bspField, 0));
           myLinearThickness.domain([minBSP, maxBSP]);
           myLinearThickness.range(["0.1", "3"]);
         }
@@ -1021,7 +1028,7 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
         const twsField = twsName();
         const twdField = twdName();
         
-        const [minTWS, maxTWS] = getOneSigmaRange(data, (p) => +(p[twsField] ?? p[twsField.toLowerCase()] ?? p[twsField.toUpperCase()] ?? p.Tws ?? 0));
+        const [minTWS, maxTWS] = getOneSigmaRange(data, (p) => twsValueFromRow(p as Record<string, unknown>, twsField, 0));
         const [minTWD, maxTWD] = getOneSigmaRange(data, (p) => +(p[twdField] ?? p[twdField.toLowerCase()] ?? p[twdField.toUpperCase()] ?? p.Twd ?? 0));
 
         myLinearColor.domain([minTWD, (minTWD + maxTWD) / 2, maxTWD]);
@@ -1041,15 +1048,12 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
         myLinearColor.clamp(true);
 
         const bspField = bspName();
-        const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => +(p[bspField] ?? p[bspField.toLowerCase()] ?? p[bspField.toUpperCase()] ?? p.Bsp ?? p.bsp ?? 0));
+        const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => bspValueFromRow(p as Record<string, unknown>, bspField, 0));
         myLinearThickness.domain([minBSP, maxBSP]);
         myLinearThickness.range(["0.1", "3"]);
       } else if (maptype() === "VMG") {
         const vmgField = vmgName();
-        let [minVMG, maxVMG] = getOneSigmaRange(data, (p) => {
-          const val = p[vmgField] ?? p[vmgField.toLowerCase()] ?? p[vmgField.toUpperCase()] ?? p.Vmg ?? p.vmg;
-          return val !== undefined && val !== null ? Number(val) : 0;
-        });
+        let [minVMG, maxVMG] = getOneSigmaRange(data, (p) => vmgValueFromRow(p as Record<string, unknown>, vmgField, 0));
 
         myLinearColor.domain([minVMG,
           minVMG + (maxVMG - minVMG) * 0.50,
@@ -1059,7 +1063,7 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
         myLinearColor.clamp(true);
 
         const bspField = bspName();
-        const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => +(p[bspField] ?? p[bspField.toLowerCase()] ?? p[bspField.toUpperCase()] ?? p.Bsp ?? p.bsp ?? 0));
+        const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => bspValueFromRow(p as Record<string, unknown>, bspField, 0));
         myLinearThickness.domain([minBSP, maxBSP]);
         myLinearThickness.range(["0.1", "3"]);
       }
@@ -1101,14 +1105,12 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
       const twdVal = d[twdField] ?? d[twdField.toLowerCase()] ?? d[twdField.toUpperCase()] ?? d.Twd ?? d.twd;
       return myLinearColor(twdVal) || colors.lightGrey;
     } else if (maptype() === "VMG%") {
-      // Use vmg_perc_name channel (same as old VMG behavior)
       const vmgPercField = vmgPercName();
-      const vmgPercVal = d[vmgPercField] ?? d[vmgPercField.toLowerCase()] ?? d[vmgPercField.toUpperCase()] ?? d.Vmg_perc ?? d.vmg_perc;
+      const vmgPercVal = vmgPercValueFromRow(d as Record<string, unknown>, vmgPercField, Number.NaN);
       return myLinearColor(vmgPercVal) || colors.lightGrey;
     } else if (maptype() === "VMG") {
-      // Use vmg_name channel (new option)
       const vmgField = vmgName();
-      const vmgVal = d[vmgField] ?? d[vmgField.toLowerCase()] ?? d[vmgField.toUpperCase()] ?? d.Vmg ?? d.vmg;
+      const vmgVal = vmgValueFromRow(d as Record<string, unknown>, vmgField, Number.NaN);
       return myLinearColor(vmgVal) || colors.lightGrey;
     } else if (maptype() === "STATE") {
       // State coloring: 0=red, 1=orange, 2=blue
@@ -1165,11 +1167,11 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
         return 2;
       } else if (maptype() === "WIND") {
         const twsField = twsName();
-        const twsVal = d[twsField] ?? d[twsField.toLowerCase()] ?? d[twsField.toUpperCase()] ?? d.Tws ?? d.tws;
+        const twsVal = twsValueFromRow(d as Record<string, unknown>, twsField, Number.NaN);
         return myLinearThickness(twsVal) || 2;
       } else if (maptype() === "VMG%" || maptype() === "VMG") {
         const bspField = bspName();
-        const bspVal = d[bspField] ?? d[bspField.toLowerCase()] ?? d[bspField.toUpperCase()] ?? d.Bsp ?? d.bsp;
+        const bspVal = bspValueFromRow(d as Record<string, unknown>, bspField, Number.NaN);
         return myLinearThickness(bspVal) || 2;
       } else if (maptype() === "PHASE") {
         return 2;
@@ -1271,8 +1273,9 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
       initScales(data);
 
       // Use dynamic channel names from store
-      const tws = twsName() || 'Tws_kts';
-      const bsp = bspName() || 'Bsp_kts';
+      const su = speedUnitSuffix(persistantStore.defaultUnits());
+      const tws = twsName() || `Tws_${su}`;
+      const bsp = bspName() || `Bsp_${su}`;
       const vmgPerc = vmgPercName() || 'Vmg_perc';
       const vmg = vmgName() || 'Vmg';
       let channel = bsp; // default
@@ -1286,16 +1289,15 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
         channel = bsp;
       }
       
-      // Helper function to get channel value from data point (case-insensitive)
-      const getChannelValue = (d: any): number => {
-        const val = d[channel] ?? d[channel.toLowerCase()] ?? d[channel.toUpperCase()];
-        if (val === undefined || val === null || isNaN(Number(val))) {
-          return 0; // Return 0 instead of NaN to prevent rendering errors
-        }
-        return Number(val);
-      };
+      const getChannelValue = (d: any): number =>
+        mapTimelineChannelValue(d as Record<string, unknown>, channel, maptype());
       
-      debug(`[MapTimeSeries] Using channel for chart: ${channel} (maptype: ${maptype()})`);
+      const labelParts = mapTimelineYAxisLabelParts(channel, persistantStore.defaultUnits());
+      const yAxisTitle =
+        labelParts.unitBracket != null
+          ? `${labelParts.name}${labelParts.unitBracket}`.trim()
+          : labelParts.name;
+      debug(`[MapTimeSeries] Using channel for chart: ${channel} (maptype: ${maptype()}), y-axis label: ${yAxisTitle}`);
 
       // Remove existing chart before redrawing
       d3.select("#chart").select("svg").remove();
@@ -1341,11 +1343,11 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
           // Use d3.min/max instead of Math.min/max with spread to avoid stack overflow on large arrays
           const yMin = d3.min(data, (d) => {
             const val = getChannelValue(d);
-            return (!isNaN(val) && val !== null && val !== undefined && val !== 0) ? val : undefined;
+            return Number.isFinite(val) ? val : undefined;
           });
           const yMax = d3.max(data, (d) => {
             const val = getChannelValue(d);
-            return (!isNaN(val) && val !== null && val !== undefined && val !== 0) ? val : undefined;
+            return Number.isFinite(val) ? val : undefined;
           });
           
           // Handle case where all values are filtered out
@@ -1364,21 +1366,52 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
           xExtent = d3.extent(data, (d) => getTimestamp(d));
           xScale = d3.scaleTime().domain(xExtent).range([0, width - margin.left - margin.right]);
           
-          yScale = d3.scaleLinear()
-            .domain([
-              d3.min(data, (d) => getChannelValue(d)),
-              d3.max(data, (d) => getChannelValue(d)) * 1.15
-            ])
-            .range([height - margin.top - margin.bottom, 0]);
+          {
+            const minY = d3.min(data, (d) => {
+              const v = getChannelValue(d);
+              return Number.isFinite(v) ? v : undefined;
+            });
+            const maxY = d3.max(data, (d) => {
+              const v = getChannelValue(d);
+              return Number.isFinite(v) ? v : undefined;
+            });
+            yScale =
+              minY === undefined || maxY === undefined
+                ? d3
+                    .scaleLinear()
+                    .domain([0, 100])
+                    .range([height - margin.top - margin.bottom, 0])
+                : d3
+                    .scaleLinear()
+                    .domain([minY, maxY * 1.15])
+                    .range([height - margin.top - margin.bottom, 0]);
+          }
         }
       } else {
         // Synchronous calculation for small datasets
         xExtent = d3.extent(data, (d) => getTimestamp(d));
         xScale = d3.scaleTime().domain(xExtent).range([0, width - margin.left - margin.right]);
         
-        yScale = d3.scaleLinear()
-          .domain([d3.min(data, (d) => getChannelValue(d)), d3.max(data, (d) => getChannelValue(d)) * 1.15])
-          .range([height - margin.top - margin.bottom, 0]);
+        {
+          const minY = d3.min(data, (d) => {
+            const v = getChannelValue(d);
+            return Number.isFinite(v) ? v : undefined;
+          });
+          const maxY = d3.max(data, (d) => {
+            const v = getChannelValue(d);
+            return Number.isFinite(v) ? v : undefined;
+          });
+          yScale =
+            minY === undefined || maxY === undefined
+              ? d3
+                  .scaleLinear()
+                  .domain([0, 100])
+                  .range([height - margin.top - margin.bottom, 0])
+              : d3
+                  .scaleLinear()
+                  .domain([minY, maxY * 1.15])
+                  .range([height - margin.top - margin.bottom, 0]);
+        }
       }
 
       setRange({ min: xExtent[0], max: xExtent[1] });
@@ -1519,14 +1552,21 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
         .call(d3.axisLeft(yScale).ticks(3))
         .style("color", colors.axis);
 
-      // Add Axis Label
-      svg.append("text")
+      // Add Axis Label (channel name + smaller unit bracket for speed channels)
+      const axisLabelEl = svg
+        .append("text")
         .attr("class", "axis-label")
         .attr("text-anchor", "left")
         .attr("transform", "translate(20,15)")
         .attr("font-size", "14px")
-        .attr("fill", colors.text)
-        .text(channel);
+        .attr("fill", colors.text);
+      axisLabelEl.append("tspan").text(labelParts.name);
+      if (labelParts.unitBracket != null) {
+        axisLabelEl
+          .append("tspan")
+          .attr("class", "map-timeseries-axis-unit")
+          .text(labelParts.unitBracket);
+      }
       
       // Add cut data indicator
       if (isCutData) {

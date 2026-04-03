@@ -470,6 +470,8 @@ def compute_rolling_perf_model_awa_offsets(
     model_update_interval_sec: float = 30 * 60,
     speed_unit: str = 'kph',
     perf_model_feature_extras: Optional[List[str]] = None,
+    *,
+    verbose: bool = False,
 ) -> Tuple[pd.Series, pd.Series, Optional[float], Optional[float]]:
     """
     Compute rolling AWA offsets using V3 performance model approach.
@@ -570,8 +572,9 @@ def compute_rolling_perf_model_awa_offsets(
             if new_sd is not None:
                 models['starboard_downwind'] = new_sd
             trained = [k for k, v in models.items() if v is not None]
-            print(f"    [V3] t={t:.0f}: models trained: {trained or 'none'} "
-                  f"(n_train={len(df_train):,})")
+            if verbose:
+                print(f"    [V3] t={t:.0f}: models trained: {trained or 'none'} "
+                      f"(n_train={len(df_train):,})")
             last_model_update_ts = t
         
         # Extract query conditions from trailing window
@@ -629,12 +632,13 @@ def compute_rolling_perf_model_awa_offsets(
     
     uw_valid = uw_offsets[~np.isnan(uw_offsets)]
     dw_valid = dw_offsets[~np.isnan(dw_offsets)]
-    print(f"    [V3 offsets] upwind  : {len(uw_valid):,}/{len(uw_offsets):,} valid, "
-          f"mean={float(np.mean(uw_valid)):.3f}°, range=[{float(np.min(uw_valid)):.3f}, {float(np.max(uw_valid)):.3f}]°"
-          if len(uw_valid) > 0 else f"    [V3 offsets] upwind  : 0 valid — no correction applied")
-    print(f"    [V3 offsets] downwind: {len(dw_valid):,}/{len(dw_offsets):,} valid, "
-          f"mean={float(np.mean(dw_valid)):.3f}°, range=[{float(np.min(dw_valid)):.3f}, {float(np.max(dw_valid)):.3f}]°"
-          if len(dw_valid) > 0 else f"    [V3 offsets] downwind: 0 valid — will fall back to upwind offset")
+    if verbose:
+        print(f"    [V3 offsets] upwind  : {len(uw_valid):,}/{len(uw_offsets):,} valid, "
+              f"mean={float(np.mean(uw_valid)):.3f}°, range=[{float(np.min(uw_valid)):.3f}, {float(np.max(uw_valid)):.3f}]°"
+              if len(uw_valid) > 0 else "    [V3 offsets] upwind  : 0 valid — no correction applied")
+        print(f"    [V3 offsets] downwind: {len(dw_valid):,}/{len(dw_offsets):,} valid, "
+              f"mean={float(np.mean(dw_valid)):.3f}°, range=[{float(np.min(dw_valid)):.3f}, {float(np.max(dw_valid)):.3f}]°"
+              if len(dw_valid) > 0 else "    [V3 offsets] downwind: 0 valid — will fall back to upwind offset")
 
     # Fill NaN downwind offsets with the corresponding upwind offset (same time index).
     # This is better than falling back to first_valid_offset when downwind models can't train.
@@ -1262,6 +1266,8 @@ def calibrate_sailing_data(
     min_samples_per_model: int = 100,
     pre_fusion_awa_sensors: Optional[List[str]] = None,
     pre_fusion_aws_sensors: Optional[List[str]] = None,
+    *,
+    verbose: bool = False,
 ) -> Dict:
     """
     Single-sensor calibration: train performance models per tack × mode (upwind/downwind),
@@ -1319,6 +1325,7 @@ def calibrate_sailing_data(
             model_update_interval_sec=model_update_interval_sec,
             speed_unit=unit,
             perf_model_feature_extras=config.perf_model_feature_extras,
+            verbose=verbose,
         )
     )
     
@@ -1466,13 +1473,17 @@ def calibrate_multi_sensors(config: CalibrationConfig,
                            window_sec: float = 30 * 60,
                            step_sec: float = 60,
                            model_update_interval_sec: float = 30 * 60,
-                           min_samples_per_model: int = 100) -> Dict:
+                           min_samples_per_model: int = 100,
+                           verbose: bool = False) -> Dict:
     """
     Calibrate multiple AWA/AWS sensors independently with health validation (performance-model AWA).
     """
     from .sensor_health import SensorHealthCheck
 
-    print("MULTI-SENSOR CALIBRATION PIPELINE (performance-model AWA)")
+    if verbose:
+        print("MULTI-SENSOR CALIBRATION PIPELINE (performance-model AWA)")
+    else:
+        print("[1/3] Calibration: loading Grade ≥ 2 data...")
 
     results: Dict[str, Any] = {
         'sensor_health': {},
@@ -1480,7 +1491,8 @@ def calibrate_multi_sensors(config: CalibrationConfig,
         'recommended_sensors': []
     }
 
-    print("\n[1/3] Loading data...")
+    if verbose:
+        print("\n[1/3] Loading data...")
     df_original = load_calibration_data(config)
     unit = resolve_speed_unit(config.speed_unit, df_original, aws_sensors)
     ensure_speed_columns(df_original, unit)
@@ -1488,13 +1500,20 @@ def calibrate_multi_sensors(config: CalibrationConfig,
         df_original.copy(), awa_col=awa_sensors[0], lwy_col=lwy_sensor, speed_unit=unit
     )
     df_before = add_tack_and_hour(df_before)
-    print(f"      [OK] Loaded {len(df_original):,} Grade >= 2 samples")
+    if verbose:
+        print(f"      [OK] Loaded {len(df_original):,} Grade >= 2 samples")
+    else:
+        print(f"      Loaded {len(df_original):,} samples")
 
-    print("\n[2/3] Performing health checks...")
+    if verbose:
+        print("\n[2/3] Performing health checks...")
+    else:
+        print("[2/3] Sensor health checks...")
     all_sensors = awa_sensors + ([lwy_sensor] if lwy_sensor not in awa_sensors else [])
     health_results = SensorHealthCheck.validate_all_sensors(df_original, all_sensors)
     results['sensor_health'] = health_results
-    SensorHealthCheck.print_health_report(health_results)
+    if verbose:
+        SensorHealthCheck.print_health_report(health_results)
 
     healthy_awa_sensors = [
         s for s in awa_sensors
@@ -1503,11 +1522,20 @@ def calibrate_multi_sensors(config: CalibrationConfig,
     if len(healthy_awa_sensors) == 0:
         print("\n[ERROR] No healthy AWA sensors found!")
         return results
-    print(f"\n[OK] {len(healthy_awa_sensors)}/{len(awa_sensors)} AWA sensors passed health checks")
+    if verbose:
+        print(f"\n[OK] {len(healthy_awa_sensors)}/{len(awa_sensors)} AWA sensors passed health checks")
+    else:
+        print(f"      {len(healthy_awa_sensors)}/{len(awa_sensors)} AWA sensors passed threshold")
 
-    print(f"\n[3/3] Calibrating {len(healthy_awa_sensors)} sensor(s)...")
+    if verbose:
+        print(f"\n[3/3] Calibrating {len(healthy_awa_sensors)} sensor(s)...")
+    else:
+        print("[3/3] Training AWA offsets & leeway models...")
     for i, awa_sensor in enumerate(healthy_awa_sensors, 1):
-        print(f"\n  [{i}/{len(healthy_awa_sensors)}] Calibrating {awa_sensor}...")
+        if verbose:
+            print(f"\n  [{i}/{len(healthy_awa_sensors)}] Calibrating {awa_sensor}...")
+        else:
+            print(f"      Sensor {i}/{len(healthy_awa_sensors)}: {awa_sensor}")
         try:
             cal_result = calibrate_sailing_data(
                 config=config,
@@ -1519,8 +1547,9 @@ def calibrate_multi_sensors(config: CalibrationConfig,
                 min_samples_per_model=min_samples_per_model,
                 pre_fusion_awa_sensors=awa_sensors,
                 pre_fusion_aws_sensors=aws_sensors,
+                verbose=verbose,
             )
-            _store_cal_result(results, awa_sensor, cal_result, df_before, lwy_sensor)
+            _store_cal_result(results, awa_sensor, cal_result, df_before, lwy_sensor, verbose=verbose)
         except Exception as e:
             print(f"        ✗ Calibration failed: {e}")
             results['sensor_calibrations'][awa_sensor] = {
@@ -1531,12 +1560,12 @@ def calibrate_multi_sensors(config: CalibrationConfig,
                 'error': str(e)
             }
 
-    _rank_and_print_sensors(results)
+    _rank_and_print_sensors(results, verbose=verbose)
     return results
 
 
 def _store_cal_result(results: Dict, awa_sensor: str, cal_result: Dict,
-                      df_before: pd.DataFrame, lwy_sensor: str) -> None:
+                      df_before: pd.DataFrame, lwy_sensor: str, *, verbose: bool = False) -> None:
     quality_scores = compute_calibration_quality(cal_result, df_before, awa_sensor, lwy_sensor)
     results['sensor_calibrations'][awa_sensor] = {
         'calibration': cal_result,
@@ -1544,13 +1573,16 @@ def _store_cal_result(results: Dict, awa_sensor: str, cal_result: Dict,
         'quality_scores': quality_scores,
         'quality_score': quality_scores['total']
     }
-    print(f"        [OK] Quality score: {quality_scores['total']:.1f}/100")
-    print(f"          - Port/Stbd balance: {quality_scores['balance_delta']:.3f}°")
-    if 'twd_improvement_pct' in quality_scores:
-        print(f"          - TWD improvement: {quality_scores['twd_improvement_pct']:+.1f}%")
+    if verbose:
+        print(f"        [OK] Quality score: {quality_scores['total']:.1f}/100")
+        print(f"          - Port/Stbd balance: {quality_scores['balance_delta']:.3f}°")
+        if 'twd_improvement_pct' in quality_scores:
+            print(f"          - TWD improvement: {quality_scores['twd_improvement_pct']:+.1f}%")
+    else:
+        print(f"      Quality {quality_scores['total']:.1f}/100 ({awa_sensor})")
 
 
-def _rank_and_print_sensors(results: Dict) -> None:
+def _rank_and_print_sensors(results: Dict, *, verbose: bool = False) -> None:
     calibrated_sensors = [(sensor, data['quality_score'])
                          for sensor, data in results['sensor_calibrations'].items()
                          if data['calibration'] is not None]
@@ -1558,11 +1590,16 @@ def _rank_and_print_sensors(results: Dict) -> None:
     results['recommended_sensors'] = [s[0] for s in calibrated_sensors]
 
     if results['recommended_sensors']:
-        print(f"[OK] CALIBRATION COMPLETE - {len(results['recommended_sensors'])} sensor(s) calibrated")
-        print(f"\nRecommended sensor ranking:")
-        for i, sensor in enumerate(results['recommended_sensors'], 1):
-            score = results['sensor_calibrations'][sensor]['quality_score']
-            print(f"  {i}. {sensor} (quality: {score:.1f}/100)")
+        if verbose:
+            print(f"[OK] CALIBRATION COMPLETE - {len(results['recommended_sensors'])} sensor(s) calibrated")
+            print("\nRecommended sensor ranking:")
+            for i, sensor in enumerate(results['recommended_sensors'], 1):
+                score = results['sensor_calibrations'][sensor]['quality_score']
+                print(f"  {i}. {sensor} (quality: {score:.1f}/100)")
+        else:
+            best = results['recommended_sensors'][0]
+            sc = results['sensor_calibrations'][best]['quality_score']
+            print(f"[OK] Calibration complete — primary {best} ({sc:.1f}/100)")
     else:
         print("[ERROR] NO SENSORS SUCCESSFULLY CALIBRATED")
 
@@ -1795,14 +1832,16 @@ def calibrate_and_fuse_pipeline(config: CalibrationConfig,
                                 window_sec: float = 30 * 60,
                                 step_sec: float = 60,
                                 model_update_interval_sec: float = 30 * 60,
-                                min_samples_per_model: int = 100) -> Dict:
+                                min_samples_per_model: int = 100,
+                                verbose: bool = False) -> Dict:
     """
     Calibrate on Grade >= 2 (performance-model AWA), then load all grades in range, apply the same
     offsets, fuse, and compute true wind.
     """
     from .sensor_fusion import fuse_awa_aws_pairs, compute_fusion_statistics, print_fusion_report
 
-    print("MULTI-SENSOR CALIBRATION & FUSION PIPELINE — performance-model AWA")
+    if verbose:
+        print("MULTI-SENSOR CALIBRATION & FUSION PIPELINE — performance-model AWA")
 
     multi_results = calibrate_multi_sensors(
         config=config,
@@ -1813,18 +1852,25 @@ def calibrate_and_fuse_pipeline(config: CalibrationConfig,
         step_sec=step_sec,
         model_update_interval_sec=model_update_interval_sec,
         min_samples_per_model=min_samples_per_model,
+        verbose=verbose,
     )
     if len(multi_results['recommended_sensors']) == 0:
         raise ValueError("No sensors successfully calibrated")
 
-    print("\n[FUSION] Loading all grades in range and applying offsets (trained on Grade >= 2)...")
+    if verbose:
+        print("\n[FUSION] Loading all grades in range and applying offsets (trained on Grade >= 2)...")
+    else:
+        print("[FUSION] Loading full session & applying offsets...")
     df_full = load_calibration_data(config, include_all_grades=True)
     if len(df_full) == 0:
         raise ValueError("No full data loaded")
     if 'Grade' in df_full.columns:
         g = pd.to_numeric(df_full['Grade'], errors='coerce')
         n_low = int((g < 2).sum())
-        print(f"      [FUSION] Full load: {len(df_full):,} rows, Grade<2: {n_low:,}")
+        if verbose:
+            print(f"      [FUSION] Full load: {len(df_full):,} rows, Grade<2: {n_low:,}")
+        else:
+            print(f"      {len(df_full):,} rows ({n_low:,} Grade<2)")
     best_tr = multi_results['recommended_sensors'][0]
     fuse_unit = multi_results['sensor_calibrations'][best_tr]['calibration'].get(
         'speed_unit', 'kph'
@@ -1834,7 +1880,10 @@ def calibrate_and_fuse_pipeline(config: CalibrationConfig,
         df_full, multi_results, awa_sensors, aws_sensors, lwy_sensor,
         speed_unit=fuse_unit,
     )
-    print(f"      [OK] Applied offsets to {len(df_full):,} samples (all grades)")
+    if verbose:
+        print(f"      [OK] Applied offsets to {len(df_full):,} samples (all grades)")
+    else:
+        print("      Offsets applied (all grades)")
     if os.environ.get('HUNICO_FUSION_TRACE', '').strip() == '1' and 'Grade' in df_full.columns:
         g = pd.to_numeric(df_full['Grade'], errors='coerce')
         low = g < 2
@@ -1855,8 +1904,11 @@ def calibrate_and_fuse_pipeline(config: CalibrationConfig,
                 print('      [FUSION][trace] Grade<2 offsets — ' + ', '.join(trace_parts))
 
     aws_to_use = [s for s in (aws_sensors or []) if s in df_full.columns]
-    print(f"\n[FUSION] Fusing {len(multi_results['recommended_sensors'])} AWA sensor(s)"
-          f"{', ' + str(len(aws_to_use)) + ' AWS sensor(s)' if aws_to_use else ''} using '{fusion_method}' method...")
+    if verbose:
+        print(f"\n[FUSION] Fusing {len(multi_results['recommended_sensors'])} AWA sensor(s)"
+              f"{', ' + str(len(aws_to_use)) + ' AWS sensor(s)' if aws_to_use else ''} using '{fusion_method}' method...")
+    else:
+        print(f"[FUSION] Fusing AWA ({fusion_method})...")
     if fusion_method == 'robust':
         df_fused = fuse_awa_aws_pairs(
             df=df_full,
@@ -1877,7 +1929,10 @@ def calibrate_and_fuse_pipeline(config: CalibrationConfig,
     else:
         raise ValueError(f"Unknown fusion_method: {fusion_method}")
 
-    print("\n[FUSION] Computing true wind from fused sensors (full dataframe)...")
+    if verbose:
+        print("\n[FUSION] Computing true wind from fused sensors (full dataframe)...")
+    else:
+        print("[FUSION] Computing true wind...")
     df_final = fuse_and_compute_true_wind(df_fused, lwy_col=lwy_sensor, speed_unit=fuse_unit)
     for col in df_full.columns:
         if col in df_final.columns:
@@ -1887,7 +1942,8 @@ def calibrate_and_fuse_pipeline(config: CalibrationConfig,
         ):
             df_final[col] = df_full[col].values
 
-    print("\n[FUSION] Assessing fusion quality...")
+    if verbose:
+        print("\n[FUSION] Assessing fusion quality...")
     df_stats = df_final
     if 'Grade' in df_final.columns:
         df_grade3 = df_final[df_final['Grade'] == 3]
@@ -1898,9 +1954,13 @@ def calibrate_and_fuse_pipeline(config: CalibrationConfig,
         sensor_list=multi_results['recommended_sensors'],
         fused_column='Awa_fused_deg'
     )
-    print_fusion_report(fusion_stats, multi_results['recommended_sensors'])
+    if verbose:
+        print_fusion_report(fusion_stats, multi_results['recommended_sensors'])
 
-    print("[OK] PIPELINE COMPLETE - Full dataframe with corrected true wind")
+    if verbose:
+        print("[OK] PIPELINE COMPLETE - Full dataframe with corrected true wind")
+    else:
+        print("[OK] Fusion pipeline complete")
 
     return {
         'data': df_final,
@@ -1920,6 +1980,7 @@ def calibrate_single_sensor_pipeline(
     step_sec: float = 60,
     model_update_interval_sec: float = 30 * 60,
     min_samples_per_model: int = 100,
+    verbose: bool = False,
 ) -> Dict:
     """
     Calibrate one AWA / AWS pair (performance-model AWA), load all grades, apply offsets,
@@ -1928,7 +1989,8 @@ def calibrate_single_sensor_pipeline(
     Fused column names (``Awa_fused_deg``, ``Aws_fused_*``, ``Tws_fused_*``, …) are filled from
     the calibrated primary sensor so downstream code can stay unchanged.
     """
-    print("SINGLE-SENSOR CALIBRATION PIPELINE (no AWA/AWS fusion)")
+    if verbose:
+        print("SINGLE-SENSOR CALIBRATION PIPELINE (no AWA/AWS fusion)")
 
     awa_sensors = [awa_sensor]
     aws_sensors = [aws_sensor] if aws_sensor else None
@@ -1942,18 +2004,25 @@ def calibrate_single_sensor_pipeline(
         step_sec=step_sec,
         model_update_interval_sec=model_update_interval_sec,
         min_samples_per_model=min_samples_per_model,
+        verbose=verbose,
     )
     if len(multi_results['recommended_sensors']) == 0:
         raise ValueError("No sensors successfully calibrated")
 
-    print("\n[APPLY] Loading all grades in range and applying offsets (trained on Grade >= 2)...")
+    if verbose:
+        print("\n[APPLY] Loading all grades in range and applying offsets (trained on Grade >= 2)...")
+    else:
+        print("[APPLY] Loading full session & applying offsets...")
     df_full = load_calibration_data(config, include_all_grades=True)
     if len(df_full) == 0:
         raise ValueError("No full data loaded")
     if 'Grade' in df_full.columns:
         g = pd.to_numeric(df_full['Grade'], errors='coerce')
         n_low = int((g < 2).sum())
-        print(f"      [APPLY] Full load: {len(df_full):,} rows, Grade<2: {n_low:,}")
+        if verbose:
+            print(f"      [APPLY] Full load: {len(df_full):,} rows, Grade<2: {n_low:,}")
+        else:
+            print(f"      {len(df_full):,} rows ({n_low:,} Grade<2)")
 
     best_tr = multi_results['recommended_sensors'][0]
     fuse_unit = multi_results['sensor_calibrations'][best_tr]['calibration'].get(
@@ -1968,7 +2037,10 @@ def calibrate_single_sensor_pipeline(
         lwy_sensor,
         speed_unit=fuse_unit,
     )
-    print(f"      [OK] Applied offsets to {len(df_full):,} samples (all grades)")
+    if verbose:
+        print(f"      [OK] Applied offsets to {len(df_full):,} samples (all grades)")
+    else:
+        print("      Offsets applied (all grades)")
 
     df_work = df_full.copy()
     raw_aws = f'Aws_{fuse_unit}'
@@ -1987,7 +2059,10 @@ def calibrate_single_sensor_pipeline(
         else:
             df_work[aws_fused] = np.nan
 
-    print("\n[APPLY] Computing true wind from single calibrated apparent-wind path...")
+    if verbose:
+        print("\n[APPLY] Computing true wind from single calibrated apparent-wind path...")
+    else:
+        print("[APPLY] Computing true wind...")
     df_final = fuse_and_compute_true_wind(df_work, lwy_col=lwy_sensor, speed_unit=fuse_unit)
     for col in df_full.columns:
         if col in df_final.columns:
@@ -1997,7 +2072,10 @@ def calibrate_single_sensor_pipeline(
         ):
             df_final[col] = df_full[col].values
 
-    print("[OK] SINGLE-SENSOR PIPELINE COMPLETE")
+    if verbose:
+        print("[OK] SINGLE-SENSOR PIPELINE COMPLETE")
+    else:
+        print("[OK] Single-sensor corrections ready")
 
     return {
         'data': df_final,

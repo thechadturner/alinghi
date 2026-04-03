@@ -270,7 +270,7 @@ exports.getProject = async (req, res) => {
         let result = await check_permissions(req, 'read', project_id)
 
         if (result) {
-            const sql = `SELECT project_id, project_name, a.class_id, class_name FROM admin.projects a inner join admin.classes b on a.class_id = b.class_id WHERE project_id = $1 limit 1`;
+            const sql = `SELECT project_id, project_name, a.class_id, class_name, a.speed_units FROM admin.projects a inner join admin.classes b on a.class_id = b.class_id WHERE project_id = $1 limit 1`;
             const params = [project_id];
             
             let rows = await db.GetRows(sql, params);
@@ -431,13 +431,13 @@ exports.updateProject = async (req, res) => {
     }
 
     try {
-        const { project_id, project_name, class_id } = req.body;
+        const { project_id, project_name, class_id, speed_units } = req.body;
 
         let result = await check_permissions(req, 'write', project_id)
 
         if (result) {
-            const sql = `UPDATE admin.projects SET project_name = $1, class_id = $2 WHERE project_id = $3`;
-            const params = [project_name,class_id,project_id];
+            const sql = `UPDATE admin.projects SET project_name = $1, class_id = $2, speed_units = $3 WHERE project_id = $4`;
+            const params = [project_name, class_id, speed_units ?? null, project_id];
 
             result = await db.ExecuteCommand(sql, params);
 

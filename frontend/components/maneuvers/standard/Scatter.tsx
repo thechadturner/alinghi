@@ -6,14 +6,14 @@ import { isEventHidden, setTriggerUpdate } from "../../../store/selectionStore";
 import { buildColorGrouping } from "../../../utils/colorGrouping";
 import { groupBy } from "../../../utils/global";
 import { sourcesStore } from "../../../store/sourcesStore";
-import { TAKEOFF_TABLE_COLUMNS } from "../../../utils/maneuversConfig";
+import { TAKEOFF_CHANNELS } from "../../../utils/maneuversConfig";
 import * as d3 from "d3";
 
 /** Chart order for scatter view. List channel names in desired display order; channels not listed appear after. */
 const charts_order: string[] = ['mmg','vmg_perc_avg','loss_total_tgt','loss_inv_tgt','loss_turn_tgt','loss_build_tgt','bsp_drop','bsp_min','bsp_min_delta','twa_drop_n','overshoot_perc','turn_angle_max','turn_rate_max','rud_ang_max','lwy_max','decel_slope','accel_slope','turn_radius','time_two_boards','time_dropping','time_raising','pop_time','drop_time','raise_time','heel_lock','rake_min_old_turn','rake_max_new_turn','rake_raise','aoa_raise','cant_drop_tgt'];
 
 /** Chart order for TAKEOFF scatter (same columns as big table). */
-const charts_order_takeoff: string[] = TAKEOFF_TABLE_COLUMNS.map((c) => c.channel.toLowerCase());
+const charts_order_takeoff: string[] = TAKEOFF_CHANNELS.map((c) => c.toLowerCase());
 
 /** Info/warning messages per channel (key = lowercase channel name). Only channels with a non-empty message show an icon. */
 const scatter_info: Record<string, { type?: 'info' | 'warning'; message: string }> = {
@@ -53,7 +53,7 @@ const ACCMAX_MSG = "Value at time of maximum acceleration.";
 
 /** Info messages for TAKEOFF scatter channels. */
 const scatter_info_takeoff: Record<string, { type?: 'info' | 'warning'; message: string }> = {
-  tws_avg: { message: "True wind speed average [KPH]." },
+  tws_avg: { message: "True wind speed average; unit follows project speed setting." },
   mmg: { message: "Meters made good." },
   vmg_perc_avg: { message: "VMG percent of target average." },
   bsp_start: { message: "Boat speed at start." },
@@ -95,7 +95,7 @@ export default function Scatter(props: ScatterProps) {
     if (!rows || rows.length === 0) return [];
     const isTakeoff = (eventType() || '').toUpperCase() === 'TAKEOFF';
 
-    // TAKEOFF: use exact same list as big table (TAKEOFF_TABLE_COLUMNS) so Pop Time, Pop Bsp, Pop Twa always show
+    // TAKEOFF: use exact same channel list as big table (TAKEOFF_CHANNELS) so Pop Time, Pop Bsp, Pop Twa always show
     if (isTakeoff) {
       return [...charts_order_takeoff];
     }

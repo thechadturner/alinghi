@@ -1474,7 +1474,7 @@ export default function DatasetInfo() {
                             </select>
                         </div>
                         <div class ="info-item-25">
-                            <label class="label_bold" for="report_name">Wind Speed</label><label class="label_italic">example: 10-15 kts</label>
+                            <label class="label_bold" for="report_name">Wind Speed</label><label class="label_italic">example: 10-15 knots</label>
                             <input type="text" id="report_name" value={tws()} onInput={(e) => setTws((e.target as HTMLInputElement).value)} />
                         </div>
                         <div class ="info-item-25">

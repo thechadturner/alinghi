@@ -6,14 +6,14 @@ import { selectedGroupKeys, isEventHidden, setTriggerUpdate } from "../../../sto
 import { buildColorGrouping, legendTextToGroupKey, groupKeyEquals } from "../../../utils/colorGrouping";
 import { groupBy } from "../../../utils/global";
 import { sourcesStore } from "../../../store/sourcesStore";
-import { TAKEOFF_TABLE_COLUMNS } from "../../../utils/maneuversConfig";
+import { TAKEOFF_CHANNELS } from "../../../utils/maneuversConfig";
 import * as d3 from "d3";
 
 /** Chart order for scatter view. List channel names in desired display order; channels not listed appear after. */
 const charts_order: string[] = ['mmg','vmg_perc_avg','loss_total_tgt','loss_inv_tgt','loss_turn_tgt','loss_build_tgt','bsp_drop','bsp_min','bsp_min_delta','twa_drop_n','overshoot_perc','turn_angle_max','turn_rate_max','rud_ang_max','lwy_max','decel_slope','accel_slope','turn_radius','time_two_boards','time_dropping','time_raising','pop_time','drop_time','raise_time','heel_lock','rake_min_old_turn','rake_max_new_turn','rake_raise','aoa_raise','cant_drop_tgt'];
 
 /** Chart order for TAKEOFF scatter (same columns as big table). */
-const charts_order_takeoff: string[] = TAKEOFF_TABLE_COLUMNS.map((c) => c.channel.toLowerCase());
+const charts_order_takeoff: string[] = TAKEOFF_CHANNELS.map((c) => c.toLowerCase());
 
 interface ScatterProps {
   context?: string;

@@ -7,6 +7,7 @@ import { isDark } from "../../store/themeStore";
 import { debug as logDebug } from "../../utils/console";
 import { getCurrentDatasetTimezone, setCurrentDataset } from "../../store/datasetTimezoneStore";
 import { persistantStore } from "../../store/persistantStore";
+import { speedUnitSuffix } from "../../utils/speedUnits";
 import { selectedSources } from "../../store/filterStore";
 
 interface ScatterTimeseriesProps {
@@ -41,7 +42,8 @@ export default function ScatterTimeseries(props: ScatterTimeseriesProps) {
   const { selectedClassName, selectedProjectId, selectedDatasetId } = persistantStore;
 
   // Get channel names (non-reactive)
-  const getBspName = () => defaultChannelsStore.bspName() || 'Bsp_kts';
+  const getBspName = () =>
+    defaultChannelsStore.bspName() || `Bsp_${speedUnitSuffix(persistantStore.defaultUnits())}`;
   const getTwaName = () => defaultChannelsStore.twaName() || 'Twa_deg';
 
   // Helper function to get timezone (non-reactive, called when needed)

@@ -11,6 +11,11 @@ import { debug, warn as logWarn, error as logError } from "../../../utils/consol
 import { getData } from "../../../utils/global";
 import { themeStore } from "../../../store/themeStore";
 import { defaultChannelsStore } from "../../../store/defaultChannelsStore";
+import {
+  mapTimelineChannelValue,
+  mapTimelineYAxisLabelParts,
+  speedUnitSuffix,
+} from "../../../utils/speedUnits";
 import { formatTime } from "../../../utils/global";
 import { getCurrentDatasetTimezone } from "../../../store/datasetTimezoneStore";
 
@@ -109,8 +114,9 @@ export default function MultiMapTimeSeries(props: MultiMapTimeSeriesProps) {
   // Helper function to get channel name based on maptype (similar to MapTimeSeries)
   const getChannelName = (): string => {
     const maptype = props.maptype;
-    const tws = twsName() || 'Tws_kts';
-    const bsp = bspName() || 'Bsp_kts';
+    const su = speedUnitSuffix(persistantStore.defaultUnits());
+    const tws = twsName() || `Tws_${su}`;
+    const bsp = bspName() || `Bsp_${su}`;
     const vmgPerc = vmgPercName() || 'Vmg_perc';
     const vmg = vmgName() || 'Vmg';
     
@@ -126,13 +132,12 @@ export default function MultiMapTimeSeries(props: MultiMapTimeSeriesProps) {
     }
   };
 
-  // Helper function to get Bsp value with case-insensitive fallback
-  const getBsp = (d: any): number => {
+  /** Timeline Y value: matches map color mode and coalesces BSP/TWS/VMG columns across kph/kts. */
+  const getTimelineYValue = (d: any): number => {
     if (!d) return 0;
-    const bspField = bspName();
-    const val = d[bspField] ?? d[bspField.toLowerCase()] ?? d[bspField.toUpperCase()] ?? d.Bsp ?? d.bsp ?? 0;
-    const numVal = Number(val);
-    return isNaN(numVal) ? 0 : numVal;
+    const ch = getChannelName();
+    const mt = props.maptype ?? "DEFAULT";
+    return mapTimelineChannelValue(d as Record<string, unknown>, ch, mt);
   };
 
   // Media windows for videoOnly mode (same API as MapTimeSeries)
@@ -736,7 +741,7 @@ export default function MultiMapTimeSeries(props: MultiMapTimeSeriesProps) {
     
     for (const group of groups) {
       for (const d of group.data) {
-        const val = getBsp(d);
+        const val = getTimelineYValue(d);
         if (Number.isFinite(val)) {
           if (val < minVal) minVal = val;
           if (val > maxVal) maxVal = val;
@@ -880,14 +885,22 @@ export default function MultiMapTimeSeries(props: MultiMapTimeSeriesProps) {
     
     // Add Y-axis label (similar to MapTimeSeries)
     const channel = getChannelName();
+    const labelParts = mapTimelineYAxisLabelParts(channel, persistantStore.defaultUnits());
     const textColor = getThemeColor('#374151', '#cbd5e1'); // Use same color as axis
-    svg.append("text")
+    const axisLabelEl = svg
+      .append("text")
       .attr("class", "axis-label")
       .attr("text-anchor", "left")
       .attr("transform", "translate(20,15)")
       .attr("font-size", "14px")
-      .attr("fill", textColor)
-      .text(channel);
+      .attr("fill", textColor);
+    axisLabelEl.append("tspan").text(labelParts.name);
+    if (labelParts.unitBracket != null) {
+      axisLabelEl
+        .append("tspan")
+        .attr("class", "map-timeseries-axis-unit")
+        .text(labelParts.unitBracket);
+    }
     
     // Brush disabled - create simple clickable overlay for time selection only
     brush = null; // No brush object needed
@@ -1281,15 +1294,23 @@ export default function MultiMapTimeSeries(props: MultiMapTimeSeriesProps) {
     
     // Update Y-axis label (remove old and add new if channel changed)
     const channel = getChannelName();
+    const labelParts = mapTimelineYAxisLabelParts(channel, persistantStore.defaultUnits());
     const textColor = getThemeColor('#374151', '#cbd5e1');
     svg.selectAll("text.axis-label").remove(); // Remove existing label
-    svg.append("text")
+    const axisLabelEl = svg
+      .append("text")
       .attr("class", "axis-label")
       .attr("text-anchor", "left")
       .attr("transform", "translate(60,20)")
       .attr("font-size", "14px")
-      .attr("fill", textColor)
-      .text(channel);
+      .attr("fill", textColor);
+    axisLabelEl.append("tspan").text(labelParts.name);
+    if (labelParts.unitBracket != null) {
+      axisLabelEl
+        .append("tspan")
+        .attr("class", "map-timeseries-axis-unit")
+        .text(labelParts.unitBracket);
+    }
   };
 
   // Render all series
@@ -1342,9 +1363,9 @@ export default function MultiMapTimeSeries(props: MultiMapTimeSeriesProps) {
     
     const lineGenerator = d3.line()
       .x((d) => xScale(new Date(d.Datetime || d.timestamp || d.time)))
-      .y((d) => yScale(getBsp(d)))
+      .y((d) => yScale(getTimelineYValue(d)))
       .defined((d, i, data) => {
-        const val = getBsp(d);
+        const val = getTimelineYValue(d);
         if (!Number.isFinite(val)) return false;
         
         // Check if timestamp is within x-axis domain bounds

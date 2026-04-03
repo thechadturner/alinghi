@@ -10,6 +10,12 @@ import Loading from "../../../../components/utilities/Loading";
 import DropDownButton from "../../../../components/buttons/DropDownButton";
 import { selectedSources as filterStoreSelectedSources } from "../../../../store/filterStore";
 import RaceSettings from "../../../../components/menus/RaceSettings";
+import { RaceSummaryApiKeys, RaceSummaryColumnKeys, RaceSetupApiKeys } from "../../../../constants/raceApiFieldNames";
+import {
+  buildRaceSummaryTableColumns,
+  buildAveragesColumnsUpwindDownwind,
+  buildAveragesColumnsReaching,
+} from "../../trainingSummaryColumns";
 
 /** Inline style for TEAM cell: font color = default source color; undefined if no color. */
 function getTeamCellStyle(sourceName: string | null | undefined): string | undefined {
@@ -31,16 +37,16 @@ interface RaceDayResultRow {
   [key: string]: string | number | null | undefined;
 }
 
-/** Row from race-summary API (data.js): source_name, vmg_avg, vmg_perc_avg, polar_perc_avg, tws_avg_kph, bsp_avg_kph, ... */
+/** Row from race-summary API (data.js): speed fields use server-side physical units; keys from `raceApiFieldNames`. */
 interface RaceSummaryRow {
   source_name: string;
   vmg_avg: number | null;
   vmg_perc_avg: number | null;
   polar_perc_avg: number | null;
-  tws_avg_kph: number | null;
-  bsp_avg_kph: number | null;
+  [RaceSummaryApiKeys.twsAvg]: number | null;
+  [RaceSummaryApiKeys.bspAvg]: number | null;
   distance_m: number | null;
-  max_speed: number | null;
+  [RaceSummaryColumnKeys.maxSpeed]: number | null;
   rh300_perc: number | null;
   rh750_perc: number | null;
   rhgood_perc: number | null;
@@ -56,14 +62,14 @@ interface RaceSummaryRow {
   [key: string]: string | number | null | undefined;
 }
 
-/** Row from race-setup API: source_name, position, avg_tws, avg_bsp, avg_twa, avg_vmg_kph, avg_vmg_perc, avg_polar_perc, avg_heel, ... */
+/** Row from race-setup API: VMG field key from `RaceSetupApiKeys`. */
 interface RaceSetupRow {
   source_name: string;
   position: number | null;
   avg_tws: number | null;
   avg_bsp: number | null;
   avg_twa: number | null;
-  avg_vmg_kph: number | null;
+  [RaceSetupApiKeys.avgVmg]: number | null;
   avg_vmg_perc: number | null;
   avg_polar_perc: number | null;
   avg_heel: number | null;
@@ -80,68 +86,6 @@ interface RaceSetupRow {
   avg_jib_cunno: number | null;
   [key: string]: string | number | null | undefined;
 }
-
-/** Race summary table columns (vmg_perc_avg shown in place of vmg_avg for ordering) */
-const RACE_SUMMARY_TABLE_COLUMNS: { key: keyof RaceSummaryRow; header: string }[] = [
-  { key: "source_name", header: "TEAM" },
-  { key: "vmg_perc_avg", header: "VMG [%]" },
-  { key: "tws_avg_kph", header: "TWS [KPH]" },
-  { key: "bsp_avg_kph", header: "BSP [KPH]" },
-  { key: "distance_m", header: "DISTANCE [KM]" },
-  { key: "max_speed", header: "MAX SPEED [KPH]" },
-  { key: "rh300_perc", header: "RH < 300 [%]" },
-  { key: "rh750_perc", header: "RH > 300 < 750 [%]" },
-  { key: "rhgood_perc", header: "RH > 750 < 1400 [%]" },
-  { key: "rh1400_perc", header: "RH > 1400 [%]" },
-  { key: "foiling_perc", header: "FOILING [%]" },
-  { key: "phase_dur_avg_sec", header: "AVG PHASE DUR [SEC]" },
-  { key: "maneuver_count", header: "MANEUVER COUNT" },
-  { key: "tack_loss_avg", header: "TACK LOSS [M]" },
-  { key: "gybe_loss_avg", header: "GYBE LOSS [M]" },
-  { key: "roundup_loss_avg", header: "ROUNDUP LOSS [M]" },
-  { key: "bearaway_loss_avg", header: "BEARAWAY LOSS [M]" },
-];
-
-/** Averages table columns for upwind/downwind (VMG and VMG%) */
-const AVERAGES_COLUMNS_UPWIND_DOWNWIND: { key: keyof RaceSetupRow; header: string }[] = [
-  { key: "avg_tws", header: "TWS [KPH]" },
-  { key: "avg_bsp", header: "BSP [KPH]" },
-  { key: "avg_twa", header: "TWA [DEG]" },
-  { key: "avg_vmg_kph", header: "VMG [KPH]" },
-  { key: "avg_vmg_perc", header: "VMG [%]" },
-  { key: "avg_heel", header: "HEEL_N [DEG]" },
-  { key: "avg_pitch", header: "PITCH [DEG]" },
-  { key: "avg_rh", header: "RH LWD [MM]" },
-  { key: "avg_cant", header: "CANT [DEG]" },
-  { key: "avg_cant_eff", header: "CANT_EFF [DEG]" },
-  { key: "avg_rud_rake", header: "RUD_RAKE [DEG]" },
-  { key: "avg_wing_clew", header: "WING CLEW [MM]" },
-  { key: "avg_wing_ca1", header: "CA1 [DEG]" },
-  { key: "avg_wing_twist", header: "TOTAL TWIST [DEG]" },
-  { key: "avg_jib_sheet", header: "JIB SHT LOAD [KGF]" },
-  { key: "avg_jib_lead", header: "JIB LEAD [DEG]" },
-  { key: "avg_jib_cunno", header: "JIB CUN LOAD [KGF]" },
-];
-
-/** Averages table columns for reaching (POLAR % instead of VMG / VMG%) */
-const AVERAGES_COLUMNS_REACHING: { key: keyof RaceSetupRow; header: string }[] = [
-  { key: "avg_tws", header: "TWS [KPH]" },
-  { key: "avg_bsp", header: "BSP [KPH]" },
-  { key: "avg_twa", header: "TWA [DEG]" },
-  { key: "avg_polar_perc", header: "POLAR [%]" },
-  { key: "avg_heel", header: "HEEL_N [DEG]" },
-  { key: "avg_pitch", header: "PITCH [DEG]" },
-  { key: "avg_rh", header: "RH LWD [MM]" },
-  { key: "avg_cant", header: "CANT [DEG]" },
-  { key: "avg_cant_eff", header: "CANT_EFF [DEG]" },
-  { key: "avg_rud_rake", header: "RUD_RAKE [DEG]" },
-  { key: "avg_wing_clew", header: "WING CLEW [MM]" },
-  { key: "avg_wing_ca1", header: "CA1 [DEG]" },
-  { key: "avg_wing_twist", header: "TOTAL TWIST [DEG]" },
-  { key: "avg_jib_sheet", header: "JIB SHT LOAD [KGF]" },
-  { key: "avg_jib_lead", header: "JIB LEAD [DEG]" },
-  { key: "avg_jib_cunno", header: "JIB CUN LOAD [KGF]" },
-];
 
 export default function TrainingSummaryPage() {
   const [loading, setLoading] = createSignal(true);
@@ -186,6 +130,17 @@ export default function TrainingSummaryPage() {
   const [showCopyAverages, setShowCopyAverages] = createSignal(false);
   const [copySuccessSummary, setCopySuccessSummary] = createSignal(false);
   const [copySuccessAverages, setCopySuccessAverages] = createSignal(false);
+
+  const raceSummaryTableColumns = createMemo(() =>
+    buildRaceSummaryTableColumns(persistantStore.defaultUnits()) as { key: keyof RaceSummaryRow; header: string }[]
+  );
+
+  /** Averages table: reaching omits VMG columns; upwind/downwind includes them. Speed bracket from project preference. */
+  const averagesTableColumns = createMemo(() =>
+    legType() === "reaching"
+      ? (buildAveragesColumnsReaching(persistantStore.defaultUnits()) as { key: keyof RaceSetupRow; header: string }[])
+      : (buildAveragesColumnsUpwindDownwind(persistantStore.defaultUnits()) as { key: keyof RaceSetupRow; header: string }[])
+  );
 
   createEffect(() => {
     if (isHoveredSummary()) {
@@ -650,14 +605,10 @@ export default function TrainingSummaryPage() {
     }
   });
 
-  /** Averages table columns: when reaching show POLAR % AVG (no VMG/VMG%); upwind/downwind show VMG [KPH] and VMG%. */
-  const averagesTableColumns = createMemo(() =>
-    legType() === "reaching" ? AVERAGES_COLUMNS_REACHING : AVERAGES_COLUMNS_UPWIND_DOWNWIND
-  );
-
   /** When Average Setup data or leg type changes, recompute conditional formatting scales from current data. */
   createEffect(() => {
     legType(); /* depend on leg type so we re-run when user switches REACH/UPWIND/DOWNWIND */
+    persistantStore.defaultUnits();
     const rows = averagesRows() as unknown as Record<string, unknown>[];
     const formatted = formattedColumnsAvg();
     const cols = averagesTableColumns();
@@ -679,10 +630,11 @@ export default function TrainingSummaryPage() {
 
   /** When Summary data changes, recompute conditional formatting scales from current data. */
   createEffect(() => {
+    persistantStore.defaultUnits();
     const rows = summaryRows() as unknown as Record<string, unknown>[];
     const formatted = formattedColumnsSummary();
     if (formatted.length === 0 || rows.length === 0) return;
-    const valueKeys = RACE_SUMMARY_TABLE_COLUMNS.filter((c) => c.key !== "source_name").map((c) => String(c.key));
+    const valueKeys = raceSummaryTableColumns().filter((c) => c.key !== "source_name").map((c) => String(c.key));
     const newScales = recomputeScalesFromData(rows, formatted, valueKeys);
     if (Object.keys(newScales).length > 0) setColumnScalesSummary(newScales);
   });
@@ -718,7 +670,7 @@ export default function TrainingSummaryPage() {
   const sortDataSummary = (key: string) => {
     const rows = summaryRows();
     const current = sortConfigSummary();
-    const valueKeys = RACE_SUMMARY_TABLE_COLUMNS.filter((c) => c.key !== "source_name").map((c) => String(c.key));
+    const valueKeys = raceSummaryTableColumns().filter((c) => c.key !== "source_name").map((c) => String(c.key));
     sortAndFormat(
       rows as unknown as Record<string, unknown>[],
       key,
@@ -828,9 +780,10 @@ export default function TrainingSummaryPage() {
   const copySummaryToClipboard = async () => {
     try {
       const rowsList = sortedSummaryRows();
-      let clipboardText = RACE_SUMMARY_TABLE_COLUMNS.map((c) => c.header).join("\t") + "\n";
+      const summaryCols = raceSummaryTableColumns();
+      let clipboardText = summaryCols.map((c) => c.header).join("\t") + "\n";
       for (const row of rowsList) {
-        const cells = RACE_SUMMARY_TABLE_COLUMNS.map((col) => {
+        const cells = summaryCols.map((col) => {
           if (col.key === "source_name") return row.source_name != null ? String(row.source_name) : "—";
           const val = getRowValue(row as unknown as Record<string, unknown>, String(col.key));
           if (val == null || Number.isNaN(Number(val))) return "—";
@@ -978,10 +931,11 @@ export default function TrainingSummaryPage() {
                   <table class="maneuvers-table">
                     <thead>
                       <tr>
-                        <For each={RACE_SUMMARY_TABLE_COLUMNS}>
+                        <For each={raceSummaryTableColumns()}>
                           {(col) => {
                             const isAllRaces = selectedRace() === "All";
-                            const showAvgLabel = isAllRaces && col.key !== "max_speed" && col.key !== "source_name";
+                            const showAvgLabel =
+                              isAllRaces && col.key !== RaceSummaryColumnKeys.maxSpeed && col.key !== "source_name";
                             return (
                               <th
                                 class="centered"
@@ -1005,7 +959,7 @@ export default function TrainingSummaryPage() {
                             d > 0 ? "race-summary-delta race-summary-delta-positive" : d < 0 ? "race-summary-delta race-summary-delta-negative" : "race-summary-delta";
                           return (
                             <tr>
-                              <For each={RACE_SUMMARY_TABLE_COLUMNS}>
+                              <For each={raceSummaryTableColumns()}>
                                 {(col) => {
                                   const keyStr = String(col.key);
                                   const scaleClass = cellClassForScale(
@@ -1056,7 +1010,7 @@ export default function TrainingSummaryPage() {
                       </For>
                       <Show when={summaryRows().length === 0}>
                         <tr>
-                          <td colSpan={RACE_SUMMARY_TABLE_COLUMNS.length} class="centered" style={{ padding: "1rem", color: "var(--color-text-secondary)" }}>
+                          <td colSpan={raceSummaryTableColumns().length} class="centered" style={{ padding: "1rem", color: "var(--color-text-secondary)" }}>
                             {selectedRace() === "All"
                               ? "No race-summary data for this date (all races). Ensure data/race-summary has data (race=0)."
                               : isTrainingHourMode()

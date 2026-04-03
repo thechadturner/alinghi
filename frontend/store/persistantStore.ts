@@ -5,6 +5,7 @@ import { debug, warn, log, error as logError } from "../utils/console";
 import { getData } from "../utils/global";
 import { apiEndpoints } from "@config/env";
 import type { Theme } from "./themeStore";
+import { normalizeSpeedDisplayUnit, readInitialSpeedDisplayUnitFromStorage, type SpeedDisplayUnit } from "../utils/speedUnits";
 
 // Helper function to strip quotes from string values (handles double-stringification)
 // This fixes cases where values were stored with extra quotes, e.g., "sourceName" instead of sourceName
@@ -171,8 +172,8 @@ interface PersistentStore {
   setColorType: (value: string | ((prev: string) => string)) => void;
   filterChartsBySelection: Accessor<boolean>;
   setFilterChartsBySelection: (value: boolean | ((prev: boolean) => boolean)) => void;
-  defaultUnits: Accessor<'knots' | 'meters'>;
-  setDefaultUnits: (value: 'knots' | 'meters' | ((prev: 'knots' | 'meters') => 'knots' | 'meters')) => void;
+  defaultUnits: Accessor<SpeedDisplayUnit>;
+  setDefaultUnits: (value: SpeedDisplayUnit | ((prev: SpeedDisplayUnit) => SpeedDisplayUnit)) => void;
   // Map overlay settings
   mapOverlays: Accessor<Record<string, boolean>>;
   setMapOverlays: (value: Record<string, boolean> | ((prev: Record<string, boolean>) => Record<string, boolean>)) => void;
@@ -219,32 +220,25 @@ export const persistantStore = createRoot<PersistentStore>(() => {
   const [colorType, setColorTypeBase] = createPersistentSignal<string>("colorType", "DEFAULT");
   const [filterChartsBySelection, setFilterChartsBySelectionBase] = createPersistentSignal<boolean>("filterChartsBySelection", false);
 
-  // Initialize defaultUnits with migration from old localStorage key
-  const getInitialUnits = (): 'knots' | 'meters' => {
-    if (typeof window === 'undefined') return 'knots';
-    
-    try {
-      // First check for new key
-      const newValue = localStorage.getItem('defaultUnits');
-      if (newValue === 'knots' || newValue === 'meters') {
-        return newValue;
-      }
-      
-      // Migrate from old key for backward compatibility
-      const oldValue = localStorage.getItem('teamshare-units');
-      if (oldValue === 'knots' || oldValue === 'meters') {
-        localStorage.setItem('defaultUnits', oldValue);
-        localStorage.removeItem('teamshare-units'); // Clean up old key
-        return oldValue;
-      }
-    } catch (error) {
-      debug('[PersistentStore] Error reading units from localStorage:', error);
+  // Speed display: kts | kph (persisted). Legacy knots/meters normalized via effect below.
+  const [defaultUnits, setDefaultUnitsBase] = createPersistentSignal<SpeedDisplayUnit>(
+    "defaultUnits",
+    readInitialSpeedDisplayUnitFromStorage()
+  );
+
+  createEffect(() => {
+    const u = defaultUnits();
+    const normalized = normalizeSpeedDisplayUnit(u);
+    if (normalized !== u) {
+      setDefaultUnitsBase(normalized);
+      debug('[PersistentStore] Migrated defaultUnits to speed display:', u, '→', normalized);
     }
-    
-    return 'knots';
+  });
+
+  const setDefaultUnits = (value: SpeedDisplayUnit | ((prev: SpeedDisplayUnit) => SpeedDisplayUnit)) => {
+    const next = typeof value === 'function' ? value(defaultUnits()) : value;
+    setDefaultUnitsBase(normalizeSpeedDisplayUnit(next));
   };
-  
-  const [defaultUnits, setDefaultUnitsBase] = createPersistentSignal<'knots' | 'meters'>("defaultUnits", getInitialUnits());
   const [mapOverlays, setMapOverlaysBase] = createPersistentSignal<Record<string, boolean>>("mapOverlays", {});
   const [overlayPositions, setOverlayPositionsBase] = createPersistentSignal<Record<string, { position: { x: number; y: number }; orientation: string }>>("overlayPositions", {});
   const [isCacheInitialized, setIsCacheInitialized] = createPersistentSignal<boolean>("cacheInitialized", false);
@@ -897,10 +891,11 @@ export const persistantStore = createRoot<PersistentStore>(() => {
           debug('[PersistentStore] Theme loaded from API:', settings['teamshare-theme']);
         }
 
-        // Apply defaultUnits setting from API
+        // Apply defaultUnits setting from API (normalize legacy knots/meters)
         if (settings['defaultUnits'] !== undefined) {
-          setDefaultUnitsBase(settings['defaultUnits']);
-          debug('[PersistentStore] DefaultUnits loaded from API:', settings['defaultUnits']);
+          const nu = normalizeSpeedDisplayUnit(settings['defaultUnits']);
+          setDefaultUnitsBase(nu);
+          debug('[PersistentStore] DefaultUnits loaded from API:', settings['defaultUnits'], '→', nu);
         }
 
         debug('[PersistentStore] Settings loaded and applied from API');
@@ -929,8 +924,7 @@ export const persistantStore = createRoot<PersistentStore>(() => {
         ? themeValue as Theme 
         : 'medium';
       
-      // Get current units from persistentStore or default to 'knots'
-      const currentUnits: 'knots' | 'meters' = defaultUnits();
+      const currentUnits: SpeedDisplayUnit = normalizeSpeedDisplayUnit(defaultUnits());
       
       const currentSettings = {
         'teamshare-theme': currentTheme,
@@ -959,9 +953,8 @@ export const persistantStore = createRoot<PersistentStore>(() => {
       const { themeStore } = await import('./themeStore');
       themeStore.setTheme(currentSettings['teamshare-theme']);
 
-      // Apply units from persistentStore to ensure consistency
-      if (currentSettings['defaultUnits']) {
-        setDefaultUnitsBase(currentSettings['defaultUnits']);
+      if (currentSettings['defaultUnits'] !== undefined) {
+        setDefaultUnitsBase(normalizeSpeedDisplayUnit(currentSettings['defaultUnits']));
       }
 
       debug('[PersistentStore] Settings initialized and saved to API');
@@ -1290,7 +1283,7 @@ export const persistantStore = createRoot<PersistentStore>(() => {
     selectedPage, setSelectedPage,
     colorType, setColorType,
     filterChartsBySelection, setFilterChartsBySelection,
-    defaultUnits, setDefaultUnits: setDefaultUnitsBase,
+    defaultUnits, setDefaultUnits,
     mapOverlays, setMapOverlays,
     overlayPositions, setOverlayPositions,
     loadPersistentSettings,

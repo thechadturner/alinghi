@@ -1164,7 +1164,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
     }
 
     // Extract required channels from all chart configurations
-    // CRITICAL: Use name directly (preserves original casing like 'Tws_kts') - channel names are case-sensitive in the API
+    // CRITICAL: Use name directly — channel names are case-sensitive in the API
     // Handle fleet mode where channel names may have " - SourceName" suffix
     const requiredChannels = [];
     chartsToProcess.forEach((chart, chartIdx) => {
@@ -1172,7 +1172,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
         chart.series.forEach((series, seriesIdx) => {
           if (series.xaxis && series.xaxis.name) {
             // Remove " - SourceName" suffix if present (fleet mode)
-            // Use name directly - it has the correct casing like 'Tws_kts' that the API expects
+            // Use name directly — casing must match the API
             const xChannelName = series.xaxis.name.split(' - ')[0];
             debug(`[TimeSeries] Chart ${chartIdx}, Series ${seriesIdx}: xaxis.name = "${series.xaxis.name}" -> extracted "${xChannelName}"`);
             if (!requiredChannels.includes(xChannelName)) {
@@ -1181,7 +1181,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
           }
           if (series.yaxis && series.yaxis.name) {
             // Remove " - SourceName" suffix if present (fleet mode)
-            // Use name directly - it has the correct casing like 'Tws_kts' that the API expects
+            // Use name directly — casing must match the API
             const yChannelName = series.yaxis.name.split(' - ')[0];
             debug(`[TimeSeries] Chart ${chartIdx}, Series ${seriesIdx}: yaxis.name = "${series.yaxis.name}" -> extracted "${yChannelName}"`);
             if (!requiredChannels.includes(yChannelName)) {
@@ -1211,7 +1211,7 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
     // Extract just the channel names for the API call
     // CRITICAL: Use channel names directly from chart objects - they already have the correct case
-    // Chart objects preserve original case like 'Twa_deg', 'Tws_avg_kph', 'Bsp_kph'
+    // Chart objects preserve original case for API field names.
     // No normalization needed - use them as-is
     const validChannels = channel_items.map(item => item.name);
 

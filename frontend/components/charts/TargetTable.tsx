@@ -1,5 +1,6 @@
 import { createMemo, For, Show } from "solid-js";
 import { round } from "../../utils/global";
+import { fieldBaseKeyForMatching } from "../../utils/speedUnits";
 
 interface TargetTableProps {
   xaxis: string;
@@ -33,17 +34,15 @@ export default function TargetTable(props: TargetTableProps) {
       const availableFields = Object.keys(first);
       const xLower = xaxis.toLowerCase();
       const yLower = yaxis.toLowerCase();
-      const xBase = xLower.replace(/[_\s]*(kph|kts|deg|perc)$/i, "").replace(/[_\s]/g, "");
-      const yBase = yLower.replace(/[_\s]*(kph|kts|deg|perc)$/i, "").replace(/[_\s]/g, "");
+      const xBase = fieldBaseKeyForMatching(xaxis);
+      const yBase = fieldBaseKeyForMatching(yaxis);
 
       const resolve = (name: string, lower: string, base: string): string => {
         if (name in first) return name;
         if (lower in first) return lower;
         if (base in first) return base;
         const match = availableFields.find(
-          (f) =>
-            f.toLowerCase() === base ||
-            f.toLowerCase().replace(/[_\s]*(kph|kts|deg|perc)$/i, "").replace(/[_\s]/g, "") === base
+          (f) => f.toLowerCase() === base || fieldBaseKeyForMatching(f) === base
         );
         return match ?? name;
       };

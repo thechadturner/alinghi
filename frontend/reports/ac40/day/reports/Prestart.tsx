@@ -15,6 +15,8 @@ import { apiEndpoints } from "@config/env";
 import { logPageLoad, logActivity, getCurrentProjectDatasetIds } from "../../../../utils/logging";
 import { log, debug as logDebug, error as logError } from "../../../../utils/console";
 import { selectedSources as filterStoreSelectedSources } from "../../../../store/filterStore";
+import { PRESTART_TIMESERIES_CHARTS } from "./prestartChartKeys";
+import { buildPrestartTableConfig, type ViewTableConfig } from "./prestartTableConfig";
 
 /** Source name cell color = default source color from sourcesStore (same as Race Summary TEAM cell). */
 function getSourceColor(sourceName: string | null | undefined): string | undefined {
@@ -28,51 +30,6 @@ const { selectedClassName, selectedProjectId, selectedDate } = persistantStore;
 const VIEW_OPTIONS = ["PRESTART", "ACCELERATION", "MAX BSP", "REACH", "LEG 1"] as const;
 /** Map/timeseries desc index: PRESTART=0; max accel, max bsp and reach use index 1 (pre-start through reach); leg 1 only uses index 2. */
 const VIEW_INDEX_MAP = { PRESTART: 0, ACCELERATION: 1, "MAX BSP": 1, REACH: 1, "LEG 1": 2 } as const;
-
-/** Timeseries chart keys per desc, matching prestart.py addTimeSeriesData (Basics vs Details). */
-const PRESTART_TIMESERIES_CHARTS: Record<string, string[]> = {
-  "0_Basics": ["ttk_s", "bsp_kph", "polar_perc", "twa_n_deg", "accel_rate_mps2", "heel_n_deg", "rh_lwd_mm"],
-  "1_Details": [
-    "bsp_kph",
-    "polar_perc",
-    "twa_n_deg",
-    "accel_rate_mps2",
-    "heel_n_deg",
-    "pitch_deg",
-    "rh_lwd_mm",
-    "rud_rake_ang_deg",
-    "rud_diff_ang_deg",
-    "db_rake_lwd_deg",
-    "db_cant_lwd_deg",
-    "db_cant_eff_lwd_deg",
-    "wing_camber1_n_deg",
-    "wing_total_twist_deg",
-    "wing_clew_position_mm",
-    "jib_sheet_load_kgf",
-    "jib_cunno_load_kgf",
-    "jib_lead_ang_deg",
-  ],
-  "2_Details": [
-    "bsp_kph",
-    "polar_perc",
-    "twa_n_deg",
-    "accel_rate_mps2",
-    "heel_n_deg",
-    "pitch_deg",
-    "rh_lwd_mm",
-    "rud_rake_ang_deg",
-    "rud_diff_ang_deg",
-    "db_rake_lwd_deg",
-    "db_cant_lwd_deg",
-    "db_cant_eff_lwd_deg",
-    "wing_camber1_n_deg",
-    "wing_total_twist_deg",
-    "wing_clew_position_mm",
-    "jib_sheet_load_kgf",
-    "jib_cunno_load_kgf",
-    "jib_lead_ang_deg",
-  ],
-};
 
 /** Table API view param: prestart | acceleration | maxbsp | reach | leg1. */
 function getTableViewKey(view: (typeof VIEW_OPTIONS)[number]): string {
@@ -174,172 +131,6 @@ function recalculateRankings(rows: Record<string, unknown>[], currentView: (type
 /** Mark names to show on prestart map (SL1, SL2, MK1, M1). */
 const PRESTART_MARK_NAMES = ["SL1", "SL2", "MK1", "M1"] as const;
 
-/** Per-mode table config: column order, header names, and tooltips. Keys match API column names (case-insensitive match used). */
-type ViewTableConfig = { columnOrder: string[]; columns: Record<string, { header: string; tooltip: string }> };
-
-const PRESTART_TABLE_CONFIG: Record<string, ViewTableConfig> = {
-  prestart: {
-    columnOrder: [
-      "RANK",
-      "TEAM",
-      "Prestart_dist",
-      "Bsp_start",
-      "Twa_start",
-      "DTL_start",
-      "LINE_PERC_start",
-      "RATIO_turnback",
-      "TTK_turnback",
-      "TTK_burn",
-      "Bsp_avg_pre",
-      "Time_turnback",
-      "DTL_turnback",
-    ],
-    columns: {
-      RANK: { header: "Rank", tooltip: "Position ranked by distance sailed to mark 1 in first 10 seconds" },
-      TEAM: { header: "Team", tooltip: "Boat / source name" },
-      Prestart_dist: { header: "Distance [M]", tooltip: "Distance sailed toward mark 1 in first 10 seconds of race after crossing start line." },
-      Bsp_start: { header: "BSP start", tooltip: "Boat speed (kts) at start" },
-      Twa_start: { header: "TWA start", tooltip: "True wind angle (deg) at start" },
-      DTL_start: { header: "DTL start", tooltip: "Distance to line (m) at start" },
-      LINE_PERC_start: { header: "Line % start", tooltip: "Line percentage at start" },
-      RATIO_turnback: { header: "Ratio turnback", tooltip: "Start ratio at turnback" },
-      TTK_turnback: { header: "TTK turnback", tooltip: "Time to kill (s) at turnback" },
-      TTK_burn: { header: "TTK burn", tooltip: "Time to kill (s) at burn / BSP min" },
-      Bsp_avg_pre: { header: "BSP avg pre", tooltip: "Average boat speed (kts) before turnback" },
-      Time_turnback: { header: "Time turnback", tooltip: "Time (s) at turnback" },
-      DTL_turnback: { header: "DTL turnback", tooltip: "Distance to line (m) at turnback" },
-    },
-  },
-  acceleration: {
-    columnOrder: [
-      "RANK",
-      "TEAM",
-      "Time_accmax",
-      "Accel_max",
-      "Bsp_accmax",
-      "Twa_accmax",
-      "Heel_accmax",
-      "RH_lwd_accmax",
-      "Cant_accmax",
-      "Jib_sheet_load_accmax",
-      "Jib_cunno_load_accmax",
-      "Jib_lead_ang_accmax",
-      "Wing_clew_pos_accmax",
-      "Wing_twist_accmax",
-      "CA1_accmax",
-    ],
-    columns: {
-      RANK: { header: "Rank", tooltip: "Position ranked by max acceleration" },
-      TEAM: { header: "Team", tooltip: "Boat / source name" },
-      Time_accmax: { header: "Time at acc max", tooltip: "Time (s) when acceleration was maximum" },
-      Accel_max: { header: "Accel max", tooltip: "Maximum acceleration (m/s²)" },
-      Bsp_accmax: { header: "BSP at acc max", tooltip: "Boat speed (kts) at max acceleration" },
-      Twa_accmax: { header: "TWA at acc max", tooltip: "True wind angle (deg) at max acceleration" },
-      Heel_accmax: { header: "Heel at acc max", tooltip: "Heel angle (deg) at max acceleration" },
-      RH_lwd_accmax: { header: "RH lwd at acc max", tooltip: "Rudder height (mm) at max acceleration" },
-      Cant_accmax: { header: "Cant at acc max", tooltip: "Cant angle (deg) at max acceleration" },
-      Jib_sheet_load_accmax: { header: "Jib sheet at acc max", tooltip: "Jib sheet load (kgf) at max acceleration" },
-      Jib_cunno_load_accmax: { header: "Jib cunno at acc max", tooltip: "Jib cunningham load (kgf) at max acceleration" },
-      Jib_lead_ang_accmax: { header: "Jib lead ang at acc max", tooltip: "Jib lead angle (deg) at max acceleration" },
-      Wing_clew_pos_accmax: { header: "Wing clew at acc max", tooltip: "Wing clew position (mm) at max acceleration" },
-      Wing_twist_accmax: { header: "Wing twist at acc max", tooltip: "Wing twist (deg) at max acceleration" },
-      CA1_accmax: { header: "CA1 at acc max", tooltip: "CA1 angle (deg) at max acceleration" },
-    },
-  },
-  maxbsp: {
-    columnOrder: [
-      "RANK",
-      "TEAM",
-      "Time_bspmax",
-      "Bsp_max",
-      "Twa_bspmax",
-      "Heel_bspmax",
-      "RH_lwd_bspmax",
-      "Cant_bspmax",
-      "Jib_sheet_load_bspmax",
-      "Jib_cunno_load_bspmax",
-      "Jib_lead_ang_bspmax",
-      "Wing_clew_pos_bspmax",
-      "Wing_twist_bspmax",
-      "CA1_bspmax",
-    ],
-    columns: {
-      RANK: { header: "Rank", tooltip: "Position ranked by max boat speed" },
-      TEAM: { header: "Team", tooltip: "Boat / source name" },
-      Time_bspmax: { header: "Time at BSP max", tooltip: "Time (s) when boat speed was maximum" },
-      Bsp_max: { header: "BSP max", tooltip: "Maximum boat speed (kts)" },
-      Twa_bspmax: { header: "TWA at BSP max", tooltip: "True wind angle (deg) at max boat speed" },
-      Heel_bspmax: { header: "Heel at BSP max", tooltip: "Heel angle (deg) at max boat speed" },
-      RH_lwd_bspmax: { header: "RH lwd at BSP max", tooltip: "Rudder height (mm) at max boat speed" },
-      Cant_bspmax: { header: "Cant at BSP max", tooltip: "Cant angle (deg) at max boat speed" },
-      Jib_sheet_load_bspmax: { header: "Jib sheet at BSP max", tooltip: "Jib sheet load (kgf) at max boat speed" },
-      Jib_cunno_load_bspmax: { header: "Jib cunno at BSP max", tooltip: "Jib cunningham load (kgf) at max boat speed" },
-      Jib_lead_ang_bspmax: { header: "Jib lead ang at BSP max", tooltip: "Jib lead angle (deg) at max boat speed" },
-      Wing_clew_pos_bspmax: { header: "Wing clew at BSP max", tooltip: "Wing clew position (mm) at max boat speed" },
-      Wing_twist_bspmax: { header: "Wing twist at BSP max", tooltip: "Wing twist (deg) at max boat speed" },
-      CA1_bspmax: { header: "CA1 at BSP max", tooltip: "CA1 angle (deg) at max boat speed" },
-    },
-  },
-  reach: {
-    columnOrder: [
-      "RANK",
-      "TEAM",
-      "Reach_dist",
-      "Bsp_avg_reach",
-      "TTK_turnback",
-      "RATIO_turnback",
-      "DTL_start",
-      "LINE_PERC_start",
-      "Bsp_start",
-      "Twa_start",
-      "Accel_max",
-      "Bsp_max",
-    ],
-    columns: {
-      RANK: { header: "Rank", tooltip: "Position ranked by reach distance (max distance = 1)" },
-      TEAM: { header: "Team", tooltip: "Boat / source name" },
-      Reach_dist: { header: "Reach dist [m]", tooltip: "Distance (m) sailed to reach the mark" },
-      Bsp_avg_reach: { header: "BSP avg reach", tooltip: "Average boat speed (kts) over the reach leg" },
-      TTK_turnback: { header: "TTK turnback", tooltip: "Time to kill (s) at turnback" },
-      RATIO_turnback: { header: "Ratio turnback", tooltip: "Start ratio at turnback" },
-      DTL_start: { header: "DTL start", tooltip: "Distance to line (m) at start" },
-      LINE_PERC_start: { header: "Line % start", tooltip: "Line percentage at start" },
-      Bsp_start: { header: "BSP start", tooltip: "Boat speed (kts) at start" },
-      Twa_start: { header: "TWA start", tooltip: "True wind angle (deg) at start" },
-      Accel_max: { header: "Accel max", tooltip: "Maximum acceleration (m/s²)" },
-      Bsp_max: { header: "BSP max", tooltip: "Maximum boat speed (kts)" },
-    },
-  },
-  leg1: {
-    columnOrder: [
-      "RANK",
-      "TEAM",
-      "Leg1_dist",
-      "TTK_turnback",
-      "RATIO_turnback",
-      "DTL_start",
-      "LINE_PERC_start",
-      "Bsp_start",
-      "Twa_start",
-      "Accel_max",
-      "Bsp_max",
-    ],
-    columns: {
-      RANK: { header: "Rank", tooltip: "Position by leg1 distance (max distance = 1)" },
-      TEAM: { header: "Team", tooltip: "Boat / source name" },
-      Leg1_dist: { header: "Leg1 dist [m]", tooltip: "Distance (m) sailed on leg 1 (ranking metric)" },
-      TTK_turnback: { header: "TTK turnback", tooltip: "Time to kill (s) at turnback" },
-      RATIO_turnback: { header: "Ratio turnback", tooltip: "Start ratio at turnback" },
-      DTL_start: { header: "DTL start", tooltip: "Distance to line (m) at start" },
-      LINE_PERC_start: { header: "Line % start", tooltip: "Line percentage at start" },
-      Bsp_start: { header: "BSP start", tooltip: "Boat speed (kts) at start" },
-      Twa_start: { header: "TWA start", tooltip: "True wind angle (deg) at start" },
-      Accel_max: { header: "Accel max", tooltip: "Maximum acceleration (m/s²)" },
-      Bsp_max: { header: "BSP max", tooltip: "Maximum boat speed (kts)" },
-    },
-  },
-};
-
 /** Resolve actual column key from row (case-insensitive). */
 function resolveColumnKey(rowKeys: string[], configKey: string): string | null {
   const lower = configKey.toLowerCase();
@@ -348,10 +139,11 @@ function resolveColumnKey(rowKeys: string[], configKey: string): string | null {
 
 /** Get header name and tooltip for a column key in the given view. Falls back to key with underscores replaced by spaces. */
 function getColumnDisplay(
+  configRoot: Record<string, ViewTableConfig>,
   viewKey: string,
   colKey: string
 ): { header: string; tooltip: string } {
-  const config = PRESTART_TABLE_CONFIG[viewKey];
+  const config = configRoot[viewKey];
   if (config?.columns) {
     const lower = colKey.toLowerCase();
     const entry = Object.entries(config.columns).find(([k]) => k.toLowerCase() === lower);
@@ -392,6 +184,10 @@ export default function PrestartPage() {
   const [courseAxisFromApi, setCourseAxisFromApi] = createSignal<number | undefined>(undefined);
   /** Selected time (sec, race-relative) from timeseries click; drives red line, value labels, and map trim. Local to prestart page only. */
   const [selectedTimeSec, setSelectedTimeSec] = createSignal<number | null>(null);
+
+  const prestartTableConfigMap = createMemo(() => buildPrestartTableConfig(persistantStore.defaultUnits()));
+  const getColDisplay = (viewKey: string, colKey: string) =>
+    getColumnDisplay(prestartTableConfigMap(), viewKey, colKey);
 
   const viewIndex = () => VIEW_INDEX_MAP[view()];
   /**
@@ -529,7 +325,7 @@ export default function PrestartPage() {
       if (rows.length > 0) {
         const raw = Object.keys(rows[0]).filter((k) => k !== "event_id" && k !== "Course_axis" && k !== "course_axis" && k !== "race_start_time");
         const viewKey = getTableViewKey(view());
-        const config = PRESTART_TABLE_CONFIG[viewKey];
+        const config = buildPrestartTableConfig(persistantStore.defaultUnits())[viewKey];
         let cols: string[];
         if (config?.columnOrder?.length) {
           const ordered: string[] = [];
@@ -850,7 +646,7 @@ export default function PrestartPage() {
       const cols = tableColumns();
       const rowsList = sortedRows();
       if (cols.length === 0) return;
-      const headers = cols.map((col) => getColumnDisplay(viewKey, col).header);
+      const headers = cols.map((col) => getColDisplay(viewKey, col).header);
       let clipboardText = headers.join("\t") + "\n";
       for (const row of rowsList) {
         const cells = cols.map((col) => {
@@ -1197,7 +993,7 @@ export default function PrestartPage() {
           <tr>
             <For each={cols}>
               {(col) => {
-                const { header, tooltip } = getColumnDisplay(viewKey, col);
+                const { header, tooltip } = getColDisplay(viewKey, col);
                 const thClass = "centered";
                 return (
                   <th

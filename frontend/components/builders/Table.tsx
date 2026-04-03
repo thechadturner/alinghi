@@ -816,7 +816,7 @@ export default function TableBuilder(props: TableBuilderProps) {
                                                                                 <input
                                                                                     type="text"
                                                                                     value={series.suffix || ""}
-                                                                                    placeholder="e.g., %, kts, m/s"
+                                                                                    placeholder="e.g., %, m/s, unit label"
                                                                                     onInput={(e) => {
                                                                                         setChartObjects(chartIndex(), "series", seriesIndex(), "suffix", e.target.value);
                                                                                         setHasChanges(true);

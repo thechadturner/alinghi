@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show, onMount, onCleanup } from "solid-js";
+import { createSignal, createEffect, createMemo, Show, onMount, onCleanup } from "solid-js";
 import { useNavigate, useLocation } from "@solidjs/router";
 
 import Loading from "../../components/utilities/Loading";
@@ -17,6 +17,7 @@ import { sseManager } from "../../store/sseManager";
 import { processStore } from "../../store/processStore";
 import { toastStore } from "../../store/toastStore";
 import { streamingStatusStore } from "../../store/streamingStatusStore";
+import { speedUnitBracketUpper } from "../../utils/speedUnits";
 
 const { selectedClassName,
   selectedProjectId,
@@ -76,6 +77,8 @@ const Datasets = (props: DatasetsProps) => {
   const [liveSourceNames, setLiveSourceNames] = createSignal<string[]>([]);
   /** Cache: date string (YYYY-MM-DD) -> true if media exists for that date (project-scoped). */
   const [hasMediaByDate, setHasMediaByDate] = createSignal<Record<string, boolean>>({});
+
+  const twsColumnHeader = createMemo(() => `TWS ${speedUnitBracketUpper(persistantStore.defaultUnits())}`);
 
   const { setFetchMenuTrigger } = props;
 
@@ -1593,7 +1596,7 @@ const Datasets = (props: DatasetsProps) => {
                               <>
                                 <th class="event-column-mobile" style="width: 120px;">Event</th>
                                 <th class="day-column">DAY</th>
-                                <th class="tws-column-mobile">TWS [KPH]</th>
+                                <th class="tws-column-mobile">{twsColumnHeader()}</th>
                                 <th class="twd-column-mobile">TWD</th>
                                 <th class="big description-column">DESCRIPTION</th>
                               </>
@@ -1710,7 +1713,7 @@ const Datasets = (props: DatasetsProps) => {
                           <>
                             <th class="event-column-mobile" style="width: 120px;">Event</th>
                             <th class="day-column">DAY</th>
-                            <th class="tws-column-mobile">TWS [KPH]</th>
+                            <th class="tws-column-mobile">{twsColumnHeader()}</th>
                             <th class="twd-column-mobile">TWD</th>
                             <th class="big description-column">DESCRIPTION</th>
                           </>

@@ -6,17 +6,8 @@ import { getColorByIndex } from "../../../../utils/colorScale";
 import { debug } from "../../../../utils/console";
 
 export function renderContinuousTimeSeries(props: TimeSeriesRendererProps): RendererResult {
-  const { data, svg, xScale, yScale, lineGenerator, config, samplingFrequency, channel, colors, getColor, getThickness } = props;
-  
-  // Helper function to get channel value from data point (case-insensitive)
-  const getChannelValue = (d: any): number => {
-    const val = d[channel] ?? d[channel.toLowerCase()] ?? d[channel.toUpperCase()];
-    if (val === undefined || val === null || isNaN(Number(val))) {
-      return 0; // Return 0 instead of NaN to prevent rendering errors
-    }
-    return Number(val);
-  };
-  
+  const { data, svg, xScale, yScale, lineGenerator, config, samplingFrequency, colors, getColor, getThickness } = props;
+
   try {
     // Get current selections
     const currentSelectedEvents = selectedEvents();

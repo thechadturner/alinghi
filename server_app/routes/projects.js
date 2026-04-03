@@ -146,6 +146,7 @@ router.put(
     body('project_id').exists().withMessage('project_id is required').bail().isInt().withMessage('project_id must be an integer').toInt(),
     body('project_name').exists().withMessage('project_name is required').bail().customSanitizer(value => String(value).trim()),
     body('class_id').exists().withMessage('class_id is required').bail().isInt().withMessage('class_id must be an integer').toInt(),
+    body('speed_units').optional({ nullable: true }).customSanitizer(v => v ? String(v).trim() : null),
   ],
   controller.updateProject
 );

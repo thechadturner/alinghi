@@ -67,6 +67,7 @@ function apiTimestampToUtcSeconds(apiTime: string): number {
 }
 
 import { apiEndpoints } from "@config/env";
+import { bspValueFromRow, speedUnitSuffix, SpeedChannelNames } from "../../utils/speedUnits";
 import "../../styles/thirdparty/mapbox-gl.css";
 import "../../styles/thirdparty/my-bootstrap.css";
 
@@ -159,8 +160,11 @@ export default function Events() {
   // Computed: Data to display (filtered or all) - used internally by loadTasksForStep
   // Note: We compute this inline in loadTasksForStep to avoid timing issues
 
-  // Store default channel names
-  const [bspName, setBspName] = createSignal<string>('Bsp_kph'); // Default fallback for AC40
+  const speedFallbackBsp = () => `Bsp_${speedUnitSuffix(persistantStore.defaultUnits())}`;
+  const speedFallbackTws = () => `Tws_${speedUnitSuffix(persistantStore.defaultUnits())}`;
+
+  // Store default channel names (BSP/TWS fallbacks follow global speed unit preference)
+  const [bspName, setBspName] = createSignal<string>(speedFallbackBsp());
   const [twaName, setTwaName] = createSignal<string>('Twa_n_deg'); // Default fallback
 
   const [changeMade, setChangeMade] = createSignal(false);
@@ -1518,7 +1522,7 @@ const hotKey = (key: string) => {
 
         const defaultChannels = await getDefaultChannels(abortController.signal);
         if (defaultChannels) {
-          setBspName(defaultChannels.bsp_name || 'Bsp_kph');
+          setBspName(defaultChannels.bsp_name || speedFallbackBsp());
           setTwaName(defaultChannels.twa_name || 'Twa_n_deg');
         }
 
@@ -1783,7 +1787,7 @@ const hotKey = (key: string) => {
       const defaultChannels = await getDefaultChannels(signal);
       const latName = defaultChannels?.lat_name || 'Lat_dd'; // Fallback to 'Lat_dd' if not found
       const lngName = defaultChannels?.lng_name || 'Lng_dd';
-      const bspName = defaultChannels?.bsp_name || 'Bsp_kph';
+      const bspName = defaultChannels?.bsp_name || speedFallbackBsp();
       const twaName = defaultChannels?.twa_name || 'Twa_n_deg';
       const hdgName = defaultChannels?.hdg_name || 'Hdg_deg';
 
@@ -1795,7 +1799,7 @@ const hotKey = (key: string) => {
           setSelectedSourceName(data.source_name.toString());
 
           // DIRECT API REQUEST - use dynamic channel names from default_channels
-          const twsName = defaultChannels?.tws_name || 'Tws_kph';
+          const twsName = defaultChannels?.tws_name || speedFallbackTws();
           const twdName = defaultChannels?.twd_name || 'Twd_deg';
           const channels = [
               { 'name': 'Datetime', 'type': 'datetime' },
@@ -1872,14 +1876,16 @@ const hotKey = (key: string) => {
             const rawLast = channel_values[channel_values.length - 1] as any;
             debug("[Events] RAW (API) first record:", {
               Datetime: rawFirst?.Datetime,
-              Bsp_kph: rawFirst?.Bsp_kph,
+              [SpeedChannelNames.bspMetric]: rawFirst?.[SpeedChannelNames.bspMetric],
+              [SpeedChannelNames.bspKnots]: rawFirst?.[SpeedChannelNames.bspKnots],
               Lat_dd: rawFirst?.Lat_dd,
               Lng_dd: rawFirst?.Lng_dd,
               ts: rawFirst?.ts,
             });
             debug("[Events] RAW (API) last record:", {
               Datetime: rawLast?.Datetime,
-              Bsp_kph: rawLast?.Bsp_kph,
+              [SpeedChannelNames.bspMetric]: rawLast?.[SpeedChannelNames.bspMetric],
+              [SpeedChannelNames.bspKnots]: rawLast?.[SpeedChannelNames.bspKnots],
               Lat_dd: rawLast?.Lat_dd,
               Lng_dd: rawLast?.Lng_dd,
               ts: rawLast?.ts,
@@ -1908,7 +1914,7 @@ const hotKey = (key: string) => {
                   Datetime: new Date(row.Datetime),
                   Lat: lat,
                   Lng: lng,
-                  Bsp: row[bspName] ?? row.Bsp_kph ?? Number.NaN,
+                  Bsp: bspValueFromRow(row as Record<string, unknown>, bspName, Number.NaN),
                   Twa_n: row[twaName] ?? row.Twa_n_deg ?? Number.NaN,
                   Hdg: row[hdgName] ?? row.Hdg_deg ?? Number.NaN,
                   Tws: twsValue,
@@ -2146,10 +2152,10 @@ const hotKey = (key: string) => {
           const defaultChannels = await getDefaultChannels(controller.signal);
           const latName = defaultChannels?.lat_name || 'Lat_dd';
           const lngName = defaultChannels?.lng_name || 'Lng_dd';
-          const bspName = defaultChannels?.bsp_name || 'Bsp_kph';
+          const bspName = defaultChannels?.bsp_name || speedFallbackBsp();
           const twaNameCh = defaultChannels?.twa_name || 'Twa_n_deg';
           const hdgName = defaultChannels?.hdg_name || 'Hdg_deg';
-          const twsName = defaultChannels?.tws_name || 'Tws_kph';
+          const twsName = defaultChannels?.tws_name || speedFallbackTws();
           const twdName = defaultChannels?.twd_name || 'Twd_deg';
           const channels = [
             { 'name': 'Datetime', 'type': 'datetime' as const },
@@ -2210,7 +2216,7 @@ const hotKey = (key: string) => {
               Datetime: new Date(rowVal.Datetime),
               Lat: lat,
               Lng: lng,
-              Bsp: rowVal[bspName] ?? rowVal.Bsp_kph ?? Number.NaN,
+              Bsp: bspValueFromRow(rowVal as Record<string, unknown>, bspName, Number.NaN),
               Twa_n: rowVal[twaNameCh] ?? rowVal.Twa_n_deg ?? Number.NaN,
               Hdg: rowVal[hdgName] ?? rowVal.Hdg_deg ?? Number.NaN,
               Tws: twsValue,
@@ -2281,10 +2287,10 @@ const hotKey = (key: string) => {
                 const defaultChannels = await getDefaultChannels(controller.signal);
                 const latName = defaultChannels?.lat_name || 'Lat_dd'; // Fallback to 'Lat_dd' if not found
                 const lngName = defaultChannels?.lng_name || 'Lng_dd';
-                const bspName = defaultChannels?.bsp_name || 'Bsp_kph';
+                const bspName = defaultChannels?.bsp_name || speedFallbackBsp();
                 const twaName = defaultChannels?.twa_name || 'Twa_n_deg';
                 const hdgName = defaultChannels?.hdg_name || 'Hdg_deg';
-                const twsName = defaultChannels?.tws_name || 'Tws_kph';
+                const twsName = defaultChannels?.tws_name || speedFallbackTws();
                 const twdName = defaultChannels?.twd_name || 'Twd_deg';
                 
                 // Use dynamic channel names from default_channels
@@ -2367,7 +2373,7 @@ const hotKey = (key: string) => {
                       Datetime: new Date(row.Datetime),
                       Lat: lat,
                       Lng: lng,
-                      Bsp: row[bspName] ?? row.Bsp_kph ?? Number.NaN,
+                      Bsp: bspValueFromRow(row as Record<string, unknown>, bspName, Number.NaN),
                       Twa_n: row[twaName] ?? row.Twa_n_deg ?? Number.NaN,
                       Hdg: row[hdgName] ?? row.Hdg_deg ?? Number.NaN,
                       Tws: twsValue,
@@ -2984,12 +2990,11 @@ const hotKey = (key: string) => {
     // Map original channel names (including default names) to normalized field names
     // Normalized names are always: Bsp, Twa_n, Hdg, Tws, Twd
     const channelMap: Record<string, string> = {
-      // BSP variations (AC40 uses _kph, but keep _kts for backward compatibility)
       [bspDefault]: 'Bsp',
-      'Bsp_kph': 'Bsp',
-      'bsp_kph': 'Bsp',
-      'Bsp_kts': 'Bsp',
-      'bsp_kts': 'Bsp',
+      [SpeedChannelNames.bspMetric]: 'Bsp',
+      [SpeedChannelNames.bspMetric.toLowerCase()]: 'Bsp',
+      [SpeedChannelNames.bspKnots]: 'Bsp',
+      [SpeedChannelNames.bspKnots.toLowerCase()]: 'Bsp',
       'BSP': 'Bsp',
       // TWA variations
       [twaDefault]: 'Twa_n',
@@ -3003,12 +3008,11 @@ const hotKey = (key: string) => {
       'Hdg_deg': 'Hdg',
       'hdg_deg': 'Hdg',
       'HDG': 'Hdg',
-      // TWS variations (AC40 uses _kph, but keep _kts for backward compatibility)
       [twsDefault]: 'Tws',
-      'Tws_kph': 'Tws',
-      'tws_kph': 'Tws',
-      'Tws_kts': 'Tws',
-      'tws_kts': 'Tws',
+      [SpeedChannelNames.twsMetric]: 'Tws',
+      [SpeedChannelNames.twsMetric.toLowerCase()]: 'Tws',
+      [SpeedChannelNames.twsKnots]: 'Tws',
+      [SpeedChannelNames.twsKnots.toLowerCase()]: 'Tws',
       'TWS': 'Tws',
       // TWD variations
       [twdDefault]: 'Twd',

@@ -8,6 +8,7 @@ const db = require('../shared/database/connection');
 const { installConsoleGate, logAlways, log, error, warn, debug } = require('../shared');
 
 const config = require('./middleware/config');
+const { normalizeLegacyClassName } = require('./middleware/normalizeClassName');
 const { resolveAllowedOrigins } = require('../shared/utils/allowedOrigins');
 const { getReadinessReport } = require('../shared/utils/readiness');
 const adminRoutes = require('./routes/admin');
@@ -70,6 +71,9 @@ app.use(express.urlencoded({
   parameterLimit: 50000
 }));
 app.use(cookieParser());
+
+// Legacy class schema aliases (e.g. gp50 → ac40 after DB migration)
+app.use(normalizeLegacyClassName);
 
 // Compression middleware with optimized settings
 // Compress JSON responses and other text-based content
