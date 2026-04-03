@@ -446,6 +446,13 @@ body.index-page .index-page-scroll-container {
   height: auto !important;
 }
 
+/* Alinghi logo on index: preflight makes img display:block, so text-center does not center it */
+body.index-page .index-hero-alinghi-logo,
+body.index-page .welcome-back-logo {
+  margin-left: auto;
+  margin-right: auto;
+}
+
 /* Index hero — subtle Alinghi swirl + wordmark (under gradient overlays) */
 .alinghi-hero-backdrop {
   position: absolute;
@@ -9437,6 +9444,12 @@ html body #main-content>#media-container.targets-page,
   border: 1px solid #ccc;
   /* Grey outline */
   border-radius: 4px;
+}
+
+/* Source filter: wider than default DropDownButton xlarge for long source names */
+.datasets-page .datasets-page-source-dropdown .forced-xlarge {
+  width: min(100%, 280px);
+  min-width: 220px;
 }
 
 .years-container {

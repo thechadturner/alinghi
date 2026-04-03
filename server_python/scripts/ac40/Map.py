@@ -53,16 +53,16 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
         channels = [
             {'name': 'Datetime', 'type': 'datetime'},
             {'name': 'ts', 'type': 'float'},
-            {'name': 'Lat_dd', 'type': 'float'},
-            {'name': 'Lng_dd', 'type': 'float'},
-            {'name': 'Tws_kph', 'type': 'float'},
-            {'name': 'Twd_deg', 'type': 'angle360'},
-            {'name': 'Hdg_deg', 'type': 'angle360'},
-            {'name': 'Bsp_kph', 'type': 'float'},
-            {'name': 'Twa_deg', 'type': 'angle180'},
-            {'name': 'Vmg_kph', 'type': 'float'},
-            {'name': 'Vmg_perc', 'type': 'float'},
-            {'name': 'Bsp_perc', 'type': 'float'},
+            {'name': 'AC40_Latitude', 'type': 'float'},
+            {'name': 'AC40_Longitude', 'type': 'float'},
+            {'name': 'AC40_BowWand_TWS_kts', 'type': 'float'},
+            {'name': 'AC40_BowWand_TWD', 'type': 'angle360'},
+            {'name': 'AC40_HDG', 'type': 'angle360'},
+            {'name': 'AC40_Speed_kts', 'type': 'float'},
+            {'name': 'AC40_Tgt_Speed_kts', 'type': 'float'},
+            {'name': 'AC40_TWA', 'type': 'angle180'},
+            {'name': 'AC40_VMG_kts', 'type': 'float'},
+            {'name': 'AC40_VMG_pc', 'type': 'float'},
             {'name': 'Foiling_state', 'type': 'int'},
             {'name': 'Race_number', 'type': 'int'},
             {'name': 'Leg_number', 'type': 'int'},
@@ -78,6 +78,26 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
 
         print((list(dfi.columns)))
         if dfi is not None and len(dfi) > 0:
+            dfi.rename(
+                columns={
+                    'AC40_Latitude': 'Lat_dd',
+                    'AC40_Longitude': 'Lng_dd',
+                    'AC40_BowWand_TWS_kts': 'Tws_kts',
+                    'AC40_BowWand_TWD': 'Twd_deg',
+                    'AC40_HDG': 'Hdg_deg',
+                    'AC40_Speed_kts': 'Bsp_kts',
+                    'AC40_Tgt_Speed_kts': 'Bsp_tgt_kts',
+                    'AC40_TWA': 'Twa_deg',
+                    'AC40_TWA_n': 'Twa_n_deg',
+                    'AC40_VMG_kts': 'Vmg_kts',
+                    'AC40_VMG_pc': 'Vmg_perc'
+                },
+                inplace=True,
+            )
+
+            dfi['Bsp_perc'] = (dfi['Bsp_kts'] / dfi['Bsp_tgt_kts']) * 100
+            dfi['Vmg_perc'] = dfi['Vmg_perc'] * 100
+
             print(len(dfi),'records returned...', flush=True)
 
             df = u.remove_gaps(dfi,'Bsp_kph','ts')

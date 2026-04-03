@@ -2,8 +2,8 @@
 Calibration utilities for sailing sensor data.
 
 Provides **performance-model** AWA calibration (tack×mode XGB surfaces, matched-condition
-offsets), multi-sensor fusion, and leeway symmetry corrections. Main entry:
-``calibrate_and_fuse_pipeline``.
+offsets), optional multi-sensor fusion, single-sensor apply (no AWA/AWS fusion), and leeway
+symmetry corrections. Entries: ``calibrate_and_fuse_pipeline``, ``calibrate_single_sensor_pipeline``.
 """
 
 from dataclasses import dataclass
@@ -65,6 +65,46 @@ class CalibrationConfig:
     end_ts: Optional[float] = None    # End timestamp (seconds) - aligns with processing data
     # None or 'auto': infer from channel suffixes (_kph / _kts); 'kph' / 'kts' forces that unit.
     speed_unit: Optional[str] = None
+    # If set, passed to get_channel_values instead of the default ``channels`` list.
+    channel_list: Optional[List[Dict[str, str]]] = None
+    # Applied to column names immediately after fetch (e.g. AC40_* → Hdg_deg, Awa_bow_deg).
+    column_rename: Optional[Dict[str, str]] = None
+    # Extra column names (canonical) appended to [Bsp_*, Tws_*] for perf-model AWA XGBoost
+    # training and interrogation. Columns missing from the dataframe are ignored.
+    perf_model_feature_extras: Optional[List[str]] = None
+    # If True, after ``column_rename`` add AC40 leeward foil columns (see ``apply_ac40_foil_derived_columns``).
+    apply_ac40_foil_derived_channels: bool = False
+    # If set, ``train_leeway_model`` / ``compute_leeway_residuals`` use this feature list instead of
+    # the legacy [Bsp_*, RH_lwd_mm, JIB_sheet_load_kgf, DB_cant_eff_lwd_deg] default.
+    leeway_model_features: Optional[List[str]] = None
+
+
+def apply_ac40_foil_derived_columns(df: pd.DataFrame) -> None:
+    """
+    In-place: leeward foil cant (by ``Twa_deg`` sign), effective cant vs heel, leeward sink.
+
+    - ``Twa_deg`` > 0 → port foil; else → starboard foil.
+    - ``Foil_lwd_cant_eff_deg`` = ``Foil_lwd_cant_deg`` - ``Heel_deg``.
+    """
+    if df is None or len(df) == 0 or 'Twa_deg' not in df.columns:
+        return
+    twa = pd.to_numeric(df['Twa_deg'], errors='coerce')
+    port_side = (twa > 0).fillna(False).to_numpy(dtype=bool)
+
+    if 'Foil_port_cant_deg' in df.columns and 'Foil_stbd_cant_deg' in df.columns:
+        fp = pd.to_numeric(df['Foil_port_cant_deg'], errors='coerce').to_numpy(dtype=np.float64)
+        fs = pd.to_numeric(df['Foil_stbd_cant_deg'], errors='coerce').to_numpy(dtype=np.float64)
+        df['Foil_lwd_cant_deg'] = np.where(port_side, fp, fs)
+
+    if 'Foil_lwd_cant_deg' in df.columns and 'Heel_deg' in df.columns:
+        cant = pd.to_numeric(df['Foil_lwd_cant_deg'], errors='coerce').to_numpy(dtype=np.float64)
+        heel = pd.to_numeric(df['Heel_deg'], errors='coerce').to_numpy(dtype=np.float64)
+        df['Foil_lwd_cant_eff_deg'] = cant - heel
+
+    if 'Foil_port_sink_m' in df.columns and 'Foil_stbd_sink_m' in df.columns:
+        psk = pd.to_numeric(df['Foil_port_sink_m'], errors='coerce').to_numpy(dtype=np.float64)
+        ssk = pd.to_numeric(df['Foil_stbd_sink_m'], errors='coerce').to_numpy(dtype=np.float64)
+        df['Foil_lwd_sink_m'] = np.where(port_side, psk, ssk)
 
 
 def load_calibration_data(config: CalibrationConfig, 
@@ -89,8 +129,8 @@ def load_calibration_data(config: CalibrationConfig,
         ``include_all_grades`` or ``filter_grade`` overrides apply.
     """
     if channel_list is None:
-        channel_list = channels
-    
+        channel_list = config.channel_list if config.channel_list is not None else channels
+
     df = get_channel_values(
         api_token=config.api_token,
         class_name=config.class_name,
@@ -103,7 +143,13 @@ def load_calibration_data(config: CalibrationConfig,
         end_ts=config.end_ts,
         timezone=config.timezone
     )
-    
+
+    if getattr(config, 'column_rename', None):
+        df = df.rename(columns=config.column_rename)
+
+    if getattr(config, 'apply_ac40_foil_derived_channels', False):
+        apply_ac40_foil_derived_columns(df)
+
     if include_all_grades:
         return df
 
@@ -287,6 +333,22 @@ def _clip_offset_deg_array(
     return np.clip(np.asarray(arr, dtype=np.float64), -limit, limit)
 
 
+def perf_model_awa_feature_names(
+    speed_unit: str,
+    df: pd.DataFrame,
+    extras: Optional[List[str]] = None,
+) -> List[str]:
+    """
+    Ordered feature list for tack×mode AWA performance models: Bsp, Tws, then optional extras
+    present in ``df``.
+    """
+    names: List[str] = list(bsp_tws_feature_names(speed_unit))
+    for c in extras or []:
+        if c and c not in names and c in df.columns:
+            names.append(c)
+    return names
+
+
 def train_tack_mode_model(
     df: pd.DataFrame,
     tack: str,
@@ -362,37 +424,32 @@ def train_tack_mode_model(
 def compute_perf_model_awa_offset(
     port_model: Optional[XGBRegressor],
     stbd_model: Optional[XGBRegressor],
-    query_bsp: np.ndarray,
-    query_tws: np.ndarray
+    query_X: np.ndarray,
 ) -> Optional[float]:
     """
     Compute AWA offset by interrogating port and starboard models at matched conditions.
-    
-    Evaluates both models at the same (Bsp, Tws) conditions and returns the mean
-    difference divided by 2. This offset, when applied uniformly, equalizes the
-    two sensors at matched sailing conditions.
-    
+
+    Evaluates both models at the same feature rows (Bsp, Tws, and any trained extras)
+    and returns the mean difference divided by 2.
+
     Args:
         port_model: Trained XGBRegressor for port tack (predicts abs(AWA))
         stbd_model: Trained XGBRegressor for starboard tack (predicts abs(AWA))
-        query_bsp: Array of boat speeds (kph) to query
-        query_tws: Array of true wind speeds (kph) to query (same length as query_bsp)
-        
+        query_X: Feature matrix ``(n_rows, n_features)`` matching training column order.
+
     Returns:
         Scalar offset value (degrees), or None if either model is missing
     """
     if port_model is None or stbd_model is None:
         return None
-    
-    if len(query_bsp) != len(query_tws):
-        raise ValueError("query_bsp and query_tws must have same length")
-    
-    if len(query_bsp) == 0:
+
+    if query_X is None or len(query_X) == 0:
         return None
-    
-    # Build feature matrix
-    X = np.column_stack([query_bsp, query_tws])
-    
+
+    X = np.asarray(query_X, dtype=np.float64)
+    if X.ndim == 1:
+        X = X.reshape(1, -1)
+
     # Predict from both models
     port_pred = port_model.predict(X)
     stbd_pred = stbd_model.predict(X)
@@ -412,6 +469,7 @@ def compute_rolling_perf_model_awa_offsets(
     min_samples_per_model: int = 100,
     model_update_interval_sec: float = 30 * 60,
     speed_unit: str = 'kph',
+    perf_model_feature_extras: Optional[List[str]] = None,
 ) -> Tuple[pd.Series, pd.Series, Optional[float], Optional[float]]:
     """
     Compute rolling AWA offsets using V3 performance model approach.
@@ -427,7 +485,8 @@ def compute_rolling_perf_model_awa_offsets(
         step_sec: Grid step in seconds
         min_samples_per_model: Minimum samples per model for training
         model_update_interval_sec: Interval (seconds) between model retraining
-        
+        perf_model_feature_extras: Optional extra columns (must exist in ``df``) for XGBoost features.
+
     Returns:
         (uw_offset_series, dw_offset_series, first_valid_ts, first_valid_offset)
         - uw_offset_series: Series index=grid ts, value=upwind offset
@@ -442,6 +501,8 @@ def compute_rolling_perf_model_awa_offsets(
         raise ValueError(
             f"compute_rolling_perf_model_awa_offsets requires {bsp_col!r} and {tws_col!r}"
         )
+
+    feature_list = perf_model_awa_feature_names(speed_unit, df, perf_model_feature_extras)
 
     df = df.sort_values('ts').reset_index(drop=True)
     t_min = float(df['ts'].min())
@@ -477,21 +538,25 @@ def compute_rolling_perf_model_awa_offsets(
             # None when a tack×mode lacks sufficient samples (min_samples_per_model).
             new_pu = train_tack_mode_model(
                 df_train, 'port', 'upwind', awa_channel_name,
+                features=list(feature_list),
                 min_samples=min_samples_per_model,
                 speed_unit=speed_unit,
             )
             new_pd = train_tack_mode_model(
                 df_train, 'port', 'downwind', awa_channel_name,
+                features=list(feature_list),
                 min_samples=min_samples_per_model,
                 speed_unit=speed_unit,
             )
             new_su = train_tack_mode_model(
                 df_train, 'starboard', 'upwind', awa_channel_name,
+                features=list(feature_list),
                 min_samples=min_samples_per_model,
                 speed_unit=speed_unit,
             )
             new_sd = train_tack_mode_model(
                 df_train, 'starboard', 'downwind', awa_channel_name,
+                features=list(feature_list),
                 min_samples=min_samples_per_model,
                 speed_unit=speed_unit,
             )
@@ -524,39 +589,29 @@ def compute_rolling_perf_model_awa_offsets(
         window_dw = window[window['Twa_deg'].abs() > 115]
         
         # Compute upwind offset
-        if (len(window_uw) > 0 and 
-            models['port_upwind'] is not None and 
-            models['starboard_upwind'] is not None and
-            bsp_col in window_uw.columns and tws_col in window_uw.columns):
-            # Use conditions from window (prefer starboard conditions for query)
-            query_bsp = window_uw[bsp_col].dropna().values
-            query_tws = window_uw[tws_col].dropna().values
-            if len(query_bsp) > 0 and len(query_tws) > 0:
-                # Match lengths
-                min_len = min(len(query_bsp), len(query_tws))
-                query_bsp = query_bsp[:min_len]
-                query_tws = query_tws[:min_len]
+        if (len(window_uw) > 0 and
+                models['port_upwind'] is not None and
+                models['starboard_upwind'] is not None and
+                all(c in window_uw.columns for c in feature_list)):
+            feat_uw = window_uw[feature_list].dropna()
+            if len(feat_uw) > 0:
+                X_uw = feat_uw.to_numpy(dtype=np.float64, copy=False)
                 offset_uw = compute_perf_model_awa_offset(
-                    models['port_upwind'], models['starboard_upwind'],
-                    query_bsp, query_tws
+                    models['port_upwind'], models['starboard_upwind'], X_uw
                 )
                 if offset_uw is not None:
                     uw_offsets[i] = offset_uw
-        
+
         # Compute downwind offset
-        if (len(window_dw) > 0 and 
-            models['port_downwind'] is not None and 
-            models['starboard_downwind'] is not None and
-            bsp_col in window_dw.columns and tws_col in window_dw.columns):
-            query_bsp = window_dw[bsp_col].dropna().values
-            query_tws = window_dw[tws_col].dropna().values
-            if len(query_bsp) > 0 and len(query_tws) > 0:
-                min_len = min(len(query_bsp), len(query_tws))
-                query_bsp = query_bsp[:min_len]
-                query_tws = query_tws[:min_len]
+        if (len(window_dw) > 0 and
+                models['port_downwind'] is not None and
+                models['starboard_downwind'] is not None and
+                all(c in window_dw.columns for c in feature_list)):
+            feat_dw = window_dw[feature_list].dropna()
+            if len(feat_dw) > 0:
+                X_dw = feat_dw.to_numpy(dtype=np.float64, copy=False)
                 offset_dw = compute_perf_model_awa_offset(
-                    models['port_downwind'], models['starboard_downwind'],
-                    query_bsp, query_tws
+                    models['port_downwind'], models['starboard_downwind'], X_dw
                 )
                 if offset_dw is not None:
                     dw_offsets[i] = offset_dw
@@ -835,7 +890,12 @@ def apply_awa_perf_model_calibration(
     return df
 
 
-def train_leeway_model(df: pd.DataFrame, lwy_col: str = 'Lwy_deg', speed_unit: str = 'kph') -> Optional[XGBRegressor]:
+def train_leeway_model(
+    df: pd.DataFrame,
+    lwy_col: str = 'Lwy_deg',
+    speed_unit: str = 'kph',
+    features: Optional[List[str]] = None,
+) -> Optional[XGBRegressor]:
     """
     Train XGBoost model to predict leeway magnitude from boat state.
     
@@ -845,15 +905,18 @@ def train_leeway_model(df: pd.DataFrame, lwy_col: str = 'Lwy_deg', speed_unit: s
     Args:
         df: DataFrame with feature and target columns, including 'tack' column
         lwy_col: Name of leeway column
-        
+        speed_unit: Used only when ``features`` is None (legacy default includes ``Bsp_{speed_unit}``).
+        features: Optional explicit feature column names; if None, uses RH/jib/cant legacy set.
+
     Returns:
         Trained XGBRegressor model, or None if training fails
     """
-    features = [f'Bsp_{speed_unit}', 'RH_lwd_mm', 'JIB_sheet_load_kgf', 'DB_cant_eff_lwd_deg']
+    if features is None:
+        features = [f'Bsp_{speed_unit}', 'RH_lwd_mm', 'JIB_sheet_load_kgf', 'DB_cant_eff_lwd_deg']
     target = lwy_col
 
     # Check for required columns
-    required = features + [target, 'Twa_deg']
+    required = list(features) + [target, 'Twa_deg']
     if not all(col in df.columns for col in required):
         raise ValueError(f"Missing required columns for leeway model: {required}")
     
@@ -871,8 +934,13 @@ def train_leeway_model(df: pd.DataFrame, lwy_col: str = 'Lwy_deg', speed_unit: s
     return model
 
 
-def compute_leeway_residuals(df: pd.DataFrame, model: XGBRegressor, 
-                            lwy_col: str = 'Lwy_deg', speed_unit: str = 'kph') -> pd.DataFrame:
+def compute_leeway_residuals(
+    df: pd.DataFrame,
+    model: XGBRegressor,
+    lwy_col: str = 'Lwy_deg',
+    speed_unit: str = 'kph',
+    features: Optional[List[str]] = None,
+) -> pd.DataFrame:
     """
     Compute leeway prediction residuals using normalized values.
     
@@ -883,13 +951,16 @@ def compute_leeway_residuals(df: pd.DataFrame, model: XGBRegressor,
         df: DataFrame with sensor data including 'Twa_deg' column
         model: Trained leeway prediction model (predicts normalized values)
         lwy_col: Name of leeway column
-        
+        speed_unit: Used only when ``features`` is None.
+        features: Must match the list used to train ``model`` when overriding defaults.
+
     Returns:
         DataFrame with 'lwy_residual' column added
     """
     df = df.copy()
-    
-    features = [f'Bsp_{speed_unit}', 'RH_lwd_mm', 'JIB_sheet_load_kgf', 'DB_cant_eff_lwd_deg']
+
+    if features is None:
+        features = [f'Bsp_{speed_unit}', 'RH_lwd_mm', 'JIB_sheet_load_kgf', 'DB_cant_eff_lwd_deg']
     
     # Predict normalized leeway
     X = df[features].values
@@ -1247,6 +1318,7 @@ def calibrate_sailing_data(
             min_samples_per_model=min_samples_per_model,
             model_update_interval_sec=model_update_interval_sec,
             speed_unit=unit,
+            perf_model_feature_extras=config.perf_model_feature_extras,
         )
     )
     
@@ -1275,8 +1347,19 @@ def calibrate_sailing_data(
     )
     
     # Step 6: Train leeway model and apply half-hour leeway offsets
-    lwy_model = train_leeway_model(df, lwy_channel_name, speed_unit=unit)
-    df = compute_leeway_residuals(df, lwy_model, lwy_channel_name, speed_unit=unit)
+    lwy_model = train_leeway_model(
+        df,
+        lwy_channel_name,
+        speed_unit=unit,
+        features=config.leeway_model_features,
+    )
+    df = compute_leeway_residuals(
+        df,
+        lwy_model,
+        lwy_channel_name,
+        speed_unit=unit,
+        features=config.leeway_model_features,
+    )
     port_lwy_offsets, stbd_lwy_offsets = optimize_leeway_offsets(df, lwy_channel_name)
     df = apply_leeway_calibration(df, port_lwy_offsets, stbd_lwy_offsets, lwy_channel_name)
 
@@ -1288,7 +1371,7 @@ def calibrate_sailing_data(
     return {
         'data': df,
         'awa_model': None,  # perf path uses 4 tack×mode models internally, not one shared XGB
-        'awa_features': list(bsp_tws_feature_names(unit)),
+        'awa_features': perf_model_awa_feature_names(unit, df, config.perf_model_feature_extras),
         'speed_unit': unit,
         'awa_offsets': {
             'perf_model': (uw_offset_series, dw_offset_series, first_valid_ts, first_valid_offset)
@@ -1824,4 +1907,101 @@ def calibrate_and_fuse_pipeline(config: CalibrationConfig,
         'multi_sensor_results': multi_results,
         'fusion_stats': fusion_stats,
         'fusion_method': fusion_method
+    }
+
+
+def calibrate_single_sensor_pipeline(
+    config: CalibrationConfig,
+    awa_sensor: str,
+    aws_sensor: Optional[str] = None,
+    lwy_sensor: str = 'Lwy_deg',
+    *,
+    window_sec: float = 30 * 60,
+    step_sec: float = 60,
+    model_update_interval_sec: float = 30 * 60,
+    min_samples_per_model: int = 100,
+) -> Dict:
+    """
+    Calibrate one AWA / AWS pair (performance-model AWA), load all grades, apply offsets,
+    then compute true wind **without** multi-sensor ``fuse_awa_aws_pairs``.
+
+    Fused column names (``Awa_fused_deg``, ``Aws_fused_*``, ``Tws_fused_*``, …) are filled from
+    the calibrated primary sensor so downstream code can stay unchanged.
+    """
+    print("SINGLE-SENSOR CALIBRATION PIPELINE (no AWA/AWS fusion)")
+
+    awa_sensors = [awa_sensor]
+    aws_sensors = [aws_sensor] if aws_sensor else None
+
+    multi_results = calibrate_multi_sensors(
+        config=config,
+        awa_sensors=awa_sensors,
+        aws_sensors=aws_sensors,
+        lwy_sensor=lwy_sensor,
+        window_sec=window_sec,
+        step_sec=step_sec,
+        model_update_interval_sec=model_update_interval_sec,
+        min_samples_per_model=min_samples_per_model,
+    )
+    if len(multi_results['recommended_sensors']) == 0:
+        raise ValueError("No sensors successfully calibrated")
+
+    print("\n[APPLY] Loading all grades in range and applying offsets (trained on Grade >= 2)...")
+    df_full = load_calibration_data(config, include_all_grades=True)
+    if len(df_full) == 0:
+        raise ValueError("No full data loaded")
+    if 'Grade' in df_full.columns:
+        g = pd.to_numeric(df_full['Grade'], errors='coerce')
+        n_low = int((g < 2).sum())
+        print(f"      [APPLY] Full load: {len(df_full):,} rows, Grade<2: {n_low:,}")
+
+    best_tr = multi_results['recommended_sensors'][0]
+    fuse_unit = multi_results['sensor_calibrations'][best_tr]['calibration'].get(
+        'speed_unit', 'kph'
+    )
+    ensure_speed_columns(df_full, fuse_unit)
+    df_full = _apply_offsets_to_full_data(
+        df_full,
+        multi_results,
+        awa_sensors,
+        aws_sensors,
+        lwy_sensor,
+        speed_unit=fuse_unit,
+    )
+    print(f"      [OK] Applied offsets to {len(df_full):,} samples (all grades)")
+
+    df_work = df_full.copy()
+    raw_aws = f'Aws_{fuse_unit}'
+    aws_fused = aws_fused_output_column(fuse_unit)
+    df_work['Awa_fused_deg'] = pd.to_numeric(df_work[best_tr], errors='coerce')
+    if raw_aws in df_work.columns:
+        df_work[aws_fused] = pd.to_numeric(df_work[raw_aws], errors='coerce')
+    else:
+        candidates = [
+            c
+            for c in df_work.columns
+            if c.startswith('Aws_') and c.endswith(f'_{fuse_unit}')
+        ]
+        if candidates:
+            df_work[aws_fused] = pd.to_numeric(df_work[candidates[0]], errors='coerce')
+        else:
+            df_work[aws_fused] = np.nan
+
+    print("\n[APPLY] Computing true wind from single calibrated apparent-wind path...")
+    df_final = fuse_and_compute_true_wind(df_work, lwy_col=lwy_sensor, speed_unit=fuse_unit)
+    for col in df_full.columns:
+        if col in df_final.columns:
+            continue
+        if col in ('Lwy_offset_norm_deg', 'Lwy_offset_deg', 'Awa_offset_deg') or col.startswith(
+            'Awa_offset__'
+        ):
+            df_final[col] = df_full[col].values
+
+    print("[OK] SINGLE-SENSOR PIPELINE COMPLETE")
+
+    return {
+        'data': df_final,
+        'multi_sensor_results': multi_results,
+        'fusion_stats': None,
+        'fusion_method': 'single_sensor',
     }

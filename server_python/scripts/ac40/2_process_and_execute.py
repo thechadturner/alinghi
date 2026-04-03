@@ -270,17 +270,6 @@ if __name__ == "__main__":
                     'verbose': verbose
                 }
 
-                systems_params_str = json.dumps(systems_params)
-                systems_script_path = os.path.join(script_dir, '3_systems.py')
-                print("Running systems data computation...", flush=True)
-                u.log(api_token, "2_process_and_execute.py", "info", "systems script", f"Starting 3_systems.py for dataset {dataset_id}")
-                return_code_corrections = run_script_realtime(systems_script_path, systems_params_str)
-                if return_code_corrections != 0:
-                    error_msg = f"Systems script failed with code {return_code_corrections}"
-                    u.log(api_token, "2_process_and_execute.py", "error", "systems script", error_msg)
-                    raise Exception(error_msg)
-                u.log(api_token, "2_process_and_execute.py", "info", "systems script", "Systems script completed successfully")
-
                 # Prepare parameters for 3_execute.py
                 # 3_execute runs Map.start(), Maneuvers.start(), Performance.start(), Race.start() with these params.
                 # Signatures: Map/Maneuvers/Performance.start(..., start_time, end_time, verbose); Race.start(..., verbose).

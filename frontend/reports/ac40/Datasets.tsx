@@ -7,7 +7,6 @@ import WaitingModal from "../../components/utilities/WaitingModal";
 
 import { getData, postData, deleteData, setupMediaContainerScaling } from "../../utils/global";
 import { user } from "../../store/userStore";
-import { logPageLoad } from "../../utils/logging";
 import { persistantStore } from "../../store/persistantStore";
 import { setSidebarState } from "../../store/globalStore";
 import { clearAllFilters } from "../../store/filterStore";
@@ -582,7 +581,6 @@ const Datasets = (props: DatasetsProps) => {
   // Initial data load on mount
   const loadInitialData = async () => {
     setIsInitializing(true);
-    await logPageLoad('Datasets.jsx', 'Project Datasets Report');
 
     // Clear selected dataset when viewing project datasets page, but not when restoring
     // after refresh (first mount with existing selection should persist)
@@ -1531,7 +1529,7 @@ const Datasets = (props: DatasetsProps) => {
                     defaultText={selectedSourceName()}
                     handleSelection={handleSourceSelection}
                     smallLabel="Source"
-                    size="auto"
+                    size="big"
                   />
 
                   <DropDownButton

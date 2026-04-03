@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from utilities.cal_utils import (
     CalibrationConfig,
+    apply_ac40_foil_derived_columns,
     load_calibration_data,
     compute_initial_true_wind,
     add_tack_and_hour,
@@ -127,6 +128,26 @@ def test_load_calibration_data_include_all_grades_keeps_low_grades():
         out = load_calibration_data(cfg, channel_list=_MIN_CH_LIST, include_all_grades=True)
     assert len(out) == 4
     assert set(out['Grade'].tolist()) == {0, 1, 2, 3}
+
+
+def test_apply_ac40_foil_derived_columns_twa_selects_port_or_stbd():
+    df = pd.DataFrame({
+        'Twa_deg': [5.0, -5.0, 0.0],
+        'Foil_port_cant_deg': [10.0, 11.0, 12.0],
+        'Foil_stbd_cant_deg': [20.0, 21.0, 22.0],
+        'Heel_deg': [1.0, 2.0, 3.0],
+        'Foil_port_sink_m': [0.1, 0.2, 0.3],
+        'Foil_stbd_sink_m': [1.0, 2.0, 3.0],
+    })
+    apply_ac40_foil_derived_columns(df)
+    assert np.isclose(df.loc[0, 'Foil_lwd_cant_deg'], 10.0)
+    assert np.isclose(df.loc[1, 'Foil_lwd_cant_deg'], 21.0)
+    assert np.isclose(df.loc[2, 'Foil_lwd_cant_deg'], 22.0)
+    assert np.isclose(df.loc[0, 'Foil_lwd_cant_eff_deg'], 9.0)
+    assert np.isclose(df.loc[1, 'Foil_lwd_cant_eff_deg'], 19.0)
+    assert np.isclose(df.loc[0, 'Foil_lwd_sink_m'], 0.1)
+    assert np.isclose(df.loc[1, 'Foil_lwd_sink_m'], 2.0)
+    assert np.isclose(df.loc[2, 'Foil_lwd_sink_m'], 3.0)
 
 
 def test_load_calibration_data_default_filters_grade_ge_2():
@@ -384,6 +405,7 @@ def test_leeway_calibration_pipeline():
 
 if __name__ == '__main__':
     test_generate_synthetic_data()
+    test_apply_ac40_foil_derived_columns_twa_selects_port_or_stbd()
     test_load_calibration_data_include_all_grades_keeps_low_grades()
     test_load_calibration_data_default_filters_grade_ge_2()
     test_propagate_offset_columns_duplicate_ts_uses_last_sample()

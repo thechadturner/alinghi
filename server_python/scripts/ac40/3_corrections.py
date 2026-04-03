@@ -1,15 +1,17 @@
 """
-3_corrections.py: Multi-sensor fusion calibration (CLI) — performance-model AWA.
+3_corrections.py: Bow-wand single-sensor calibration (CLI) — performance-model AWA.
 Trains separate XGBoost models per tack × mode (port/stbd × upwind/downwind) on Bsp + Tws,
 cross-interrogates port vs stbd models at matched conditions to derive a continuous AWA offset.
 Excludes reaching (80–115 deg) from calibration; outputs corrected channels (_cor) and
 Awa_offset_deg at 100ms to DATA_DIRECTORY.
 
+AC40 channels are requested from the API under their ingest names, then renamed to the canonical
+names expected by utilities.cal_utils immediately after fetch.
+
 Training uses Grade >= 2 only (minimum 100 samples per model). The apply phase loads all grades
 in range, builds explicit offset channels (leeway and AWA), forward/back-fills those offsets
 along time once, then corrects raw AWA/leeway so every row (including Grade 0/1) uses the same
-propagated offsets before fusion and true-wind computation. AWS is not offset-corrected; fused
-or raw AWS feeds fusion and true wind as-is.
+propagated offsets before true-wind computation. AWS is not offset-corrected.
 
 Offset filtering: AWA grid offsets are filtered using exponential moving average (alpha=0.001)
 before interpolation to row timestamps, similar to the smoothing applied to corrected TWS/TWD data.
@@ -33,12 +35,7 @@ if sys.stderr.encoding != 'utf-8':
 
 import utilities as u
 
-from utilities.speed_units import (
-    KNOTS_PER_KPH,
-    aws_fused_norm_column,
-    convert_speed_array,
-    convert_speed_series,
-)
+from utilities.speed_units import aws_fused_norm_column
 
 from dotenv import load_dotenv
 
@@ -61,24 +58,94 @@ api_token = os.getenv('SYSTEM_KEY')
 if not api_token:
     raise RuntimeError("SYSTEM_KEY is missing from environment configuration.")
 
-# Default multi-sensor and single-sensor fallback
-DEFAULT_AWA_SENSORS = ['Awa_bow_deg', 'Awa_mhu_deg']
-DEFAULT_AWS_SENSORS = ['Aws_bow_kph', 'Aws_mhu_kph']
-FALLBACK_AWA_SENSORS = ['Awa_deg']
-FALLBACK_AWS_SENSORS = ['Aws_kph']
+# Single bow-wand apparent wind (canonical names — after AC40_COLUMN_RENAME).
+BOW_AWA_SENSOR = 'Awa_bow_deg'
+BOW_AWS_SENSOR = 'Aws_bow_kts'
 LEEWAY_SENSOR = 'Lwy_deg'
-FUSION_METHOD = 'robust'
-OUTLIER_THRESHOLD = 2.0
 
-# kph → knots (same as utilities.speed_units.KNOTS_PER_KPH)
-KPH_TO_KTS = KNOTS_PER_KPH
+# Channel specs for calibration / fallback (API field names).
+AC40_CALIBRATION_CHANNELS = [
+    {'name': 'ts', 'type': 'float'},
+    {'name': 'Grade', 'type': 'int'},
+    {'name': 'AC40_HDG', 'type': 'angle360'},
+    {'name': 'AC40_COG', 'type': 'angle360'},
+    {'name': 'AC40_BowWand_TWS_kts', 'type': 'float'},
+    {'name': 'AC40_Speed_kts', 'type': 'float'},
+    {'name': 'AC40_BowWand_AWA', 'type': 'angle180'},
+    {'name': 'AC40_BowWand_AWS', 'type': 'float'},
+    {'name': 'AC40_BowWand_TWD', 'type': 'angle360'},
+    {'name': 'AC40_TWA', 'type': 'angle180'},
+    {'name': 'AC40_CWA', 'type': 'angle180'},
+    {'name': 'AC40_Tgt_CWA_n', 'type': 'float'},
+    {'name': 'AC40_VMG_kts', 'type': 'float'},
+    {'name': 'AC40_Heel', 'type': 'float'},
+    {'name': 'AC40_Trim', 'type': 'float'},
+    {'name': 'AC40_Leeway', 'type': 'float'},
+    {'name': 'AC40_HullAltitude', 'type': 'int'},
+    {'name': 'AC40_Loads_MainSheetLoad', 'type': 'float'},
+    {'name': 'AC40_FoilPort_Cant', 'type': 'float'},
+    {'name': 'AC40_FoilStbd_Cant', 'type': 'float'},
+    {'name': 'AC40_FoilPort_Sink', 'type': 'float'},
+    {'name': 'AC40_FoilStbd_Sink', 'type': 'float'},
+    {'name': 'AC40_SignificantWaveHeight', 'type': 'float'}
+]
 
+# AC40 API → canonical column names (applied right after get_channel_values).
+AC40_COLUMN_RENAME = {
+    'AC40_HDG': 'Hdg_deg',
+    'AC40_COG': 'Cog_deg',
+    'AC40_BowWand_TWS_kts': 'Tws_kts',
+    'AC40_SignificantWaveHeight': 'Sig_wave_height_m',
+    'AC40_Speed_kts': 'Bsp_kts',
+    'AC40_Tgt_Speed_kts': 'Bsp_tgt_kts',
+    'AC40_BowWand_AWA': 'Awa_bow_deg',
+    'AC40_BowWand_AWS': 'Aws_bow_kts',
+    'AC40_BowWand_TWD': 'Twd_deg',
+    'AC40_TWA': 'Twa_deg',
+    'AC40_CWA': 'Cwa_deg',
+    'AC40_Tgt_CWA_n': 'Tgt_cwa_n_deg',
+    'AC40_VMG_kts': 'Vmg_kts',
+    'AC40_Heel': 'Heel_deg',
+    'AC40_Trim': 'Trim_deg',
+    'AC40_Leeway': 'Lwy_deg',
+    'AC40_HullAltitude': 'Hull_altitude',
+    'AC40_Loads_MainSheetLoad': 'Main_sheet_load_kgf',
+    'AC40_FoilPort_Cant': 'Foil_port_cant_deg',
+    'AC40_FoilStbd_Cant': 'Foil_stbd_cant_deg',
+    'AC40_FoilPort_Sink': 'Foil_port_sink_m',
+    'AC40_FoilStbd_Sink': 'Foil_stbd_sink_m',
+}
 
-def _norm_speed_unit(u: str) -> str:
-    return u if u in ('kph', 'kts') else 'kph'
+# Shared state channels (after rename + foil-derived columns) for **both** AWA perf-model and leeway XGBoost.
+# AWA training prepends ``Bsp_kts`` + ``Tws_kts`` automatically; leeway uses the explicit full list below.
+AC40_SHARED_CALIBRATION_EXTRAS = [
+    'Hull_altitude',
+    'Main_sheet_load_kgf',
+    'Sig_wave_height_m',
+    'Foil_lwd_sink_m',
+    'Foil_lwd_cant_eff_deg',
+]
 
+AC40_PERF_MODEL_EXTRA_FEATURES = list(AC40_SHARED_CALIBRATION_EXTRAS)
 
-def _fused_to_cor_map(speed_unit: str) -> dict:
+# Same inputs as AWA model: Bsp, Tws, plus shared extras (order matches perf_model_awa_feature_names).
+AC40_LEEWAY_MODEL_FEATURES = ['Bsp_kts', 'Tws_kts'] + list(AC40_SHARED_CALIBRATION_EXTRAS)
+
+# AC40 corrections: speed columns are knots only (calibration + parquet).
+AC40_SPEED_UNIT = 'kts'
+
+def _norm_speed_unit(_u: str) -> str:
+    """Speed suffix for columns in this script (knots)."""
+    return AC40_SPEED_UNIT
+
+def _calibration_wind_output_to_cor_map(speed_unit: str) -> dict:
+    """
+    Map ``utilities.cal_utils`` true-wind / apparent-wind **output** column names onto ``*_cor_*``.
+
+    The library still uses legacy names like ``Tws_fused_kts`` and ``Twa_fused_deg`` after the
+    single-sensor pipeline (``fuse_and_compute_true_wind``). That is **not** multi-sensor fusion;
+    it is only the internal column naming. This dict is the bridge to RaceSight ``_cor_`` fields.
+    """
     u = _norm_speed_unit(speed_unit)
     return {
         'Awa_fused_deg': 'Awa_cor_deg',
@@ -95,43 +162,37 @@ def _aws_fallback_cols(speed_unit: str):
         aws_fused_norm_column(u),
         f'Aws_{u}',
         f'Aws_bow_{u}',
-        f'Aws_mhu_{u}',
     ]
 
 
 def _sensor_name_to_cor_column(sensor_name: str) -> str:
-    for raw_suf, cor_suf in (('_deg', '_cor_deg'), ('_kph', '_cor_kph'), ('_kts', '_cor_kts')):
+    for raw_suf, cor_suf in (('_deg', '_cor_deg'), ('_kts', '_cor_kts')):
         if sensor_name.endswith(raw_suf):
             return sensor_name[: -len(raw_suf)] + cor_suf
     return sensor_name
 
 
-def _bow_mhu_aws_pairs(speed_unit: str):
-    u = _norm_speed_unit(speed_unit)
-    return [('Awa_bow_deg', f'Aws_bow_{u}'), ('Awa_mhu_deg', f'Aws_mhu_{u}')]
+def _alias_bow_cor_columns(df_out, fuse_unit: str, aws_cor: str, tws_cor: str):
+    """Duplicate primary corrected TW/AWS into *bow* column names for downstream consumers."""
+    if df_out is None or len(df_out) == 0:
+        return df_out
+    bow_aws = f'Aws_bow_cor_{fuse_unit}'
+    if aws_cor in df_out.columns and bow_aws not in df_out.columns:
+        df_out[bow_aws] = df_out[aws_cor].values
+    bow_tws = f'Tws_bow_cor_{fuse_unit}'
+    if tws_cor in df_out.columns and bow_tws not in df_out.columns:
+        df_out[bow_tws] = df_out[tws_cor].values
+    if 'Twa_cor_deg' in df_out.columns and 'Twa_bow_cor_deg' not in df_out.columns:
+        df_out['Twa_bow_cor_deg'] = df_out['Twa_cor_deg'].values
+    if 'Twd_cor_deg' in df_out.columns and 'Twd_bow_cor_deg' not in df_out.columns:
+        df_out['Twd_bow_cor_deg'] = df_out['Twd_cor_deg'].values
+    return df_out
 
-
-def _bsp_series_for_unit(df: pd.DataFrame, speed_unit: str):
-    u = _norm_speed_unit(speed_unit)
-    col = f'Bsp_{u}'
-    other_u = 'kts' if u == 'kph' else 'kph'
-    other_col = f'Bsp_{other_u}'
-    if col in df.columns:
-        return pd.to_numeric(df[col], errors='coerce').to_numpy(dtype=np.float64)
-    if other_col in df.columns:
-        v = pd.to_numeric(df[other_col], errors='coerce').to_numpy(dtype=np.float64)
-        return convert_speed_array(v, other_u, u)
-    return None
-
-
-def _bsp_values_as_kph_for_vmg(df: pd.DataFrame):
-    """Prefer Bsp_kph for VMG / target % columns (chart contract)."""
-    if 'Bsp_kph' in df.columns:
-        return pd.to_numeric(df['Bsp_kph'], errors='coerce').to_numpy(dtype=np.float64)
-    if 'Bsp_kts' in df.columns:
-        v = pd.to_numeric(df['Bsp_kts'], errors='coerce').to_numpy(dtype=np.float64)
-        return convert_speed_array(v, 'kts', 'kph')
-    return None
+def _bsp_values_as_kts_for_vmg(df: pd.DataFrame):
+    """BSP in knots for VMG and Bsp %."""
+    if 'Bsp_kts' not in df.columns:
+        return None
+    return pd.to_numeric(df['Bsp_kts'], errors='coerce').to_numpy(dtype=np.float64)
 
 # Exponential filter alpha for TWS/TWD smoothing - matches normalization's smoothing.
 SMOOTH_SECONDS = 10  # Same as 1_normalization_influx.py
@@ -149,7 +210,6 @@ def _reindex_fill_numeric_columns(df_idx: pd.DataFrame) -> None:
         elif (
             col.endswith('_deg')
             or col.startswith('Awa_offset__')
-            or col.endswith('_cor_kph')
             or col.endswith('_cor_kts')
         ):
             df_idx[col] = s.ffill().bfill()
@@ -157,27 +217,9 @@ def _reindex_fill_numeric_columns(df_idx: pd.DataFrame) -> None:
             df_idx[col] = s.interpolate(method='linear', limit_direction='both')
 
 
-# Channels needed for fallback (uncorrected data as _cor when pipeline fails).
-FALLBACK_CHANNELS = [
-    {'name': 'ts', 'type': 'float'},
-    {'name': 'Tws_kts', 'type': 'float'},
-    {'name': 'Twd_deg', 'type': 'angle360'},
-    {'name': 'Twa_deg', 'type': 'angle180'},
-    {'name': 'Awa_deg', 'type': 'angle180'},
-    {'name': 'Aws_kph', 'type': 'float'},
-    {'name': 'Lwy_deg', 'type': 'float'},
-    {'name': 'Hdg_deg', 'type': 'angle360'},
-    {'name': 'Bsp_kts', 'type': 'float'},
-    {'name': 'Twa_bow_deg', 'type': 'angle180'},
-    {'name': 'Twa_mhu_deg', 'type': 'angle180'},
-    {'name': 'Twd_bow_deg', 'type': 'angle360'},
-    {'name': 'Twd_mhu_deg', 'type': 'angle360'},
-]
-
-TARGET_CHANNELS = [
-    {'name': 'Bsp_kph', 'type': 'float'},
-    {'name': 'Bsp_tgt_kph', 'type': 'float'},
-    {'name': 'Vmg_tgt_kph', 'type': 'float'},
+# Target speed from AC40 (knots); merged as Bsp_tgt_kts for VMG / Bsp % helpers.
+TARGET_FETCH_CHANNELS = [
+    {'name': 'AC40_Tgt_Speed_kts', 'type': 'float'},
 ]
 
 
@@ -201,9 +243,9 @@ def get_processed_data_ts_range(class_name, project_id, date, source_name):
         return None, None, None
 
 
-def get_canonical_ts_for_fusion(class_name, project_id, date, source_name):
+def get_canonical_ts_for_corrections(class_name, project_id, date, source_name):
     """
-    Timestamp grid for fusion output: prefer processed_data_racesight.parquet (100ms norm stream);
+    Timestamp grid for corrections output: prefer processed_data_racesight.parquet (100ms norm stream);
     if missing, try Influx tier parquets (legacy influx_data.parquet or influx_data_*hz) for reindex.
     """
     proc_min, proc_max, proc_ts = get_processed_data_ts_range(class_name, project_id, date, source_name)
@@ -237,32 +279,25 @@ def get_canonical_ts_for_fusion(class_name, project_id, date, source_name):
         return None, None, None
 
 
-def _recompute_primary_true_wind_on_output_grid(df_out, df_final, speed_unit='kph'):
+def _recompute_primary_true_wind_on_output_grid(df_out, df_final, speed_unit='kts'):
     """
-    After reindex to processed ts: recompute fused true wind from corrected AWA/AWS/leeway and
-    boat state merged from df_final (Bsp in ``speed_unit``). Requires Hdg_deg on df_out (before add_cse_cwa).
+    After reindex to processed ts: recompute true wind from corrected AWA/AWS/leeway and
+    boat state merged from df_final (Bsp in knots). Requires Hdg_deg on df_out (before add_cse_cwa).
     """
     if df_out is None or len(df_out) == 0 or 'ts' not in df_out.columns:
         return df_out
-    u = _norm_speed_unit(speed_unit)
-    aws_cor = f'Aws_cor_{u}'
-    tws_cor = f'Tws_cor_{u}'
+    spd = _norm_speed_unit(speed_unit)
+    aws_cor = f'Aws_cor_{spd}'
+    tws_cor = f'Tws_cor_{spd}'
     need = ('Awa_cor_deg', aws_cor, 'Lwy_cor_deg', 'Hdg_deg')
     if not all(c in df_out.columns for c in need):
         return df_out
-    bsp_col = f'Bsp_{u}'
-    other_u = 'kts' if u == 'kph' else 'kph'
-    other_col = f'Bsp_{other_u}'
-    if bsp_col in df_final.columns:
-        bsp_src = df_final[['ts', bsp_col]].copy()
-    elif other_col in df_final.columns:
-        bsp_src = df_final[['ts', other_col]].copy()
-        bsp_src[bsp_col] = convert_speed_series(bsp_src[other_col], other_u, u)
-        bsp_src = bsp_src[['ts', bsp_col]]
-    else:
+    bsp_col = f'Bsp_{spd}'
+    if bsp_col not in df_final.columns:
         u.log(api_token, "3_corrections.py", "warning", "pipeline",
-              "Skipping full-grid TW recompute: no Bsp_kph/Bsp_kts in fusion dataframe")
+              "Skipping full-grid TW recompute: no Bsp_kts in corrections dataframe")
         return df_out
+    bsp_src = df_final[['ts', bsp_col]].copy()
     bsp_src['ts'] = pd.to_numeric(bsp_src['ts'], errors='coerce').round(3)
     bsp_src = bsp_src.drop_duplicates(subset=['ts'], keep='last')
     out_ts = pd.to_numeric(df_out['ts'], errors='coerce').round(3)
@@ -289,7 +324,7 @@ def _recompute_primary_true_wind_on_output_grid(df_out, df_final, speed_unit='kp
 
 def _merge_calibrated_lwy_hdg_from_final(df_out, df_final):
     """
-    Map fusion-time calibrated Lwy and heading onto df_out.ts (canonical grid), same idea as
+    Map calibrated Lwy and heading onto df_out.ts (canonical grid), same idea as
     merging Bsp for TW: avoids relying on reindex fill alone when API vs parquet timestamps differ.
     Writes Lwy_cor_deg from df_final['Lwy_deg'] (already offset-corrected in the pipeline).
     """
@@ -322,7 +357,7 @@ def _merge_calibrated_lwy_hdg_from_final(df_out, df_final):
     return df_out
 
 
-def _finalize_fusion_geometry(df_out):
+def _finalize_corrections_geometry(df_out):
     """
     After full-grid TW recompute: smooth TWS/TWD (and recorded AWA offset), then derive
     Lwy_n_cor_deg, Cse_cor_deg, Cwa_cor_deg, Cwa_n_cor_deg and normalized _cor angles on the same grid.
@@ -342,9 +377,9 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
                             model_update_interval_sec=30 * 60, min_samples_per_model=100,
                             speed_unit=None):
     """
-    Run multi-sensor fusion calibration (performance-model AWA).
+    Run bow-wand single-sensor calibration (performance-model AWA), no multi-sensor fusion.
     Returns DataFrame on the canonical ts grid (when available) with _cor channels, offsets,
-    recomputed primary true wind, and leeway/course geometry columns (Lwy_cor_deg, Lwy_n_cor_deg,
+    recomputed true wind, and leeway/course geometry columns (Lwy_cor_deg, Lwy_n_cor_deg,
     Cse_cor_deg, Cwa_cor_deg, Cwa_n_cor_deg, Awa_n_cor_deg, Twa_n_cor_deg, Lwy_n_deg) after EMA.
 
     Args:
@@ -352,20 +387,18 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
         step_sec: Grid step in seconds
         model_update_interval_sec: Interval (seconds) between model retraining
         min_samples_per_model: Minimum samples per model for training
-        speed_unit: ``None`` / ``'auto'`` infer from channel suffixes; ``'kph'`` / ``'kts'`` forces unit.
+        speed_unit: Deprecated for AC40; calibration and outputs always use knots.
     """
-    from utilities.cal_utils import CalibrationConfig, calibrate_and_fuse_pipeline
+    from utilities.cal_utils import CalibrationConfig, calibrate_single_sensor_pipeline
 
     date_str = str(date).replace('-', '').replace('/', '')
 
-    su_cfg = None
-    if speed_unit in ('kph', 'kts'):
-        su_cfg = speed_unit
-    elif speed_unit not in (None, 'auto'):
+    if speed_unit not in (None, 'auto', 'kts'):
         u.log(api_token, "3_corrections.py", "warning", "parameters",
-              f"Invalid speed_unit {speed_unit!r}; using auto (infer from channels).")
+              f"speed_unit {speed_unit!r} ignored; AC40 corrections use knots only.")
+    su_cfg = AC40_SPEED_UNIT
 
-    proc_min, proc_max, proc_ts = get_canonical_ts_for_fusion(class_name, project_id, date, source_name)
+    proc_min, proc_max, proc_ts = get_canonical_ts_for_corrections(class_name, project_id, date, source_name)
     if proc_min is not None and proc_max is not None:
         cfg_start = proc_min
         cfg_end = proc_max
@@ -387,39 +420,23 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
         start_ts=cfg_start,
         end_ts=cfg_end,
         speed_unit=su_cfg,
+        channel_list=AC40_CALIBRATION_CHANNELS,
+        column_rename=AC40_COLUMN_RENAME,
+        perf_model_feature_extras=AC40_PERF_MODEL_EXTRA_FEATURES,
+        apply_ac40_foil_derived_channels=True,
+        leeway_model_features=AC40_LEEWAY_MODEL_FEATURES,
     )
 
-    for awa_sensors, aws_sensors in [
-        (DEFAULT_AWA_SENSORS, DEFAULT_AWS_SENSORS),
-        (FALLBACK_AWA_SENSORS, FALLBACK_AWS_SENSORS),
-    ]:
-        try:
-            results = calibrate_and_fuse_pipeline(
-                config=config,
-                awa_sensors=awa_sensors,
-                aws_sensors=aws_sensors,
-                lwy_sensor=LEEWAY_SENSOR,
-                fusion_method=FUSION_METHOD,
-                outlier_threshold=OUTLIER_THRESHOLD,
-                window_sec=window_sec,
-                step_sec=step_sec,
-                model_update_interval_sec=model_update_interval_sec,
-                min_samples_per_model=min_samples_per_model,
-            )
-            break
-        except ValueError as e:
-            err_msg = str(e)
-            if "No sensors successfully calibrated" in err_msg or "none of the requested sensors" in err_msg.lower():
-                continue
-            raise
-        except Exception as e:
-            if "not found in DataFrame" in str(e) or "None of the requested sensors" in str(e):
-                continue
-            raise
-    else:
-        u.log(api_token, "3_corrections.py", "error", "pipeline",
-              "No sensors successfully calibrated (tried multi and single-sensor)")
-        raise ValueError("No sensors successfully calibrated")
+    results = calibrate_single_sensor_pipeline(
+        config=config,
+        awa_sensor=BOW_AWA_SENSOR,
+        aws_sensor=BOW_AWS_SENSOR,
+        lwy_sensor=LEEWAY_SENSOR,
+        window_sec=window_sec,
+        step_sec=step_sec,
+        model_update_interval_sec=model_update_interval_sec,
+        min_samples_per_model=min_samples_per_model,
+    )
 
     df_final = results['data']
 
@@ -428,7 +445,7 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
         n_f = len(df_final)
         if n_grid != n_f:
             msg = (
-                f"Fusion pipeline row count {n_f} != canonical ts grid {n_grid} "
+                f"Corrections pipeline row count {n_f} != canonical ts grid {n_grid} "
                 f"(processed_data or influx_data parquet); reindex will align output."
             )
             u.log(api_token, "3_corrections.py", "warning", "pipeline", msg)
@@ -438,23 +455,19 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
     df_out = df_final[['ts']].copy()
     multi_results = results['multi_sensor_results']
     best_tr = multi_results['recommended_sensors'][0]
-    fuse_unit = _norm_speed_unit(
-        multi_results['sensor_calibrations'][best_tr]['calibration'].get('speed_unit', 'kph')
-    )
-    fused_to_cor = _fused_to_cor_map(fuse_unit)
+    fuse_unit = AC40_SPEED_UNIT
+    tw_aw_to_cor = _calibration_wind_output_to_cor_map(fuse_unit)
     aws_cor = f'Aws_cor_{fuse_unit}'
     tws_cor = f'Tws_cor_{fuse_unit}'
-    fused_keys_vals = set(fused_to_cor.keys()) | set(fused_to_cor.values())
-    # Carry Grade (and race metadata) into fusion parquet so _cor channels align with Grade on the
-    # same row when charts query fusion alone or when DuckDB merge keys differ slightly from processed_data.
+    tw_aw_mapped_names = set(tw_aw_to_cor.keys()) | set(tw_aw_to_cor.values())
+    # Carry Grade (and race metadata) into corrections parquet so _cor channels align with Grade.
     for _meta in ('Grade', 'Race_number', 'Leg_number'):
         if _meta in df_final.columns and _meta not in df_out.columns:
             df_out[_meta] = df_final[_meta].values
-    for fused_col, cor_col in fused_to_cor.items():
-        if fused_col in df_final.columns:
-            df_out[cor_col] = df_final[fused_col].values
-    # Fusion is often NaN on Grade < 2 when a sensor drops out; offsets still apply to best_sensor
-    # / Aws — use calibrated singles so _cor channels stay continuous after offset propagation.
+    for src_col, cor_col in tw_aw_to_cor.items():
+        if src_col in df_final.columns:
+            df_out[cor_col] = df_final[src_col].values
+    # Low-grade rows: fill from calibrated apparent-wind path where pipeline wind columns are NaN.
     if 'Awa_cor_deg' in df_out.columns and 'Awa_deg' in df_final.columns:
         fus = pd.to_numeric(df_out['Awa_cor_deg'], errors='coerce')
         fb = pd.to_numeric(df_final['Awa_deg'], errors='coerce')
@@ -483,12 +496,6 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
         tws_src = f'Tws_{fuse_unit}'
         if tws_src in df_final.columns:
             df_out[tws_cor] = pd.to_numeric(df_final[tws_src], errors='coerce').to_numpy(dtype=np.float64, copy=True)
-        elif fuse_unit == 'kph' and 'Tws_kts' in df_final.columns:
-            v = pd.to_numeric(df_final['Tws_kts'], errors='coerce').to_numpy(dtype=np.float64, copy=True)
-            df_out[tws_cor] = convert_speed_array(v, 'kts', 'kph')
-        elif fuse_unit == 'kts' and 'Tws_kph' in df_final.columns:
-            v = pd.to_numeric(df_final['Tws_kph'], errors='coerce').to_numpy(dtype=np.float64, copy=True)
-            df_out[tws_cor] = convert_speed_array(v, 'kph', 'kts')
         else:
             df_out[tws_cor] = np.zeros(n)
     if 'Twa_cor_deg' not in df_out.columns:
@@ -499,10 +506,6 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
         raw_aws = f'Aws_{fuse_unit}'
         if raw_aws in df_final.columns:
             df_out[aws_cor] = df_final[raw_aws].values
-        elif fuse_unit == 'kph' and 'Aws_kph' in df_final.columns:
-            df_out[aws_cor] = df_final['Aws_kph'].values
-        elif fuse_unit == 'kts' and 'Aws_kts' in df_final.columns:
-            df_out[aws_cor] = df_final['Aws_kts'].values
         else:
             df_out[aws_cor] = np.zeros(n)
     if 'Lwy_cor_deg' not in df_out.columns:
@@ -527,36 +530,16 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
         if sensor in df_final.columns:
             if sensor.endswith('_deg'):
                 df_out[_sensor_name_to_cor_column(sensor)] = df_final[sensor].values
-            elif sensor.endswith('_kph') or sensor.endswith('_kts'):
+            elif sensor.endswith('_kts'):
                 df_out[_sensor_name_to_cor_column(sensor)] = df_final[sensor].values
     for col in df_final.columns:
         if col in df_out.columns:
             continue
-        if ('bow' in col or 'mhu' in col) and col not in fused_keys_vals:
+        if 'bow' in col and col not in tw_aw_mapped_names:
             if col.endswith('_deg'):
                 df_out[_sensor_name_to_cor_column(col)] = df_final[col].values
-            elif col.endswith('_kph') or col.endswith('_kts'):
+            elif col.endswith('_kts'):
                 df_out[_sensor_name_to_cor_column(col)] = df_final[col].values
-
-    stw = _bsp_series_for_unit(df_final, fuse_unit)
-    required_for_tw = ['Hdg_deg', 'Lwy_deg']
-    if stw is not None and all(c in df_final.columns for c in required_for_tw):
-        from utilities.wind_utils import computeTrueWind_vectorized
-        hdg = df_final['Hdg_deg'].values
-        lwy = df_final['Lwy_deg'].values
-        for awa_col, aws_col in _bow_mhu_aws_pairs(fuse_unit):
-            if awa_col in df_final.columns and aws_col in df_final.columns:
-                tws, twa, twd = computeTrueWind_vectorized(
-                    aws=df_final[aws_col].values,
-                    awa=df_final[awa_col].values,
-                    stw=stw,
-                    hdg=hdg,
-                    lwy=lwy
-                )
-                suffix = 'bow' if 'bow' in awa_col else 'mhu'
-                df_out[f'Tws_{suffix}_cor_{fuse_unit}'] = tws
-                df_out[f'Twa_{suffix}_cor_deg'] = twa
-                df_out[f'Twd_{suffix}_cor_deg'] = twd
 
     if 'ts' in df_out.columns and len(df_out) > 0:
         ts = df_out['ts']
@@ -578,11 +561,11 @@ def run_corrections_pipeline(class_name, project_id, date, source_name,
         # for Grade 0/1 rows with absent sensors so the recompute has valid inputs.
         _reindex_fill_numeric_columns(df_out)
         df_out = _recompute_primary_true_wind_on_output_grid(df_out, df_final, fuse_unit)
-        # Fill after recompute: any rows still NaN (both sensors genuinely absent)
-        # inherit the nearest-in-time corrected values (ffill/bfill) so ALL grades
+        # Fill after recompute: any rows still NaN inherit ffill/bfill so ALL grades
         # have valid _cor channels before derived geometry columns are computed.
         _reindex_fill_numeric_columns(df_out)
-        df_out = _finalize_fusion_geometry(df_out)
+        df_out = _finalize_corrections_geometry(df_out)
+        _alias_bow_cor_columns(df_out, fuse_unit, aws_cor, tws_cor)
 
     return df_out, results
 
@@ -655,7 +638,7 @@ def add_normalized_cor_columns(df_out):
 
 def add_normalized_pre_leeway_from_offsets(df_out):
     """
-    Lwy_n_deg on the fusion output grid: normalized corrected leeway minus propagated offset.
+    Lwy_n_deg on the corrections output grid: normalized corrected leeway minus propagated offset.
     Matches apply_lwy_calibration_using_offsets (avoids merged processed_data linear artifacts for Grade < 2).
     """
     if df_out is None or len(df_out) == 0:
@@ -674,10 +657,7 @@ def apply_exponential_filter_tws_twd(df_out, alpha=EMA_ALPHA):
         return df_out
     if alpha is None or alpha <= 0 or alpha > 1:
         return df_out
-    tws_cols = [
-        c for c in df_out.columns
-        if c.startswith('Tws_') and (c.endswith('_cor_kph') or c.endswith('_cor_kts'))
-    ]
+    tws_cols = [c for c in df_out.columns if c.startswith('Tws_') and c.endswith('_cor_kts')]
     twd_cols = [c for c in df_out.columns if c.startswith('Twd_') and c.endswith('_cor_deg')]
     for col in tws_cols:
         vals = df_out[col].values.astype(float)
@@ -715,82 +695,73 @@ def apply_exponential_filter_awa_offset(df_out, alpha=EMA_ALPHA):
 
 def load_and_merge_target_channels(df_out, class_name, project_id, date, source_name,
                                    start_ts=None, end_ts=None):
-    """Fetch Bsp_tgt_kph, Vmg_tgt_kph and merge into df_out by ts."""
+    """Fetch AC40_Tgt_Speed_kts and merge as Bsp_tgt_kts (knots)."""
     if df_out is None or len(df_out) == 0:
         return df_out
     try:
         df_tgt = u.get_channel_values(
             api_token, class_name, project_id, date, source_name,
-            TARGET_CHANNELS, '100ms', start_ts, end_ts, 'UTC'
+            TARGET_FETCH_CHANNELS, '100ms', start_ts, end_ts, 'UTC'
         )
         if df_tgt is None or len(df_tgt) == 0:
             return df_out
-        if 'Bsp_tgt_kph' not in df_tgt.columns and 'Vmg_tgt_kph' not in df_tgt.columns:
+        df_tgt = df_tgt.rename(columns={'AC40_Tgt_Speed_kts': 'Bsp_tgt_kts'})
+        if 'Bsp_tgt_kts' not in df_tgt.columns:
             return df_out
+        df_tgt = df_tgt.copy()
         ts_tgt = df_tgt['ts'].dropna()
         if len(ts_tgt) > 0 and ts_tgt.max() > 1e12:
-            df_tgt = df_tgt.copy()
             df_tgt['ts'] = (df_tgt['ts'] / 1000.0).round(3)
         else:
-            df_tgt = df_tgt.copy()
             df_tgt['ts'] = df_tgt['ts'].round(3)
-        merge_cols = [c for c in ['Bsp_kph', 'Bsp_tgt_kph', 'Vmg_tgt_kph'] if c in df_tgt.columns]
-        df_out = df_out.merge(df_tgt[['ts'] + merge_cols], on='ts', how='left')
+        df_out = df_out.merge(df_tgt[['ts', 'Bsp_tgt_kts']], on='ts', how='left')
     except Exception:
         pass
     return df_out
 
 
 def add_target_corrections(df, update_tgt=False):
-    """Output Bsp_tgt_cor_*, Vmg_tgt_cor_* from target channels."""
+    """Output Bsp_tgt_cor_kts, Vmg_tgt_cor_kts from target channels (knots)."""
     if df is None or len(df) == 0:
         return df
-    if 'Bsp_tgt_kph' in df.columns:
-        if update_tgt:
-            df['Bsp_tgt_cor_kph'] = np.abs(df['Bsp_tgt_kph'].values * KPH_TO_KTS)
-        else:
-            df['Bsp_tgt_cor_kph'] = np.abs(df['Bsp_tgt_kph'].values)
-        df['Bsp_tgt_cor_kts'] = np.abs(df['Bsp_tgt_cor_kph'].values * KPH_TO_KTS)
-    if 'Vmg_tgt_kph' in df.columns:
-        if update_tgt:
-            df['Vmg_tgt_cor_kph'] = np.abs(df['Vmg_tgt_kph'].values * KPH_TO_KTS)
-        else:
-            df['Vmg_tgt_cor_kph'] = np.abs(df['Vmg_tgt_kph'].values)
-        df['Vmg_tgt_cor_kts'] = np.abs(df['Vmg_tgt_cor_kph'].values * KPH_TO_KTS)
+    if 'Bsp_tgt_kts' in df.columns:
+        df['Bsp_tgt_cor_kts'] = np.abs(pd.to_numeric(df['Bsp_tgt_kts'], errors='coerce').to_numpy(dtype=np.float64))
+    if 'Vmg_tgt_kts' in df.columns:
+        df['Vmg_tgt_cor_kts'] = np.abs(pd.to_numeric(df['Vmg_tgt_kts'], errors='coerce').to_numpy(dtype=np.float64))
     return df
 
 
 def add_vmg_bsp_perc_columns(df):
-    """Compute Vmg_cor_kph, Vmg_cor_perc, Bsp_cor_perc."""
+    """Compute Vmg_cor_kts, Vmg_cor_perc, Bsp_cor_perc (knots)."""
     if df is None or len(df) == 0:
         return df
-    bsp_kph = _bsp_values_as_kph_for_vmg(df)
-    if bsp_kph is not None and 'Cwa_cor_deg' in df.columns:
+    bsp_kts = _bsp_values_as_kts_for_vmg(df)
+    if bsp_kts is not None and 'Cwa_cor_deg' in df.columns:
         cwa = np.radians(pd.to_numeric(df['Cwa_cor_deg'], errors='coerce').to_numpy(dtype=np.float64))
-        df['Vmg_cor_kph'] = np.abs(bsp_kph * np.cos(cwa))
-        df['Vmg_cor_kts'] = np.abs(convert_speed_array(bsp_kph, 'kph', 'kts') * np.cos(cwa))
-    if 'Vmg_cor_kph' in df.columns and 'Vmg_tgt_cor_kph' in df.columns:
-        tgt = df['Vmg_tgt_cor_kph'].values
-        df['Vmg_cor_perc'] = np.where(tgt != 0, (df['Vmg_cor_kph'].values / tgt) * 100, 0)
+        df['Vmg_cor_kts'] = np.abs(bsp_kts * np.cos(cwa))
+    if 'Vmg_cor_kts' in df.columns and 'Vmg_tgt_cor_kts' in df.columns:
+        tgt = df['Vmg_tgt_cor_kts'].values
+        df['Vmg_cor_perc'] = np.where(tgt != 0, (df['Vmg_cor_kts'].values / tgt) * 100, 0)
         df['Vmg_cor_perc'] = df['Vmg_cor_perc'].clip(lower=0, upper=150)
-    if bsp_kph is not None and 'Bsp_tgt_cor_kph' in df.columns:
-        tgt = df['Bsp_tgt_cor_kph'].values
-        df['Bsp_cor_perc'] = np.where(tgt != 0, (bsp_kph / tgt) * 100, 0)
+    if bsp_kts is not None and 'Bsp_tgt_cor_kts' in df.columns:
+        tgt = df['Bsp_tgt_cor_kts'].values
+        df['Bsp_cor_perc'] = np.where(tgt != 0, (bsp_kts / tgt) * 100, 0)
         df['Bsp_cor_perc'] = df['Bsp_cor_perc'].clip(lower=0, upper=150)
     return df
 
 
 def get_fallback_corrections_data(class_name, project_id, date, source_name,
                                   start_ts=None, end_ts=None):
-    """Load uncorrected wind data and return DataFrame with _cor column names (no Awa_offset_deg)."""
+    """Load uncorrected AC40 channels and return DataFrame with _cor column names (no Awa_offset_deg)."""
     df = pd.DataFrame()
     try:
         dfi = u.get_channel_values(
             api_token, class_name, project_id, date, source_name,
-            FALLBACK_CHANNELS, '100ms', start_ts, end_ts, 'UTC'
+            AC40_CALIBRATION_CHANNELS, '100ms', start_ts, end_ts, 'UTC'
         )
         if dfi is None or len(dfi) == 0:
             return df
+        dfi = dfi.rename(columns=AC40_COLUMN_RENAME)
         if dfi['ts'].dtype == 'Float64':
             dfi['ts'] = dfi['ts'].astype('float64')
         ts_sample = dfi['ts'].dropna()
@@ -804,10 +775,11 @@ def get_fallback_corrections_data(class_name, project_id, date, source_name,
         df_out['ts'] = dfi['ts'].values
         n = len(df_out)
         if 'Tws_kts' in dfi.columns:
-            v = pd.to_numeric(dfi['Tws_kts'], errors='coerce').to_numpy(dtype=np.float64, copy=True)
-            df_out['Tws_cor_kph'] = convert_speed_array(v, 'kts', 'kph')
+            df_out['Tws_cor_kts'] = pd.to_numeric(dfi['Tws_kts'], errors='coerce').to_numpy(
+                dtype=np.float64, copy=True
+            )
         else:
-            df_out['Tws_cor_kph'] = np.zeros(n)
+            df_out['Tws_cor_kts'] = np.zeros(n)
         if 'Twd_deg' in dfi.columns:
             df_out['Twd_cor_deg'] = dfi['Twd_deg'].values
         elif 'Hdg_deg' in dfi.columns and 'Twa_deg' in dfi.columns:
@@ -818,15 +790,29 @@ def get_fallback_corrections_data(class_name, project_id, date, source_name,
         else:
             df_out['Twd_cor_deg'] = np.zeros(n)
         df_out['Twa_cor_deg'] = dfi['Twa_deg'].values if 'Twa_deg' in dfi.columns else np.zeros(n)
-        df_out['Awa_cor_deg'] = dfi['Awa_deg'].values if 'Awa_deg' in dfi.columns else np.zeros(n)
-        df_out['Aws_cor_kph'] = dfi['Aws_kph'].values if 'Aws_kph' in dfi.columns else np.zeros(n)
+        if 'Awa_deg' in dfi.columns:
+            df_out['Awa_cor_deg'] = dfi['Awa_deg'].values
+        elif 'Awa_bow_deg' in dfi.columns:
+            df_out['Awa_cor_deg'] = dfi['Awa_bow_deg'].values
+        else:
+            df_out['Awa_cor_deg'] = np.zeros(n)
+        if 'Aws_bow_kts' in dfi.columns:
+            df_out['Aws_cor_kts'] = pd.to_numeric(dfi['Aws_bow_kts'], errors='coerce').to_numpy(
+                dtype=np.float64, copy=True
+            )
+        else:
+            df_out['Aws_cor_kts'] = np.zeros(n)
         df_out['Lwy_cor_deg'] = dfi['Lwy_deg'].values if 'Lwy_deg' in dfi.columns else np.zeros(n)
         if 'Hdg_deg' in dfi.columns:
             df_out['Hdg_deg'] = dfi['Hdg_deg'].values
-        for raw, cor in [('Twa_bow_deg', 'Twa_bow_cor_deg'), ('Twa_mhu_deg', 'Twa_mhu_cor_deg'),
-                         ('Twd_bow_deg', 'Twd_bow_cor_deg'), ('Twd_mhu_deg', 'Twd_mhu_cor_deg')]:
-            if raw in dfi.columns:
-                df_out[cor] = dfi[raw].values
+        if 'Twa_cor_deg' in df_out.columns:
+            df_out['Twa_bow_cor_deg'] = df_out['Twa_cor_deg'].values
+        if 'Twd_cor_deg' in df_out.columns:
+            df_out['Twd_bow_cor_deg'] = df_out['Twd_cor_deg'].values
+        if 'Tws_cor_kts' in df_out.columns:
+            df_out['Tws_bow_cor_kts'] = df_out['Tws_cor_kts'].values
+        if 'Aws_cor_kts' in df_out.columns:
+            df_out['Aws_bow_cor_kts'] = df_out['Aws_cor_kts'].values
         return df_out
     except Exception as e:
         u.log(api_token, "3_corrections.py", "error", "fallback", f"get_fallback_corrections_data: {e}")
@@ -834,23 +820,22 @@ def get_fallback_corrections_data(class_name, project_id, date, source_name,
 
 
 PARQUET_EXCLUDE_COLUMNS = [
-    'Tws_kts', 'Twd_deg', 'Twa_deg', 'Awa_deg', 'Aws_kph', 'Lwy_deg', 'Hdg_deg', 'Bsp_kts',
-    'Bsp_kph', 'Bsp_tgt_kph', 'Vmg_tgt_kph',
+    'Tws_kts', 'Twd_deg', 'Twa_deg', 'Awa_deg', 'Awa_bow_deg', 'Aws_bow_kts',
+    'Lwy_deg', 'Hdg_deg', 'Bsp_kts', 'Bsp_tgt_kts',
 ]
 
 PARQUET_DATA_ORDER = [
     'ts', 'Datetime', 'Grade', 'Race_number', 'Leg_number',
-    'Awa_n_fused_deg', 'Awa_fused_pre_deg', 'Aws_fused_norm_kph', 'Aws_fused_norm_kts',
+    'Awa_n_fused_deg', 'Awa_fused_pre_deg', 'Aws_fused_norm_kts',
     'Awa_cor_deg', 'Awa_offset_deg', 'Lwy_offset_norm_deg', 'Lwy_offset_deg',
-    'Aws_cor_kph', 'Aws_cor_kts', 'Tws_cor_kph', 'Tws_cor_kts', 'Twa_cor_deg', 'Twd_cor_deg',
-    'Tws_bow_cor_kph', 'Tws_mhu_cor_kph', 'Tws_bow_cor_kts', 'Tws_mhu_cor_kts',
+    'Aws_cor_kts', 'Tws_cor_kts', 'Twa_cor_deg', 'Twd_cor_deg',
+    'Tws_bow_cor_kts', 'Tws_mhu_cor_kts',
     'Twa_bow_cor_deg', 'Twa_mhu_cor_deg', 'Twd_bow_cor_deg', 'Twd_mhu_cor_deg',
     'Lwy_cor_deg', 'Lwy_n_deg', 'Lwy_n_cor_deg', 'Cse_cor_deg', 'Cwa_cor_deg', 'Cwa_n_cor_deg',
     'Awa_n_cor_deg', 'Twa_n_cor_deg',
-    'Awa_bow_cor_deg', 'Awa_mhu_cor_deg', 'Aws_bow_cor_kph', 'Aws_mhu_cor_kph',
-    'Aws_bow_cor_kts', 'Aws_mhu_cor_kts',
-    'Bsp_tgt_cor_kph', 'Bsp_tgt_cor_kts', 'Vmg_tgt_cor_kph', 'Vmg_tgt_cor_kts',
-    'Vmg_cor_kph', 'Vmg_cor_kts', 'Vmg_cor_perc', 'Bsp_cor_perc',
+    'Awa_bow_cor_deg', 'Awa_mhu_cor_deg', 'Aws_bow_cor_kts', 'Aws_mhu_cor_kts',
+    'Bsp_tgt_cor_kts', 'Vmg_tgt_cor_kts',
+    'Vmg_cor_kts', 'Vmg_cor_perc', 'Bsp_cor_perc',
 ]
 
 
@@ -864,7 +849,7 @@ def _reorder_parquet_columns(df_out):
 
 def save_corrections_parquet(df_out, class_name, project_id, date, source_name):
     """
-    Write fusion_corrections_racesight.parquet via a same-directory temp file + os.replace.
+    Write fusion_corrections_racesight.parquet (corrected channels) via temp file + os.replace.
 
     In-place overwrite can fail or appear stale on Windows when the file server (DuckDB)
     still has the old parquet open; deleting first also risks a window with no file.
@@ -945,7 +930,7 @@ if __name__ == "__main__":
         min_samples_per_model = parameters_json.get('min_samples_per_model', 100)
         speed_unit = parameters_json.get('speed_unit')
 
-        print("Starting fusion corrections (performance-model AWA)...", flush=True)
+        print("Starting corrections (bow-wand AWA calibration)...", flush=True)
 
         if not all([class_name, project_id, date, source_name]):
             u.log(api_token, "3_corrections.py", "error", "args",
@@ -979,8 +964,8 @@ if __name__ == "__main__":
             if df_out is None or len(df_out) == 0:
                 raise ValueError("Pipeline returned no data")
         except Exception as pipeline_error:
-            u.log(api_token, "3_corrections.py", "error", "pipeline", f"Fusion pipeline failed: {pipeline_error}")
-            proc_min, proc_max, proc_ts = get_canonical_ts_for_fusion(class_name, project_id, date, source_name)
+            u.log(api_token, "3_corrections.py", "error", "pipeline", f"Corrections pipeline failed: {pipeline_error}")
+            proc_min, proc_max, proc_ts = get_canonical_ts_for_corrections(class_name, project_id, date, source_name)
             fallback_start = proc_min if proc_min is not None else start_ts
             fallback_end = proc_max if proc_max is not None else end_ts
             df_out = get_fallback_corrections_data(
@@ -1007,7 +992,7 @@ if __name__ == "__main__":
             used_fallback = True
 
         if used_fallback:
-            df_out = _finalize_fusion_geometry(df_out)
+            df_out = _finalize_corrections_geometry(df_out)
         t_min = float(df_out['ts'].min()) if 'ts' in df_out.columns and len(df_out) > 0 else start_ts
         t_max = float(df_out['ts'].max()) if 'ts' in df_out.columns and len(df_out) > 0 else end_ts
         df_out = load_and_merge_target_channels(
