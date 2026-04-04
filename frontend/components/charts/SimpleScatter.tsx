@@ -902,8 +902,9 @@ export default function SimpleScatter(props: SimpleScatterProps) {
       return;
     }
     
-    // At this point, we MUST have enhanced data
+    // No points (e.g. missing file channels) — parent must hide loading overlay; there is no worker/render completion path
     if (!finalEnhancedResult) {
+      signalReadyOnce();
       return;
     }
     

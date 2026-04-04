@@ -246,9 +246,5 @@ def aws_fused_output_column(unit: SpeedUnit) -> str:
     return f"Aws_fused_{unit}"
 
 
-def aws_fused_norm_column(unit: SpeedUnit) -> str:
-    return f"Aws_fused_norm_{unit}"
-
-
 def tws_fused_output_column(unit: SpeedUnit) -> str:
     return f"Tws_fused_{unit}"

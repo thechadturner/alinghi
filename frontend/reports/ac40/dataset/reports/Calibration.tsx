@@ -7,18 +7,33 @@ import { apiEndpoints } from "@config/env";
 import { debug, error as logError } from "../../../../utils/console";
 import { logPageLoad } from "../../../../utils/logging";
 import Loading from "../../../../components/utilities/Loading";
-import {
-  CalAxisLabel,
-  CalParquet,
-  CAL_KNOTS_TO_METRIC_SPEED,
-  CalTableUnitToken,
-  CAL_VIOLIN_UNITS_NOTE,
-} from "./calibrationParquetKeys";
 import { unifiedDataStore } from "../../../../store/unifiedDataStore";
 import { resolveDataField } from "../../../../utils/colorScale";
 import Violin from "../../../../components/charts/Violin";
 
 const { selectedClassName, selectedProjectId, selectedDatasetId, selectedSourceId, selectedSourceName } = persistantStore;
+
+/** Parquet column names for TWS/BSP violins and AWS baseline checks (matches AC40 corrections output). */
+const CalParquet = {
+  twsKnots: "Tws_kts",
+  twsCorKnots: "Tws_cor_kts",
+  twsCorMetric: "Tws_cor_kph",
+  awsKnots: "Aws_kts",
+  awsFusedKnots: "Aws_fused_kts",
+  awsCorKnots: "Aws_cor_kts",
+  bspKnots: "Bsp_kts",
+  bspMetric: "Bsp_kph",
+} as const;
+
+const CalAxisLabel = {
+  twsKnots: "TWS (kts)",
+  twsMetric: "TWS (kph)",
+  bspKnots: "BSP (kts)",
+  bspMetric: "BSP (kph)",
+} as const;
+
+const CAL_VIOLIN_UNITS_NOTE =
+  "TWS left, BSP right. Red port / green stbd (TWA sign). Units follow parquet columns.";
 
 /** Max magnitude (deg) for offset-vs-time curves: matches backend MAX_AWA_LWY_CALIBRATION_OFFSET_DEG. */
 const CAL_OFFSET_DISPLAY_CLAMP_DEG = 5;
@@ -89,10 +104,13 @@ function smoothOffsetsByTimeSec(
   return out;
 }
 
-/** Channels for calibration parquet request; speed-related keys from `calibrationParquetKeys`. */
+/** Channels for calibration parquet request (deduped; matches corrections parquet columns). */
 const CALIBRATION_CHANNELS = [
   "ts",
   "Datetime",
+  "Awa_deg",
+  "Awa_bow_deg",
+  "Awa_cor_deg",
   "Awa_offset_deg",
   "Awa_n_deg",
   "Awa_n_fused_deg",
@@ -103,25 +121,18 @@ const CALIBRATION_CHANNELS = [
   "Lwy_n_cor_deg",
   "Lwy_offset_norm_deg",
   "Cwa_n_deg",
+  "Cwa_deg",
   "Cwa_n_cor_deg",
-  "Awa_bow_deg",
-  "Awa_bow_cor_deg",
-  "Awa_mhu_deg",
-  "Awa_mhu_cor_deg",
   "Twa_deg",
   "Twa_cor_deg",
-  CalParquet.twsKnots,
-  CalParquet.twsCorMetric,
-  CalParquet.awsMetric,
-  CalParquet.awsFusedNormMetric,
-  CalParquet.awsFusedMetric,
-  CalParquet.awsCorMetric,
-  CalParquet.bspMetric,
-  CalParquet.bspKnots,
+  "Tws_kts",
+  "Tws_cor_kts",
+  "Aws_kts",
+  "Aws_cor_kts",
+  "Bsp_kts",
+  "Aws_fused_kts",
   "Twd_deg",
   "Twd_cor_deg",
-  "Race_number",
-  "Leg_number",
 ];
 
 /** Maneuver channels for tack/gybe angle comparison. Only request Twa_entry and Twa_exit; the API always returns event_id and Datetime in the SELECT. */
@@ -135,21 +146,19 @@ interface DatasetInfo {
 
 interface BeforeAfterRow {
   channel: string;
-  sensor: string;
-  meanBefore: number;
-  meanAfter: number;
-  deltaMean: number;
-  pctDiff: number;
+  meanBefore: number | null;
+  meanAfter: number | null;
+  deltaMean: number | null;
+  pctDiff: number | null;
   count: number;
 }
 
 interface PortStbdRow {
   channel: string;
-  sensor: string;
-  portMean: number;
-  stbdMean: number;
-  diff: number;
-  pctDiff: number;
+  portMean: number | null;
+  stbdMean: number | null;
+  diff: number | null;
+  pctDiff: number | null;
   count: number;
 }
 
@@ -176,8 +185,34 @@ function getVal(d: Record<string, unknown>, key: string): number | null {
   return Number(v);
 }
 
+/** Prefer fused AWS (multi-sensor path), else raw Aws_kts (matches summary table “before” priority). */
+function awsBeforeFieldForData(data: Record<string, unknown>[]): string {
+  if (data.some((d) => getVal(d, CalParquet.awsFusedKnots) !== null)) return CalParquet.awsFusedKnots;
+  return CalParquet.awsKnots;
+}
+
+function formatCalibrationTableMean(v: number | null): string {
+  return v === null ? "—" : v.toFixed(2);
+}
+
+function formatCalibrationTablePct(v: number | null): string {
+  return v === null ? "—" : `${v.toFixed(1)}%`;
+}
+
+function calibrationDeltaCellClass(delta: number | null): string {
+  if (delta === null) return "";
+  return delta > 0 ? "calibration-delta-positive" : delta < 0 ? "calibration-delta-negative" : "";
+}
+
 function getTackFromTwa(twa: number): "port" | "stbd" {
   return twa < 0 ? "port" : "stbd";
+}
+
+/** Port/stbd coloring in violins: prefer signed instrument TWA when present (merged row). */
+function twaSignedForViolinRow(d: Record<string, unknown>, twaFilterField: string): number | null {
+  const inst = getVal(d, "Twa_deg");
+  if (inst !== null) return inst;
+  return getVal(d, twaFilterField);
 }
 
 /**
@@ -221,55 +256,43 @@ interface BeforeAfterPairConfig {
  */
 const CALIBRATION_BEFORE_AFTER_PAIRS: BeforeAfterPairConfig[] = [
   {
-    label: "BSP",
-    before: CalParquet.bspKnots,
-    after: CalParquet.bspMetric,
-    unit: CalTableUnitToken.speedMetric,
-    beforeScale: CAL_KNOTS_TO_METRIC_SPEED,
-    afterScale: 1,
+    label: "BSP", before: 'Bsp_kts', after: 'Bsp_kts', unit: "kts", beforeScale: 1, afterScale: 1
   },
   { label: "AWA", before: "Awa_n_deg", after: "Awa_n_cor_deg", unit: "°", useAbsMean: true },
-  { label: "AWS", before: CalParquet.awsMetric, after: CalParquet.awsCorMetric, unit: CalTableUnitToken.speedMetric },
+  { label: "AWS", before: "Aws_kts", after: "Aws_cor_kts", unit: "kts" },
   { label: "TWA", before: "Twa_n_deg", after: "Twa_n_cor_deg", unit: "°", useAbsMean: true },
   { label: "CWA", before: "Cwa_n_deg", after: "Cwa_n_cor_deg", unit: "°", useAbsMean: true },
   { label: "LWY", before: "Lwy_n_deg", after: "Lwy_n_cor_deg", unit: "°", useAbsMean: true },
-  {
-    label: "TWS",
-    before: CalParquet.twsKnots,
-    after: CalParquet.twsCorMetric,
-    unit: CalTableUnitToken.speedMetric,
-    beforeScale: CAL_KNOTS_TO_METRIC_SPEED,
-    afterScale: 1,
-  },
+  { label: "TWS", before: "Tws_kts", after: "Tws_cor_kts", unit: "kts", beforeScale: 1, afterScale: 1 },
   { label: "TWD", before: "Twd_deg", after: "Twd_cor_deg", unit: "°" },
 ];
 
 function findCalibrationPairForField(field: string): BeforeAfterPairConfig | undefined {
   const fromStatic = CALIBRATION_BEFORE_AFTER_PAIRS.find((p) => p.before === field || p.after === field);
   if (fromStatic) return fromStatic;
+  if (field === "Cwa_deg") {
+    return { label: "CWA", before: "Cwa_deg", after: "Cwa_n_cor_deg", unit: "°", useAbsMean: true };
+  }
   if (field === "Awa_n_fused_deg") {
     return { label: "AWA", before: "Awa_n_fused_deg", after: "Awa_n_cor_deg", unit: "°", useAbsMean: true };
   }
-  if (field === CalParquet.awsFusedNormMetric || field === CalParquet.awsFusedMetric) {
-    const before = field === CalParquet.awsFusedNormMetric ? CalParquet.awsFusedNormMetric : CalParquet.awsFusedMetric;
-    return { label: "AWS", before, after: CalParquet.awsCorMetric, unit: CalTableUnitToken.speedMetric };
+  if (field === CalParquet.awsFusedKnots) {
+    return { label: "AWS", before: CalParquet.awsFusedKnots, after: CalParquet.awsCorKnots, unit: "kts" };
   }
   return undefined;
 }
 
-function awsBeforeFieldForData(data: Record<string, unknown>[]): string {
-  if (data.some((d) => getVal(d, CalParquet.awsFusedNormMetric) !== null)) return CalParquet.awsFusedNormMetric;
-  if (data.some((d) => getVal(d, CalParquet.awsFusedMetric) !== null)) return CalParquet.awsFusedMetric;
-  return CalParquet.awsMetric;
-}
-
-/** When bow+MHU exist, use fused baseline for AWA/AWS fused rows (same recipe as pipeline). */
+/** When fused AWA/AWS columns exist, use them as the “before” baseline for fused summary rows. */
 function buildEffectiveBeforeAfterPairs(data: Record<string, unknown>[]): BeforeAfterPairConfig[] {
-  const fusedAwa = data.some((d) => getVal(d, "Awa_n_fused_deg") !== null);
   const awsBefore = awsBeforeFieldForData(data);
-  const fusedAws = awsBefore !== CalParquet.awsMetric;
+  const fusedAws = awsBefore !== CalParquet.awsKnots;
   return CALIBRATION_BEFORE_AFTER_PAIRS.map((p) => {
-    if (p.label === "AWA" && fusedAwa) return { ...p, before: "Awa_n_fused_deg" };
+    if (p.label === "AWA") {
+      const nFused = data.filter((d) => getVal(d, "Awa_n_fused_deg") !== null).length;
+      const nNorm = data.filter((d) => getVal(d, "Awa_n_deg") !== null).length;
+      if (nFused > 0 && nFused >= nNorm) return { ...p, before: "Awa_n_fused_deg" };
+      return { ...p, before: "Awa_n_deg" };
+    }
     if (p.label === "AWS" && fusedAws) return { ...p, before: awsBefore };
     return { ...p };
   });
@@ -288,7 +311,14 @@ function calibrationValueForMean(field: string, raw: number, channelIsBefore: bo
     if (p.useAbsMean) x = Math.abs(x);
     return x;
   }
-  if (/Awa_(bow|mhu)/i.test(field)) {
+  if (
+    field === "Awa_deg" ||
+    field === "Awa_cor_deg" ||
+    field === "Awa_bow_deg" ||
+    field === "Awa_bow_cor_deg" ||
+    field === "Awa_mhu_deg" ||
+    field === "Awa_mhu_cor_deg"
+  ) {
     return Math.abs(raw);
   }
   return raw;
@@ -327,7 +357,7 @@ function isCalibrationViolinGradeRow(d: Record<string, unknown>): boolean {
 export default function CalibrationPage() {
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
-  const [datasetInfo, setDatasetInfo] = createSignal<DatasetInfo | null>(null);
+  const [_datasetInfo, setDatasetInfo] = createSignal<DatasetInfo | null>(null);
   const [channelData, setChannelData] = createSignal<Record<string, unknown>[]>([]);
   const [maneuversTack, setManeuversTack] = createSignal<Record<string, unknown>[]>([]);
   const [maneuversGybe, setManeuversGybe] = createSignal<Record<string, unknown>[]>([]);
@@ -336,28 +366,67 @@ export default function CalibrationPage() {
   let resizeObserver: ResizeObserver | null = null;
 
 
+  function beforeAfterValsForField(
+    dataRows: Record<string, unknown>[],
+    field: string,
+    channelIsBefore: boolean
+  ): number[] {
+    return dataRows
+      .map((d) => getVal(d, field))
+      .filter((v): v is number => v !== null)
+      .map((v) => calibrationValueForMean(field, v, channelIsBefore));
+  }
+
   function buildBeforeAfterRows(data: Record<string, unknown>[]): BeforeAfterRow[] {
     if (!data.length) return [];
     const pairs = buildEffectiveBeforeAfterPairs(data);
     const rows: BeforeAfterRow[] = [];
-    for (const { label, before, after } of pairs) {
-      const beforeVals = data
-        .map((d) => getVal(d, before))
-        .filter((v): v is number => v !== null)
-        .map((v) => calibrationValueForMean(before, v, true));
-      const afterVals = data
-        .map((d) => getVal(d, after))
-        .filter((v): v is number => v !== null)
-        .map((v) => calibrationValueForMean(after, v, false));
+    let suppressSignedAwaRow = false;
+
+    for (const pair of pairs) {
+      let beforeField = pair.before;
+      const { label, after } = pair;
+      const afterVals = beforeAfterValsForField(data, after, false);
+      let beforeVals = beforeAfterValsForField(data, beforeField, true);
+
+      if (label === "AWA" && beforeVals.length === 0 && afterVals.length > 0) {
+        if (beforeField === "Awa_n_fused_deg") {
+          beforeField = "Awa_n_deg";
+          beforeVals = beforeAfterValsForField(data, beforeField, true);
+        }
+        if (beforeVals.length === 0 && data.some((d) => getVal(d, "Awa_deg") !== null)) {
+          beforeField = "Awa_deg";
+          beforeVals = beforeAfterValsForField(data, beforeField, true);
+        } else if (beforeVals.length === 0 && data.some((d) => getVal(d, "Awa_bow_deg") !== null)) {
+          beforeField = "Awa_bow_deg";
+          beforeVals = beforeAfterValsForField(data, beforeField, true);
+        }
+      }
+      if (label === "CWA" && beforeVals.length === 0 && afterVals.length > 0) {
+        if (data.some((d) => getVal(d, "Cwa_deg") !== null)) {
+          beforeField = "Cwa_deg";
+          beforeVals = beforeAfterValsForField(data, beforeField, true);
+        }
+      }
+      if (label === "AWA" && (beforeField === "Awa_deg" || beforeField === "Awa_bow_deg")) {
+        suppressSignedAwaRow = true;
+      }
+
       if (beforeVals.length === 0 && afterVals.length === 0) continue;
-      const meanBefore = beforeVals.length ? d3.mean(beforeVals)! : 0;
-      const meanAfter = afterVals.length ? d3.mean(afterVals)! : 0;
-      const deltaMean = meanAfter - meanBefore;
-      const ref = Math.abs(meanBefore) > 1e-6 ? meanBefore : 1;
-      const pctDiff = (100 * deltaMean) / ref;
+
+      const meanBefore = beforeVals.length ? d3.mean(beforeVals)! : null;
+      const meanAfter = afterVals.length ? d3.mean(afterVals)! : null;
+      let deltaMean: number | null = null;
+      let pctDiff: number | null = null;
+      if (meanBefore !== null && meanAfter !== null) {
+        deltaMean = meanAfter - meanBefore;
+        const ref =
+          Math.abs(meanBefore) > 1e-6 ? meanBefore : Math.abs(meanAfter) > 1e-6 ? meanAfter : 1;
+        pctDiff = (100 * deltaMean) / ref;
+      }
+
       rows.push({
         channel: label,
-        sensor: "Fused",
         meanBefore,
         meanAfter,
         deltaMean,
@@ -365,55 +434,33 @@ export default function CalibrationPage() {
         count: Math.max(beforeVals.length, afterVals.length),
       });
     }
-    if (data.some((d) => getVal(d, "Awa_bow_deg") !== null)) {
-      const bowBefore = data
-        .map((d) => getVal(d, "Awa_bow_deg"))
-        .filter((v): v is number => v !== null)
-        .map((v) => calibrationValueForMean("Awa_bow_deg", v, true));
-      const bowAfter = data
-        .map((d) => getVal(d, "Awa_bow_cor_deg"))
-        .filter((v): v is number => v !== null)
-        .map((v) => calibrationValueForMean("Awa_bow_cor_deg", v, false));
-      if (bowBefore.length || bowAfter.length) {
-        const meanBefore = bowBefore.length ? d3.mean(bowBefore)! : 0;
-        const meanAfter = bowAfter.length ? d3.mean(bowAfter)! : 0;
-        const deltaMean = meanAfter - meanBefore;
-        const ref = Math.abs(meanBefore) > 1e-6 ? meanBefore : 1;
-        const pctDiff = (100 * deltaMean) / ref;
+
+    const hasSignedAwaBefore = data.some(
+      (d) => getVal(d, "Awa_deg") !== null || getVal(d, "Awa_bow_deg") !== null
+    );
+    if (hasSignedAwaBefore && !suppressSignedAwaRow) {
+      const beforeKey = data.some((d) => getVal(d, "Awa_deg") !== null) ? "Awa_deg" : "Awa_bow_deg";
+      const afterKey = data.some((d) => getVal(d, "Awa_cor_deg") !== null) ? "Awa_cor_deg" : "Awa_bow_cor_deg";
+      const beforeVals = beforeAfterValsForField(data, beforeKey, true);
+      const afterVals = beforeAfterValsForField(data, afterKey, false);
+      if (beforeVals.length || afterVals.length) {
+        const meanBefore = beforeVals.length ? d3.mean(beforeVals)! : null;
+        const meanAfter = afterVals.length ? d3.mean(afterVals)! : null;
+        let deltaMean: number | null = null;
+        let pctDiff: number | null = null;
+        if (meanBefore !== null && meanAfter !== null) {
+          deltaMean = meanAfter - meanBefore;
+          const ref =
+            Math.abs(meanBefore) > 1e-6 ? meanBefore : Math.abs(meanAfter) > 1e-6 ? meanAfter : 1;
+          pctDiff = (100 * deltaMean) / ref;
+        }
         rows.push({
           channel: "AWA",
-          sensor: "Bow",
           meanBefore,
           meanAfter,
           deltaMean,
           pctDiff,
-          count: Math.max(bowBefore.length, bowAfter.length),
-        });
-      }
-    }
-    if (data.some((d) => getVal(d, "Awa_mhu_deg") !== null)) {
-      const mhuBefore = data
-        .map((d) => getVal(d, "Awa_mhu_deg"))
-        .filter((v): v is number => v !== null)
-        .map((v) => calibrationValueForMean("Awa_mhu_deg", v, true));
-      const mhuAfter = data
-        .map((d) => getVal(d, "Awa_mhu_cor_deg"))
-        .filter((v): v is number => v !== null)
-        .map((v) => calibrationValueForMean("Awa_mhu_cor_deg", v, false));
-      if (mhuBefore.length || mhuAfter.length) {
-        const meanBefore = mhuBefore.length ? d3.mean(mhuBefore)! : 0;
-        const meanAfter = mhuAfter.length ? d3.mean(mhuAfter)! : 0;
-        const deltaMean = meanAfter - meanBefore;
-        const ref = Math.abs(meanBefore) > 1e-6 ? meanBefore : 1;
-        const pctDiff = (100 * deltaMean) / ref;
-        rows.push({
-          channel: "AWA",
-          sensor: "MHU",
-          meanBefore,
-          meanAfter,
-          deltaMean,
-          pctDiff,
-          count: Math.max(mhuBefore.length, mhuAfter.length),
+          count: Math.max(beforeVals.length, afterVals.length),
         });
       }
     }
@@ -449,28 +496,63 @@ export default function CalibrationPage() {
     const portMask = (d: Record<string, unknown>) => getTackFromTwa(getVal(d, twaField) ?? 0) === "port";
     const stbdMask = (d: Record<string, unknown>) => getTackFromTwa(getVal(d, twaField) ?? 0) === "stbd";
     const rows: PortStbdRow[] = [];
-    const fieldPairs = useBefore
-      ? pairs.map(({ before, label }) => ({ field: before, label }))
-      : pairs.map(({ after, label }) => ({ field: after, label }));
 
-    for (const { field, label } of fieldPairs) {
-      const portVals = data
-        .filter(portMask)
-        .map((d) => getVal(d, field))
-        .filter((v): v is number => v !== null);
-      const stbdVals = data
-        .filter(stbdMask)
-        .map((d) => getVal(d, field))
-        .filter((v): v is number => v !== null);
+    for (const pair of pairs) {
+      let field = useBefore ? pair.before : pair.after;
+      const { label } = pair;
+
+      const getTransformedVals = (mask: (d: Record<string, unknown>) => boolean) => {
+        return data
+          .filter(mask)
+          .map((d) => {
+            const raw = getVal(d, field);
+            if (raw === null) return null;
+            const p = findCalibrationPairForField(field);
+            if (!p) return raw;
+            const scale = useBefore ? (p.beforeScale ?? 1) : (p.afterScale ?? 1);
+            let val = raw * scale;
+            if (p.useAbsMean) val = Math.abs(val);
+            return val;
+          })
+          .filter((v): v is number => v !== null);
+      };
+
+      let portVals = getTransformedVals(portMask);
+      let stbdVals = getTransformedVals(stbdMask);
+
+      if (useBefore && portVals.length === 0 && stbdVals.length === 0) {
+        if (label === "CWA" && data.some((d) => getVal(d, "Cwa_deg") !== null)) {
+          field = "Cwa_deg";
+          portVals = getTransformedVals(portMask);
+          stbdVals = getTransformedVals(stbdMask);
+        } else if (label === "AWA") {
+          if (field === "Awa_n_fused_deg" && data.some((d) => getVal(d, "Awa_n_deg") !== null)) {
+            field = "Awa_n_deg";
+          } else if (data.some((d) => getVal(d, "Awa_deg") !== null)) {
+            field = "Awa_deg";
+          } else if (data.some((d) => getVal(d, "Awa_bow_deg") !== null)) {
+            field = "Awa_bow_deg";
+          }
+          if (field !== pair.before) {
+            portVals = getTransformedVals(portMask);
+            stbdVals = getTransformedVals(stbdMask);
+          }
+        }
+      }
+
       if (portVals.length === 0 && stbdVals.length === 0) continue;
-      const portMean = portVals.length ? d3.mean(portVals)! : 0;
-      const stbdMean = stbdVals.length ? d3.mean(stbdVals)! : 0;
-      const diff = stbdMean - portMean;
-      const ref = Math.abs(portMean) > 1e-6 ? portMean : 1;
-      const pctDiff = (100 * diff) / ref;
+      const portMean = portVals.length ? d3.mean(portVals)! : null;
+      const stbdMean = stbdVals.length ? d3.mean(stbdVals)! : null;
+      let diff: number | null = null;
+      let pctDiff: number | null = null;
+      if (portMean !== null && stbdMean !== null) {
+        diff = stbdMean - portMean;
+        const ref =
+          Math.abs(portMean) > 1e-6 ? portMean : Math.abs(stbdMean) > 1e-6 ? stbdMean : 1;
+        pctDiff = (100 * diff) / ref;
+      }
       rows.push({
         channel: label,
-        sensor: "Fused",
         portMean,
         stbdMean,
         diff,
@@ -673,10 +755,11 @@ export default function CalibrationPage() {
         continue;
       }
 
+      const signedForViolin = twaSignedForViolinRow(d, twaFilterField) ?? twa;
       const beforeVal = getVal(d, beforeField);
       const afterVal = getVal(d, afterField);
-      if (beforeVal !== null) out.push({ Phase: "Before", Value: beforeVal, Twa_signed: twa });
-      if (afterVal !== null) out.push({ Phase: "After", Value: afterVal, Twa_signed: twa });
+      if (beforeVal !== null) out.push({ Phase: "Before", Value: beforeVal, Twa_signed: signedForViolin });
+      if (afterVal !== null) out.push({ Phase: "After", Value: afterVal, Twa_signed: signedForViolin });
     }
     return out;
   }
@@ -700,8 +783,9 @@ export default function CalibrationPage() {
       const val = getVal(d, valueField);
       if (val === null) continue;
 
-      if (isCalibrationUpwindTwa(twa)) out.push({ Sector: "Upwind", Value: val, Twa_signed: twa });
-      else if (isCalibrationDownwindTwa(twa)) out.push({ Sector: "Downwind", Value: val, Twa_signed: twa });
+      const signedForViolin = twaSignedForViolinRow(d, twaField) ?? twa;
+      if (isCalibrationUpwindTwa(twa)) out.push({ Sector: "Upwind", Value: val, Twa_signed: signedForViolin });
+      else if (isCalibrationDownwindTwa(twa)) out.push({ Sector: "Downwind", Value: val, Twa_signed: signedForViolin });
     }
     return out;
   }
@@ -710,29 +794,32 @@ export default function CalibrationPage() {
     channelData().some((d) => getVal(d, "Twa_cor_deg") !== null) ? "Twa_cor_deg" : "Twa_deg"
   );
 
-  /** Violins label AWA “before” as fused; parquet from corrections includes this column. */
-  function awaBeforeFieldForViolins(): "Awa_n_fused_deg" {
-    return "Awa_n_fused_deg";
-  }
+  /** AWA before column: fused when present, else normalized raw (matches timeseries Δ fallback). */
+  const awaBeforeFieldForViolins = createMemo((): "Awa_n_fused_deg" | "Awa_n_deg" => {
+    const data = channelData();
+    if (data.some((d) => getVal(d, "Awa_n_fused_deg") !== null)) return "Awa_n_fused_deg";
+    return "Awa_n_deg";
+  });
 
   const twsViolinValueField = createMemo((): { field: string; yLabel: string } => {
     const data = channelData();
     const P = CalParquet;
     const L = CalAxisLabel;
-    if (!data.length) return { field: P.twsKnots, yLabel: L.twsKnots };
+    if (!data.length) return { field: P.twsCorKnots, yLabel: L.twsKnots };
+    if (data.some((d) => getVal(d, P.twsCorKnots) !== null)) return { field: P.twsCorKnots, yLabel: L.twsKnots };
     if (data.some((d) => getVal(d, P.twsKnots) !== null)) return { field: P.twsKnots, yLabel: L.twsKnots };
     if (data.some((d) => getVal(d, P.twsCorMetric) !== null)) return { field: P.twsCorMetric, yLabel: L.twsMetric };
-    return { field: P.twsKnots, yLabel: L.twsKnots };
+    return { field: P.twsCorKnots, yLabel: L.twsKnots };
   });
 
   const bspViolinValueField = createMemo((): { field: string; yLabel: string } => {
     const data = channelData();
     const P = CalParquet;
     const L = CalAxisLabel;
-    if (!data.length) return { field: P.bspMetric, yLabel: L.bspMetric };
-    if (data.some((d) => getVal(d, P.bspMetric) !== null)) return { field: P.bspMetric, yLabel: L.bspMetric };
+    if (!data.length) return { field: P.bspKnots, yLabel: L.bspKnots };
     if (data.some((d) => getVal(d, P.bspKnots) !== null)) return { field: P.bspKnots, yLabel: L.bspKnots };
-    return { field: P.bspMetric, yLabel: L.bspMetric };
+    if (data.some((d) => getVal(d, P.bspMetric) !== null)) return { field: P.bspMetric, yLabel: L.bspMetric };
+    return { field: P.bspKnots, yLabel: L.bspKnots };
   });
 
   const violinTwsWindSector = createMemo(() =>
@@ -1259,7 +1346,6 @@ export default function CalibrationPage() {
                 <thead>
                   <tr>
                     <th>Channel</th>
-                    <th>Sensor</th>
                     <th>Before</th>
                     <th>After</th>
                     <th>Δ</th>
@@ -1272,11 +1358,10 @@ export default function CalibrationPage() {
                     {(row) => (
                       <tr>
                         <td>{row.channel}</td>
-                        <td>{row.sensor}</td>
-                        <td>{row.meanBefore.toFixed(2)}</td>
-                        <td>{row.meanAfter.toFixed(2)}</td>
-                        <td class={row.deltaMean > 0 ? "calibration-delta-positive" : row.deltaMean < 0 ? "calibration-delta-negative" : ""}>{row.deltaMean.toFixed(2)}</td>
-                        <td class={row.pctDiff > 0 ? "calibration-delta-positive" : row.pctDiff < 0 ? "calibration-delta-negative" : ""}>{row.pctDiff.toFixed(1)}%</td>
+                        <td>{formatCalibrationTableMean(row.meanBefore)}</td>
+                        <td>{formatCalibrationTableMean(row.meanAfter)}</td>
+                        <td class={calibrationDeltaCellClass(row.deltaMean)}>{formatCalibrationTableMean(row.deltaMean)}</td>
+                        <td class={calibrationDeltaCellClass(row.pctDiff)}>{formatCalibrationTablePct(row.pctDiff)}</td>
                         <td>{row.count}</td>
                       </tr>
                     )}
@@ -1290,7 +1375,6 @@ export default function CalibrationPage() {
                 <thead>
                   <tr>
                     <th>Channel</th>
-                    <th>Sensor</th>
                     <th>Before</th>
                     <th>After</th>
                     <th>Δ</th>
@@ -1303,11 +1387,10 @@ export default function CalibrationPage() {
                     {(row) => (
                       <tr>
                         <td>{row.channel}</td>
-                        <td>{row.sensor}</td>
-                        <td>{row.meanBefore.toFixed(2)}</td>
-                        <td>{row.meanAfter.toFixed(2)}</td>
-                        <td class={row.deltaMean > 0 ? "calibration-delta-positive" : row.deltaMean < 0 ? "calibration-delta-negative" : ""}>{row.deltaMean.toFixed(2)}</td>
-                        <td class={row.pctDiff > 0 ? "calibration-delta-positive" : row.pctDiff < 0 ? "calibration-delta-negative" : ""}>{row.pctDiff.toFixed(1)}%</td>
+                        <td>{formatCalibrationTableMean(row.meanBefore)}</td>
+                        <td>{formatCalibrationTableMean(row.meanAfter)}</td>
+                        <td class={calibrationDeltaCellClass(row.deltaMean)}>{formatCalibrationTableMean(row.deltaMean)}</td>
+                        <td class={calibrationDeltaCellClass(row.pctDiff)}>{formatCalibrationTablePct(row.pctDiff)}</td>
                         <td>{row.count}</td>
                       </tr>
                     )}
@@ -1328,7 +1411,6 @@ export default function CalibrationPage() {
                 <thead>
                   <tr>
                     <th>Channel</th>
-                    <th>Sensor</th>
                     <th>Port</th>
                     <th>Stbd</th>
                     <th>Δ S−P</th>
@@ -1341,11 +1423,10 @@ export default function CalibrationPage() {
                     {(row) => (
                       <tr>
                         <td>{row.channel}</td>
-                        <td>{row.sensor}</td>
-                        <td class="calibration-port-value">{row.portMean.toFixed(2)}</td>
-                        <td class="calibration-stbd-value">{row.stbdMean.toFixed(2)}</td>
-                        <td class={row.diff > 0 ? "calibration-delta-positive" : row.diff < 0 ? "calibration-delta-negative" : ""}>{row.diff.toFixed(2)}</td>
-                        <td class={row.pctDiff > 0 ? "calibration-delta-positive" : row.pctDiff < 0 ? "calibration-delta-negative" : ""}>{row.pctDiff.toFixed(1)}%</td>
+                        <td class="calibration-port-value">{formatCalibrationTableMean(row.portMean)}</td>
+                        <td class="calibration-stbd-value">{formatCalibrationTableMean(row.stbdMean)}</td>
+                        <td class={calibrationDeltaCellClass(row.diff)}>{formatCalibrationTableMean(row.diff)}</td>
+                        <td class={calibrationDeltaCellClass(row.pctDiff)}>{formatCalibrationTablePct(row.pctDiff)}</td>
                         <td>{row.count}</td>
                       </tr>
                     )}
@@ -1359,7 +1440,6 @@ export default function CalibrationPage() {
                 <thead>
                   <tr>
                     <th>Channel</th>
-                    <th>Sensor</th>
                     <th>Port</th>
                     <th>Stbd</th>
                     <th>Δ S−P</th>
@@ -1372,11 +1452,10 @@ export default function CalibrationPage() {
                     {(row) => (
                       <tr>
                         <td>{row.channel}</td>
-                        <td>{row.sensor}</td>
-                        <td class="calibration-port-value">{row.portMean.toFixed(2)}</td>
-                        <td class="calibration-stbd-value">{row.stbdMean.toFixed(2)}</td>
-                        <td class={row.diff > 0 ? "calibration-delta-positive" : row.diff < 0 ? "calibration-delta-negative" : ""}>{row.diff.toFixed(2)}</td>
-                        <td class={row.pctDiff > 0 ? "calibration-delta-positive" : row.pctDiff < 0 ? "calibration-delta-negative" : ""}>{row.pctDiff.toFixed(1)}%</td>
+                        <td class="calibration-port-value">{formatCalibrationTableMean(row.portMean)}</td>
+                        <td class="calibration-stbd-value">{formatCalibrationTableMean(row.stbdMean)}</td>
+                        <td class={calibrationDeltaCellClass(row.diff)}>{formatCalibrationTableMean(row.diff)}</td>
+                        <td class={calibrationDeltaCellClass(row.pctDiff)}>{formatCalibrationTablePct(row.pctDiff)}</td>
                         <td>{row.count}</td>
                       </tr>
                     )}
@@ -1394,7 +1473,6 @@ export default function CalibrationPage() {
                 <thead>
                   <tr>
                     <th>Channel</th>
-                    <th>Sensor</th>
                     <th>Port</th>
                     <th>Stbd</th>
                     <th>Δ S−P</th>
@@ -1407,11 +1485,10 @@ export default function CalibrationPage() {
                     {(row) => (
                       <tr>
                         <td>{row.channel}</td>
-                        <td>{row.sensor}</td>
-                        <td class="calibration-port-value">{row.portMean.toFixed(2)}</td>
-                        <td class="calibration-stbd-value">{row.stbdMean.toFixed(2)}</td>
-                        <td class={row.diff > 0 ? "calibration-delta-positive" : row.diff < 0 ? "calibration-delta-negative" : ""}>{row.diff.toFixed(2)}</td>
-                        <td class={row.pctDiff > 0 ? "calibration-delta-positive" : row.pctDiff < 0 ? "calibration-delta-negative" : ""}>{row.pctDiff.toFixed(1)}%</td>
+                        <td class="calibration-port-value">{formatCalibrationTableMean(row.portMean)}</td>
+                        <td class="calibration-stbd-value">{formatCalibrationTableMean(row.stbdMean)}</td>
+                        <td class={calibrationDeltaCellClass(row.diff)}>{formatCalibrationTableMean(row.diff)}</td>
+                        <td class={calibrationDeltaCellClass(row.pctDiff)}>{formatCalibrationTablePct(row.pctDiff)}</td>
                         <td>{row.count}</td>
                       </tr>
                     )}
@@ -1425,7 +1502,6 @@ export default function CalibrationPage() {
                 <thead>
                   <tr>
                     <th>Channel</th>
-                    <th>Sensor</th>
                     <th>Port</th>
                     <th>Stbd</th>
                     <th>Δ S−P</th>
@@ -1438,11 +1514,10 @@ export default function CalibrationPage() {
                     {(row) => (
                       <tr>
                         <td>{row.channel}</td>
-                        <td>{row.sensor}</td>
-                        <td class="calibration-port-value">{row.portMean.toFixed(2)}</td>
-                        <td class="calibration-stbd-value">{row.stbdMean.toFixed(2)}</td>
-                        <td class={row.diff > 0 ? "calibration-delta-positive" : row.diff < 0 ? "calibration-delta-negative" : ""}>{row.diff.toFixed(2)}</td>
-                        <td class={row.pctDiff > 0 ? "calibration-delta-positive" : row.pctDiff < 0 ? "calibration-delta-negative" : ""}>{row.pctDiff.toFixed(1)}%</td>
+                        <td class="calibration-port-value">{formatCalibrationTableMean(row.portMean)}</td>
+                        <td class="calibration-stbd-value">{formatCalibrationTableMean(row.stbdMean)}</td>
+                        <td class={calibrationDeltaCellClass(row.diff)}>{formatCalibrationTableMean(row.diff)}</td>
+                        <td class={calibrationDeltaCellClass(row.pctDiff)}>{formatCalibrationTablePct(row.pctDiff)}</td>
                         <td>{row.count}</td>
                       </tr>
                     )}

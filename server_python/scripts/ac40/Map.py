@@ -214,8 +214,8 @@ def start(api_token, project_id, dataset_id, class_name, date, source_name, star
                         twd = u.number(row['Twd_deg'])
                         twa = u.number(row['Twa_deg'])
                         hdg = u.number(row['Hdg_deg'])
-                        vmg = u.number(row['Vmg_kts'])
-                        vmg_perc = u.number(row['Vmg_perc'])
+                        vmg = abs(u.number(row['Vmg_kts']))
+                        vmg_perc = u.number(row['Vmg_perc']) / 100
                         race = u.number(row['Race_number'])
                         leg = u.number(row['Leg_number'])
                         grade = u.number(row['Grade'])

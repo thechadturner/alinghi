@@ -38,7 +38,7 @@ import { streamingStore } from "../../../store/streamingStore";
 import { streamingService } from "../../../services/streamingService";
 import { sourcesStore } from "../../../store/sourcesStore";
 import { defaultChannelsStore } from "../../../store/defaultChannelsStore";
-import { speedUnitSuffix } from "../../../utils/speedUnits";
+import { speedUnitSuffix, twsMagnitudeInDisplayUnit } from "../../../utils/speedUnits";
 import { tooltip, setTooltip } from "../../../store/globalStore";
 import { persistantStore } from "../../../store/persistantStore";
 import { initializeSourceSelections } from "../../../utils/sourceInitialization";
@@ -1723,15 +1723,15 @@ export default function MapContainer(props: MapContainerProps) {
     const twsField = twsName();
 
     filteredData.forEach((point: any) => {
-      // Check both lowercase and capitalized field names, using dynamic channel names with case-insensitive fallbacks
+      // TWD: dynamic channel + common variants. TWS: resolve Tws_kts vs Tws_kph like twsValueFromRow, convert to display unit for WindArrow.
       const twd = point[twdField] ?? point[twdField.toLowerCase()] ?? point[twdField.toUpperCase()] ?? point.Twd ?? point.twd ?? point.TWD;
-      const tws = point[twsField] ?? point[twsField.toLowerCase()] ?? point[twsField.toUpperCase()] ?? point.Tws ?? point.tws ?? point.TWS;
+      const tws = twsMagnitudeInDisplayUnit(point as Record<string, unknown>, twsField, persistantStore.defaultUnits());
 
       if (twd !== undefined && twd !== null && !isNaN(Number(twd))) {
         twdValues.push(Number(twd));
       }
-      if (tws !== undefined && tws !== null && !isNaN(Number(tws))) {
-        twsValues.push(Number(tws));
+      if (Number.isFinite(tws)) {
+        twsValues.push(tws);
       }
     });
 
@@ -1746,7 +1746,9 @@ export default function MapContainer(props: MapContainerProps) {
         twsValuesFound: twsValues.length,
         samplePointKeys: samplePoint ? Object.keys(samplePoint).filter(k => k.toLowerCase().includes('tw')) : null,
         sampleTwd: samplePoint ? (samplePoint[twdField] ?? samplePoint[twdField.toLowerCase()] ?? samplePoint[twdField.toUpperCase()] ?? samplePoint.Twd ?? samplePoint.twd ?? samplePoint.TWD) : null,
-        sampleTws: samplePoint ? (samplePoint[twsField] ?? samplePoint[twsField.toLowerCase()] ?? samplePoint[twsField.toUpperCase()] ?? samplePoint.Tws ?? samplePoint.tws ?? samplePoint.TWS) : null
+        sampleTws: samplePoint
+          ? twsMagnitudeInDisplayUnit(samplePoint as Record<string, unknown>, twsField, persistantStore.defaultUnits())
+          : null
       });
       return { tws: undefined, twd: undefined };
     }

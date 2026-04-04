@@ -10491,6 +10491,63 @@ html body #main-content>#media-container.targets-page,
   margin-right: 0.5rem;
 }
 
+/* DatasetInfo script rows: two compact rows (process/map pipeline + maneuvers / races / all) */
+.dataset-info-page .indi-container .dataset-info-script-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 1200px;
+}
+
+.dataset-info-page .indi-container .dataset-info-script-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+}
+
+.dataset-info-page .indi-container .dataset-info-script-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 0;
+  min-width: 0;
+  margin-top: 0;
+  font-size: 0.6875rem;
+  padding: 0.35rem 0.4rem;
+  min-height: 2.25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dataset-info-page .indi-container .dataset-info-script-btn svg {
+  flex-shrink: 0;
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-right: 0.35rem;
+}
+
+/* Pipeline + map-to-races (3_execute): same red as legacy exec-container buttons */
+.dataset-info-page .indi-container .dataset-info-pipeline-btn,
+.dataset-info-page .indi-container .dataset-info-run-all-btn {
+  background-color: rgb(177, 16, 16);
+  color: white;
+}
+
+.dataset-info-page .indi-container .dataset-info-pipeline-btn:hover:not(:disabled),
+.dataset-info-page .indi-container .dataset-info-run-all-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.dataset-info-page.dark .indi-container .dataset-info-pipeline-btn,
+.dataset-info-page.dark .indi-container .dataset-info-run-all-btn {
+  background-color: #dc2626;
+  color: white;
+}
+
 /* DatasetInfo page spacing and padding */
 .dataset-info-page .info-container,
 .dataset-info-page .review-container,
@@ -10532,6 +10589,15 @@ html body #main-content>#media-container.targets-page,
     flex: none;
     width: 100%;
   }
+
+  .dataset-info-page .indi-container .dataset-info-script-row {
+    flex-wrap: wrap;
+  }
+
+  .dataset-info-page .indi-container .dataset-info-script-btn {
+    flex: 1 1 calc(50% - 2px);
+    min-width: calc(50% - 2px);
+  }
 }
 
 .dataset-info-page .indi-container {
@@ -10543,7 +10609,7 @@ html body #main-content>#media-container.targets-page,
   margin-bottom: 8px;
 }
 
-/* Extra padding for the last button (Re-Run All Scripts) */
+/* Extra padding for the map-to-races / exec-style button */
 .dataset-info-page .exec-container .builder-form-button-success {
   padding: 6px 10px;
   margin-bottom: 8px;

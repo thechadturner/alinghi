@@ -30,6 +30,16 @@ interface ConfigurationEntry {
     end: Date;
 }
 
+/** Options for `executeScripts` when chaining multiple scripts on Dataset Info. */
+interface DatasetExecuteScriptOptions {
+    /** When false, do not navigate to the dashboard after the run finishes (success or failure). Default true. */
+    navigateOnComplete?: boolean;
+    /** When false, leave the waiting modal open after this run (for the next chained step). Default true. */
+    dismissModalAfterRun?: boolean;
+    /** When true, skip opening the waiting modal and initial delay (modal already open from a prior step). Default false. */
+    skipModalOpen?: boolean;
+}
+
 import "quill/dist/quill.snow.css";
 
 export default function DatasetInfo() {
@@ -727,6 +737,27 @@ export default function DatasetInfo() {
         }
     };
 
+    /** Run processing, then corrections, then map, in order; one dashboard navigation after the last step. */
+    const handleProcessingCorrectionsMap = async () => {
+        try {
+            debug('[DatasetInfo] handleProcessingCorrectionsMap called');
+            const chainOpts: DatasetExecuteScriptOptions = {
+                navigateOnComplete: false,
+                dismissModalAfterRun: false,
+            };
+            const okProcessing = await executeScripts("2_processing.py", chainOpts);
+            if (!okProcessing) return;
+            const okCorrections = await executeScripts("3_corrections.py", {
+                ...chainOpts,
+                skipModalOpen: true,
+            });
+            if (!okCorrections) return;
+            await executeScripts("0_map.py", { skipModalOpen: true });
+        } catch (error) {
+            logError('[DatasetInfo] Error in handleProcessingCorrectionsMap:', error);
+        }
+    };
+
     const handleExecution = async () => {
         try {
             debug('[DatasetInfo] handleExecution called');
@@ -768,9 +799,16 @@ export default function DatasetInfo() {
         }
     };
 
-    const executeScripts = async (filename: string) => {
+    const executeScripts = async (
+        filename: string,
+        options?: DatasetExecuteScriptOptions
+    ): Promise<boolean> => {
+        const navigateOnComplete = options?.navigateOnComplete !== false;
+        const dismissModalAfterRun = options?.dismissModalAfterRun !== false;
+        const skipModalOpen = options?.skipModalOpen === true;
+
         debug('[DatasetInfo] executeScripts called with filename:', filename);
-        
+
         // Validate required parameters before proceeding
         const projectId = selectedProjectId();
         const className = selectedClassName();
@@ -793,37 +831,37 @@ export default function DatasetInfo() {
         if (!projectId || projectId <= 0) {
             logError('[DatasetInfo] Cannot execute script: projectId is missing or invalid', projectId);
             alert('Cannot execute script: Project ID is missing or invalid. Please navigate back and try again.');
-            return;
+            return false;
         }
         
         if (!className) {
             logError('[DatasetInfo] Cannot execute script: className is missing');
             alert('Cannot execute script: Class name is missing. Please navigate back and try again.');
-            return;
+            return false;
         }
         
         if (!datasetId || datasetId <= 0) {
             logError('[DatasetInfo] Cannot execute script: datasetId is missing or invalid', datasetId);
             alert('Cannot execute script: Dataset ID is missing or invalid. Please navigate back and try again.');
-            return;
+            return false;
         }
         
         if (!dateValue) {
             logError('[DatasetInfo] Cannot execute script: date is missing');
             alert('Cannot execute script: Date is missing. Please wait for the dataset to load.');
-            return;
+            return false;
         }
         
         if (!sourceNameValue) {
             logError('[DatasetInfo] Cannot execute script: sourceName is missing');
             alert('Cannot execute script: Source name is missing. Please wait for the dataset to load.');
-            return;
+            return false;
         }
         
         if (!startTimeValue || !endTimeValue) {
             logError('[DatasetInfo] Cannot execute script: start_time or end_time is missing', { startTime: startTimeValue, endTime: endTimeValue });
             alert('No active range event for this dataset. Open the Events page for this dataset to set the active range, then run processing.');
-            return;
+            return false;
         }
         
         debug('[DatasetInfo] All parameters validated, proceeding with script execution');
@@ -840,7 +878,7 @@ export default function DatasetInfo() {
             
             if (!confirmed) {
                 debug('[DatasetInfo] User cancelled - not starting new process');
-                return;
+                return false;
             }
             
             // Cancel all running processes
@@ -857,12 +895,13 @@ export default function DatasetInfo() {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
 
-        // Show modal immediately
-        debug('[DatasetInfo] Setting showModal to true');
-        setShowModal(true);
-        
-        // Add a small delay to ensure the modal renders before making the request
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Show modal immediately (skip when continuing a chained run)
+        if (!skipModalOpen) {
+            debug('[DatasetInfo] Setting showModal to true');
+            setShowModal(true);
+            // Add a small delay to ensure the modal renders before making the request
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
 
         const controller = new AbortController();
         const sanitizedDate = date().replace(/[-/]/g, "");
@@ -943,7 +982,7 @@ export default function DatasetInfo() {
                 if (!confirmed) {
                     debug('[DatasetInfo] User cancelled - not starting new process');
                     setShowModal(false);
-                    return;
+                    return false;
                 }
                 
                 // Cancel all running processes
@@ -968,7 +1007,7 @@ export default function DatasetInfo() {
             if (!response_json?.success) {
                 logError('[DatasetInfo] Script start failed:', response_json?.message || 'Unknown error');
                 setShowModal(false);
-                return;
+                return false;
             }
 
             // Extract process_id and store
@@ -983,7 +1022,7 @@ export default function DatasetInfo() {
                 // If server did not return a process id, treat as failure (avoid fallback to prevent phantom process)
                 warn('[DatasetInfo] No process_id in successful server response');
                 setShowModal(false);
-                return;
+                return false;
             }
 
             debug('[DatasetInfo] Using process_id:', pid);
@@ -995,56 +1034,64 @@ export default function DatasetInfo() {
             // We must call startProcess synchronously to set showToast: true before that message arrives
             processStore.startProcess(pid, 'script_execution', true);
             
-            // Wait for the process to complete before navigating
+            // Wait for the process to complete before navigating (or resolving when chaining)
             const processStartTime = Date.now();
             const minModalDisplayTime = 2000; // Minimum 2 seconds to ensure user sees the modal
-            
-            const waitForCompletion = () => {
-                const process = processStore.getProcess(pid);
-                if (process) {
-                    if (process.status === 'complete') {
-                        clearTimeout(maxTimeout);
-                        const elapsed = Date.now() - processStartTime;
-                        const remainingTime = Math.max(0, minModalDisplayTime - elapsed);
-                        debug('[DatasetInfo] Process completed, waiting', remainingTime, 'ms before closing modal');
-                        setTimeout(() => {
-                            setShowModal(false);
-                            // Small delay to ensure toast notification is displayed before navigation
+
+            const completionPromise = new Promise<boolean>((resolve) => {
+                let settled = false;
+                const finish = (success: boolean) => {
+                    if (settled) return;
+                    settled = true;
+                    resolve(success);
+                };
+
+                const maxTimeout = setTimeout(() => {
+                    if (dismissModalAfterRun) setShowModal(false);
+                    debug("Script execution timeout - navigating to dashboard");
+                    if (navigateOnComplete) navigate("/dashboard");
+                    finish(false);
+                }, 300000); // 5 minute timeout
+
+                const waitForCompletion = () => {
+                    const process = processStore.getProcess(pid);
+                    if (process) {
+                        if (process.status === 'complete') {
+                            clearTimeout(maxTimeout);
+                            const elapsed = Date.now() - processStartTime;
+                            const remainingTime = Math.max(0, minModalDisplayTime - elapsed);
+                            debug('[DatasetInfo] Process completed, waiting', remainingTime, 'ms before closing modal');
                             setTimeout(() => {
-                                navigate("/dashboard");
-                            }, 500);
-                        }, remainingTime);
-                    } else if (process.status === 'error' || process.status === 'timeout') {
-                        clearTimeout(maxTimeout);
-                        const elapsed = Date.now() - processStartTime;
-                        const remainingTime = Math.max(0, minModalDisplayTime - elapsed);
-                        debug("Script execution failed:", process.status, "waiting", remainingTime, "ms before closing modal");
-                        setTimeout(() => {
-                            setShowModal(false);
-                            // Small delay to ensure toast notification is displayed before navigation
+                                if (dismissModalAfterRun) setShowModal(false);
+                                if (navigateOnComplete) {
+                                    setTimeout(() => navigate("/dashboard"), 500);
+                                }
+                                finish(true);
+                            }, remainingTime);
+                        } else if (process.status === 'error' || process.status === 'timeout') {
+                            clearTimeout(maxTimeout);
+                            const elapsed = Date.now() - processStartTime;
+                            const remainingTime = Math.max(0, minModalDisplayTime - elapsed);
+                            debug("Script execution failed:", process.status, "waiting", remainingTime, "ms before closing modal");
                             setTimeout(() => {
-                                navigate("/dashboard");
-                            }, 500);
-                        }, remainingTime);
+                                if (dismissModalAfterRun) setShowModal(false);
+                                if (navigateOnComplete) {
+                                    setTimeout(() => navigate("/dashboard"), 500);
+                                }
+                                finish(false);
+                            }, remainingTime);
+                        } else {
+                            setTimeout(waitForCompletion, 500);
+                        }
                     } else {
-                        // Still running, check again in 500ms
                         setTimeout(waitForCompletion, 500);
                     }
-                } else {
-                    // Process not found yet, check again in 500ms
-                    setTimeout(waitForCompletion, 500);
-                }
-            };
-            
-            // Set a maximum timeout to prevent hanging
-            const maxTimeout = setTimeout(() => {
-                setShowModal(false);
-                debug("Script execution timeout - navigating to dashboard");
-                navigate("/dashboard");
-            }, 300000); // 5 minute timeout
-            
-            // Start checking for completion
-            waitForCompletion();
+                };
+
+                waitForCompletion();
+            });
+
+            return await completionPromise;
         } catch (error: any) {
             if (error.name === 'AbortError') {
                 // Request was aborted due to timeout
@@ -1057,6 +1104,7 @@ export default function DatasetInfo() {
             }
             // Close modal on error to avoid hanging UI
             setShowModal(false);
+            return false;
         }
     };
 
@@ -1730,56 +1778,61 @@ export default function DatasetInfo() {
 
                     <div class="indi-container">
                         <Show when={state()==="Update"}>
-                        <div class="flex flex-wrap gap-[5px]">
-                            <button type="button" class="builder-form-button flex-1 basis-1/4 min-w-[120px]" onclick={handleProcessing}>
-                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                                </svg>
-                                Re-Process Data
-                            </button>
-                            <button type="button" class="builder-form-button flex-1 basis-1/4 min-w-[120px]" onclick={handleCorrections}>
-                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
-                                </svg>
-                                Run Corrections
-                            </button>
-                            <button type="button" class="builder-form-button flex-1 basis-1/4 min-w-[120px]" onclick={handleMap}>
-                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path>
-                                </svg>
-                                Re-Run Map
-                            </button>
-                            <button type="button" class="builder-form-button flex-1 basis-1/4 min-w-[120px]" onclick={handleManeuvers}>
-                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                                </svg>
-                                Re-Run Maneuvers
-                            </button>
-                            <button type="button" class="builder-form-button flex-1 basis-1/4 min-w-[120px]" onclick={handlePerformance}>
-                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
-                                </svg>
-                                Re-Run Performance
-                            </button>
-                            <button type="button" class="builder-form-button flex-1 basis-1/4 min-w-[120px]" onclick={handleRaces}>
-                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                                </svg>
-                                Run Races
-                            </button>
+                        <div class="dataset-info-script-rows">
+                            <div class="dataset-info-script-row dataset-info-script-row--four">
+                                <button type="button" class="builder-form-button dataset-info-script-btn" onclick={handleProcessing}>
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                                    </svg>
+                                    Re-Process
+                                </button>
+                                <button type="button" class="builder-form-button dataset-info-script-btn" onclick={handleCorrections}>
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                                    </svg>
+                                    Corrections
+                                </button>
+                                <button type="button" class="builder-form-button dataset-info-script-btn" onclick={handleMap}>
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path>
+                                    </svg>
+                                    Map
+                                </button>
+                                <button type="button" class="builder-form-button dataset-info-script-btn dataset-info-pipeline-btn" onclick={handleProcessingCorrectionsMap}>
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                    Process → Map
+                                </button>
+                            </div>
+                            <div class="dataset-info-script-row dataset-info-script-row--second">
+                                <button type="button" class="builder-form-button dataset-info-script-btn" onclick={handleManeuvers}>
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                    Maneuvers
+                                </button>
+                                <button type="button" class="builder-form-button dataset-info-script-btn" onclick={handlePerformance}>
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                                    </svg>
+                                    Performance
+                                </button>
+                                <button type="button" class="builder-form-button dataset-info-script-btn" onclick={handleRaces}>
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                    Run Races
+                                </button>
+                                <button type="button" class="builder-form-button builder-form-button-success dataset-info-script-btn dataset-info-run-all-btn" onclick={handleExecution}>
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                    </svg>
+                                    Map → Races
+                                </button>
+                            </div>
                         </div>
-                        </Show>
-                    </div>
-
-                    <div class="exec-container">
-                        <Show when={state()==="Update"}>
-                        <button type="button" class="builder-form-button-success" onclick={handleExecution}>
-                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                            </svg>
-                            Re-Run All Scripts
-                        </button>
                         </Show>
                     </div>
 

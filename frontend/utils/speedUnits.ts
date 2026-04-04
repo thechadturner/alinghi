@@ -146,9 +146,9 @@ export function bspValueFromRow(row: Record<string, unknown>, primaryField: stri
   return n;
 }
 
-/** True wind speed from a row: prefer configured channel, then metric/knots columns (any casing). */
-export function twsValueFromRow(row: Record<string, unknown>, primaryField: string, whenMissing: number | typeof Number.NaN = 0): number {
-  const n = coalesceNumericFromRow(row, [
+/** Column keys tried for TWS (same order as `twsValueFromRow`). */
+function twsRowLookupKeys(primaryField: string): string[] {
+  return [
     primaryField,
     primaryField.toLowerCase(),
     primaryField.toUpperCase(),
@@ -158,7 +158,39 @@ export function twsValueFromRow(row: Record<string, unknown>, primaryField: stri
     SpeedChannelNamesLower.twsKnotsKey,
     'Tws',
     'tws',
-  ]);
+  ];
+}
+
+function physicalUnitForTwsRowKey(key: string): SpeedDisplayUnit {
+  const lower = key.toLowerCase();
+  if (lower.endsWith('_kts')) return SPEED_UNIT_KTS;
+  if (lower.endsWith('_kph')) return SPEED_UNIT_KPH;
+  return SPEED_UNIT_KTS;
+}
+
+/**
+ * TWS magnitude for map wind arrow / labels: resolves columns like `twsValueFromRow` (including `Tws_kts`
+ * when `twsName()` is `Tws_kph`), then converts from the source column’s unit to `displayUnit`.
+ */
+export function twsMagnitudeInDisplayUnit(
+  row: Record<string, unknown>,
+  primaryField: string,
+  displayUnit: SpeedDisplayUnit
+): number {
+  for (const k of twsRowLookupKeys(primaryField)) {
+    const v = row[k];
+    let n: number;
+    if (typeof v === 'number' && Number.isFinite(v)) n = v;
+    else if (typeof v === 'string' && v !== '' && !Number.isNaN(Number(v))) n = Number(v);
+    else continue;
+    return convertSpeedMagnitude(n, physicalUnitForTwsRowKey(k), displayUnit);
+  }
+  return Number.NaN;
+}
+
+/** True wind speed from a row: prefer configured channel, then metric/knots columns (any casing). */
+export function twsValueFromRow(row: Record<string, unknown>, primaryField: string, whenMissing: number | typeof Number.NaN = 0): number {
+  const n = coalesceNumericFromRow(row, twsRowLookupKeys(primaryField));
   if (Number.isNaN(n)) return whenMissing;
   return n;
 }

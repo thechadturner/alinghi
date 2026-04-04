@@ -63,12 +63,17 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
             {'name': 'AC40_Speed_kts', 'type': 'float'},
             {'name': 'AC40_TWA', 'type': 'angle180'},
             {'name': 'AC40_TWA_n', 'type': 'angle180'},
+            {'name': 'AC40_CWA', 'type': 'angle180'},
+            {'name': 'AC40_CWA_n', 'type': 'angle180'},
             {'name': 'AC40_VMG_kts', 'type': 'float'},
             {'name': 'AC40_COG', 'type': 'angle360'},
             {'name': 'AC40_HullAltitude', 'type': 'int'},
             {'name': 'AC40_Loads_MainSheetLoad', 'type': 'float'},
             {'name': 'AC40_FoilPort_Cant', 'type': 'float'},
-            {'name': 'AC40_FoilStbd_Cant', 'type': 'float'}
+            {'name': 'AC40_FoilStbd_Cant', 'type': 'float'},
+            {'name': 'AC40_Leeway', 'type': 'float'},
+            {'name': 'AC40_BowWand_AWA', 'type': 'angle180'},
+            {'name': 'AC40_BowWand_AWS', 'type': 'float'}
         ]
 
         dfi = u.get_channel_values(api_token, class_name, project_id, date, source_name, channels, '100ms', start_ts, end_ts, 'UTC')
@@ -83,13 +88,20 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
                     'AC40_BowWand_TWD': 'Twd_deg',
                     'AC40_Speed_kts': 'Bsp_kts',
                     'AC40_TWA': 'Twa_deg',
+                    'AC40_CWA': 'Cwa_deg',
                     'AC40_TWA_n': 'Twa_n_deg',
+                    'AC40_CWA_n': 'Cwa_n_deg',
                     'AC40_VMG_kts': 'Vmg_kts',
                     'AC40_COG': 'Cog_deg',
                     'AC40_HullAltitude': 'Hull_altitude',
                     'AC40_Loads_MainSheetLoad': 'Main_sheet_load',
                     'AC40_FoilPort_Cant': 'Foil_port_cant',
                     'AC40_FoilStbd_Cant': 'Foil_stbd_cant',
+                    'AC40_Leeway': 'Lwy_deg',
+                    'AC40_BowWand_AWA': 'Awa_deg',
+                    'AC40_BowWand_AWS': 'Aws_kts',
+                    'AC40_HDG': 'Cog_deg',
+                    'AC40_COG': 'Hdg_deg'
                 },
                 inplace=True,
             )
@@ -122,8 +134,8 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
             dfo['Foiling_state'] = np.select(
                 [
                     (dfo['Bsp_kts'] > 15) & (dfo['Hull_altitude'] > 0),  # H0
-                    (dfo['Bsp_kts'] > 15) & (dfo['Hull_altitude'] < 0),  # H1
-                    (dfo['Bsp_kts'] < 15) & (dfo['Hull_altitude'] < 0),  # H2
+                    (dfo['Bsp_kts'] > 15) & (dfo['Hull_altitude'] < 0.2),  # H1
+                    (dfo['Bsp_kts'] < 15),  # H2
                 ],
                 [0, 1, 2],
                 default=1,
@@ -144,6 +156,13 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
 
             dfo['Race_number'] = -1
             dfo['Leg_number'] = -1
+            dfo['Lwy2_deg'] = dfo['Hdg_deg'] - dfo['Cog_deg']
+            dfo['Lwy_n_deg'] = dfo['Lwy_deg'] * np.sign(dfo['Twa_deg'])
+            _low_bsp = dfo['Bsp_kts'].to_numpy(dtype=np.float64, copy=False) < 3
+            dfo.loc[_low_bsp, 'Lwy_deg'] = 0
+            dfo.loc[_low_bsp, 'Lwy_n_deg'] = 0
+            dfo.loc[_low_bsp, 'Lwy2_deg'] = 0
+            dfo['Awa_n_deg'] = abs(dfo['Awa_deg']) 
 
             return dfo
         else:
@@ -422,41 +441,6 @@ def _fill_df_from_events(df, events, tag_key, column, value_normalizer=None):
                 break
 
 
-def apply_high_speed_twin_board_grade_zero(df, min_duration_sec=60):
-    """
-    Set Grade to 0 for sustained periods where Bsp_kts > 10 and both
-    Foil_stbd_cant and Foil_port_cant < 65, when the period lasts more than min_duration_sec.
-    Assumes 'ts' is a monotonically increasing timestamp column (seconds).
-    """
-    required = ['ts', 'Bsp_kts', 'Foil_stbd_cant', 'Foil_port_cant', 'Grade']
-    if not all(c in df.columns for c in required):
-        return df
-    mask = (
-        (df['Bsp_kts'] > 10) &
-        (df['Foil_stbd_cant'] < 65) &
-        (df['Foil_port_cant'] < 65)
-    )
-    mask = mask.fillna(False)
-    df = df.copy()
-    seg_start = None
-    for i in range(len(df)):
-        if mask.iloc[i]:
-            if seg_start is None:
-                seg_start = i
-        else:
-            if seg_start is not None:
-                seg_end = i - 1
-                seg_len = df['ts'].iloc[seg_end] - df['ts'].iloc[seg_start]
-                if seg_len >= min_duration_sec:
-                    df.iloc[seg_start:seg_end + 1, df.columns.get_loc('Grade')] = 0
-                seg_start = None
-    if seg_start is not None:
-        seg_end = len(df) - 1
-        seg_len = df['ts'].iloc[seg_end] - df['ts'].iloc[seg_start]
-        if seg_len >= min_duration_sec:
-            df.iloc[seg_start:seg_end + 1, df.columns.get_loc('Grade')] = 0
-    return df
-
 def apply_yaw_not_normal_grade_one(df):
     # Percentiles of Yaw_rate_dps (deg/s) used to define "normal" range from the distribution; rows outside [low, high] or NaN are downgraded to grade 1. Tighter band = more sensitive (more rows downgraded).
     YAW_RATE_NORMAL_PERCENTILE_LOW = 0.05
@@ -529,33 +513,73 @@ def remove_small_grade_one_segments(df, min_length_sec=2):
     """
     return remove_small_segments(df, grades=[1], min_length=min_length_sec)
 
-def apply_too_stable_boat_speed_grade_one(df, duration_sec=None, max_deviation_kts=None):
-    # Boat speed "too stable" filter: downgrade to grade 1 if Bsp_kts deviates by no more than this (kt) over the stable-duration window.
-    BSP_STABLE_MAX_DEVIATION_KTS = 1
-    BSP_STABLE_MIN_DURATION_SEC = 180  # 3 minutes
 
+# Boat speed stability window (rolling max-min Bsp_kts): shared by too-stable and twin-board grading
+BSP_STABLE_MAX_DEVIATION_KTS = 1
+BSP_STABLE_MIN_DURATION_SEC = 180  # 3 minutes
+
+
+def _bsp_stable_mask(df, duration_sec=None, max_deviation_kts=None):
     """
-    Downgrade to grade 1 any row where boat speed has been too stable for at least duration_sec:
-    over a trailing window of duration_sec, max(Bsp_kts) - min(Bsp_kts) <= max_deviation_kts.
-    Assumes 'ts' is monotonically increasing; window size is inferred from median sampling interval.
+    Trailing window over Bsp_kts: True where max(Bsp_kts)-min(Bsp_kts) <= max_deviation_kts
+    over duration_sec (inferred row count from median ts step). False/NaN until window is full.
+    Returns None if stability cannot be computed.
     """
-    if 'Bsp_kts' not in df.columns or len(df) == 0:
-        return df
+    if 'Bsp_kts' not in df.columns or 'ts' not in df.columns or len(df) == 0:
+        return None
     duration_sec = duration_sec if duration_sec is not None else BSP_STABLE_MIN_DURATION_SEC
     max_deviation_kts = max_deviation_kts if max_deviation_kts is not None else BSP_STABLE_MAX_DEVIATION_KTS
     diff_ts = df['ts'].diff().dropna()
     if len(diff_ts) == 0:
-        return df
+        return None
     median_dt = float(diff_ts.median())
     if median_dt <= 0:
-        return df
+        return None
     window_rows = int(round(duration_sec / median_dt))
     if window_rows < 2:
-        return df
+        return None
     rmax = df['Bsp_kts'].rolling(window=window_rows, min_periods=window_rows).max()
     rmin = df['Bsp_kts'].rolling(window=window_rows, min_periods=window_rows).min()
     range_in_window = rmax - rmin
-    too_stable = (df['Grade'] > 1) & (range_in_window <= max_deviation_kts)
+    return (range_in_window <= max_deviation_kts) & range_in_window.notna()
+
+
+def apply_high_speed_twin_board_grades(df, duration_sec=None, max_deviation_kts=None):
+    """
+    High-speed twin board: Bsp_kts > 15 and both foil cants < 65.
+    If boat speed is stable over the shared 3 min / 1 kt window → Grade 0; else → Grade 1.
+    """
+    required = ['ts', 'Bsp_kts', 'Foil_stbd_cant', 'Foil_port_cant', 'Grade']
+    if not all(c in df.columns for c in required):
+        return df
+    stable = _bsp_stable_mask(df, duration_sec=duration_sec, max_deviation_kts=max_deviation_kts)
+    if stable is None:
+        return df
+    df = df.copy()
+    twin_hs = (
+        (df['Bsp_kts'] > 15)
+        & (df['Foil_stbd_cant'] < 65)
+        & (df['Foil_port_cant'] < 65)
+    )
+    twin_hs = twin_hs.fillna(False)
+    df.loc[twin_hs & stable, 'Grade'] = 0
+    df.loc[twin_hs & ~stable, 'Grade'] = 1
+    return df
+
+
+def apply_too_stable_boat_speed_grade_one(df, duration_sec=None, max_deviation_kts=None):
+    """
+    Downgrade to grade 1 any row where boat speed has been too stable for at least duration_sec:
+    over a trailing window of duration_sec, max(Bsp_kts) - min(Bsp_kts) <= max_deviation_kts.
+    Assumes 'ts' is monotonically increasing; window size is inferred from median sampling interval.
+    Only affects rows with Grade > 1.
+    """
+    if 'Bsp_kts' not in df.columns or len(df) == 0:
+        return df
+    stable = _bsp_stable_mask(df, duration_sec=duration_sec, max_deviation_kts=max_deviation_kts)
+    if stable is None:
+        return df
+    too_stable = (df['Grade'] > 1) & stable
     df.loc[too_stable, 'Grade'] = 1
     return df
 
@@ -564,6 +588,8 @@ def apply_too_stable_boat_speed_grade_one(df, duration_sec=None, max_deviation_k
 NON_SAILING_GAP_MIN_DURATION_SEC = 15 * 60
 # Boat speed threshold: rows with Bsp_kts <= this are considered non-sailing for gap detection
 SAILING_BSP_THRESHOLD_KTS = 5
+# Grading: valid Bsp_kts strictly below this is always Grade 0 (after segment fill and other rules)
+GRADE_ZERO_MAX_EXCLUSIVE_BSP_KTS = 10
 
 
 def _find_long_non_sailing_gaps(df, min_duration_sec, sailing_threshold_kts=SAILING_BSP_THRESHOLD_KTS):
@@ -1192,13 +1218,22 @@ def processData(df, events_json, preserve_events=True):
 
     dfi.loc[(dfi['Foiling_state'] == 2) & ~(dfi['Race_number'] > 0), 'Grade'] = 0
 
-    dfi = apply_high_speed_twin_board_grade_zero(dfi, min_duration_sec=60)
-
     dfi = apply_yaw_not_normal_grade_one(dfi)
 
     dfi = apply_too_stable_boat_speed_grade_one(dfi)
 
     dfi = remove_small_segments(dfi)
+
+    dfi = apply_high_speed_twin_board_grades(dfi)
+
+    # Below-speed data excluded when not racing; segment fill must not leave low Bsp as usable grades there.
+    if 'Bsp_kts' in dfi.columns:
+        dfi.loc[
+            dfi['Bsp_kts'].notna()
+            & (dfi['Bsp_kts'] < GRADE_ZERO_MAX_EXCLUSIVE_BSP_KTS)
+            & ~(dfi['Race_number'] > 0),
+            'Grade',
+        ] = 0
 
     # Grade 0 = excluded data; strip phase/period (identifyPeriods paints full ts windows; grade 0 may lie inside)
     g0 = dfi['Grade'] == 0
@@ -1256,24 +1291,24 @@ if __name__ == "__main__":
         if USE_MANUAL_TEST_INPUTS:
             class_name = "AC40"
             project_id = 2
-            dataset_id = 2
-            date = "20260330"
+            dataset_id = 1
+            date = "20260328"
             source_name = "AC40-SUI1"
             start_time = None
             end_time = None
             events_json = [
                 {
                     "Event": "Active",
-                    "Start": "2026-03-30T01:20:40.000Z",
-                    "End": "2026-03-30T20:58:18.000Z",
+                    "Start": "2026-03-28T01:20:40.000Z",
+                    "End": "2026-03-28T20:58:18.000Z",
                     "EventType": "Dataset",
                 },
             ]
             batch = False
             verbose = True
             preserve_events = True
-            day_type = ["TRAINING", "RACING"]
-            race_type = ["INSHORE", "COASTAL", "OFFSHORE"]
+            day_type = "TRAINING"
+            race_type = "INSHORE"
             parameters_json = {"verbose": verbose}
         else:
             parameters_str = sys.argv[1]
@@ -1319,17 +1354,17 @@ if __name__ == "__main__":
 
         if verbose:
             print("Querying data...", flush=True)
-        print(f"{LOG_SCRIPT}: calling get_data", flush=True)
+        print(f"{LOG_SCRIPT}: Querying data...", flush=True)
 
         df = get_data(class_name, project_id, date, source_name, None, None)
 
-        print(f"{LOG_SCRIPT}: get_data returned", flush=True)
+        print(f"{LOG_SCRIPT}: Data returned!", flush=True)
         #LOG
         u.log(api_token, LOG_SCRIPT, "info", "processing data", str(len(df))+ " records retrieved...")
 
         if len(df) > 0:
             if verbose:
-                print(len(df),'records found', flush=True)
+                print(len(df),'records found...', flush=True)
 
             # When batch=True and no start/end, fetch datasets for this date (optionally filter to parameter dataset_id for Admin single-dataset requests)
             dataset_list = []
@@ -1469,7 +1504,7 @@ if __name__ == "__main__":
                     u.log(api_token, LOG_SCRIPT, "info", "processing data", str(len(df))+ " records processed...")
 
                     if len(df2) > 0:
-                        chosen_columns = ['Datetime', 'ts', 'Grade', 'Race_number', 'Leg_number', 'Headsail_code', 'Crew_count', 'Wing_code', 'Rudder_code', 'Daggerboard_code', 'Config_code', 'Maneuver_type', 'Phase_id', 'Period_id', 'Race_status', 'Foiling_state', 'Accel_rate_mps2', 'Yaw_rate_dps']
+                        chosen_columns = ['Datetime', 'ts', 'Grade', 'Race_number', 'Leg_number', 'Headsail_code', 'Crew_count', 'Wing_code', 'Rudder_code', 'Daggerboard_code', 'Config_code', 'Maneuver_type', 'Phase_id', 'Period_id', 'Race_status', 'Foiling_state', 'Bsp_kts', 'Twd_deg', 'Tws_kts', 'Awa_deg', 'Awa_n_deg', 'Aws_kts', 'Twa_deg', 'Twa_n_deg', 'Cwa_deg', 'Cwa_n_deg', 'Lwy2_deg', 'Lwy_deg', 'Lwy_n_deg', 'Hdg_deg', 'Cog_deg', 'Accel_rate_mps2', 'Yaw_rate_dps']
                         
                         # Filter to only include columns that actually exist in df3
                         chosen_columns = [col for col in chosen_columns if col in df2.columns]

@@ -133,11 +133,11 @@ class SensorHealthCheck:
             health['warnings'].append(f'Low variation: σ={std:.3f}')
             health['score'] -= 15
         
-        # Test 3: Out of physical range
-        if sensor_type == 'awa':
-            abs_max = data_clean.abs().max()
+        # Test 3: Out of physical range (use magnitude for signed angles / leeway)
+        if sensor_type in ('awa', 'leeway'):
+            abs_max = float(data_clean.abs().max())
         else:
-            abs_max = data_clean.max()
+            abs_max = float(data_clean.max())
         
         health['metrics']['max_value'] = abs_max
         

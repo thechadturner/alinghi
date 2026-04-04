@@ -16,6 +16,7 @@ import { themeStore } from "../../store/themeStore";
 import { sseManager } from "../../store/sseManager";
 import { processStore } from "../../store/processStore";
 import { defaultChannelsStore } from "../../store/defaultChannelsStore";
+import { twsMagnitudeInDisplayUnit } from "../../utils/speedUnits";
 const { selectedClassName, selectedProjectId, selectedDatasetId, selectedSourceId, selectedSourceName, setSelectedSourceName, setSelectedDatasetId, setSelectedMenu, selectedDate } = persistantStore;
 
 import { formatDateTime, formatTime, formatDate, formatSeconds, groupBy, getData, postData, putData, postBinary, getTimezoneForDate, getDayBoundsInTimezone, localTimeInTimezoneToUtcDate } from "../../utils/global";
@@ -310,15 +311,14 @@ export default function Events() {
     const twdValues: number[] = [];
 
     visibleData.forEach((point: any) => {
-      // Try default channel name first, then normalized name, then common variations
       const twd = point[twdField] ?? point.Twd ?? point.Twd_deg ?? point.twd_deg;
-      const tws = point[twsField] ?? point.Tws;
+      const tws = twsMagnitudeInDisplayUnit(point as Record<string, unknown>, twsField, persistantStore.defaultUnits());
 
       if (twd !== undefined && twd !== null && !isNaN(Number(twd))) {
         twdValues.push(Number(twd));
       }
-      if (tws !== undefined && tws !== null && !isNaN(Number(tws))) {
-        twsValues.push(Number(tws));
+      if (Number.isFinite(tws)) {
+        twsValues.push(tws);
       }
     });
 

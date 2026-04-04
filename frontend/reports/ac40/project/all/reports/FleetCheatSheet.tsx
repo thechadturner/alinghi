@@ -1,7 +1,7 @@
 import { createSignal, onMount, onCleanup, createEffect, Show, For, createMemo } from "solid-js";
 import * as d3 from "d3";
 import { persistantStore } from "../../../../../store/persistantStore";
-import { cheatSheetDatasetChannelHeaders, cheatSheetWindColumnsHint } from "../../../../cheatSheetColumnLabels";
+import { cheatSheetDatasetChannelHeaders, cheatSheetWindColumnsHint } from "../../../cheatSheetColumnLabels";
 import { selectedSources, setSelectedSources } from "../../../../../store/filterStore";
 import { sourcesStore } from "../../../../../store/sourcesStore";
 import { getSourceFallbackColor } from "../../../../../utils/colorScale";

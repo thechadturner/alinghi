@@ -974,7 +974,11 @@ export default function ScatterPage(props: ScatterPageProps) {
        const chartsReady = chartsReadyCount();
        const chartsLength = charts().length;
        const zoomed = zoom();
-       const shouldShow = init || loading || (!zoomed && chartsLength > 0 && chartsReady < chartsLength);
+       const noDataUi = hasChartConfigButNoData();
+       const shouldShow =
+         init ||
+         loading ||
+         (!zoomed && chartsLength > 0 && chartsReady < chartsLength && !noDataUi);
        
        debug('🔍 Loading overlay debug:', {
          isInitializing: init,
