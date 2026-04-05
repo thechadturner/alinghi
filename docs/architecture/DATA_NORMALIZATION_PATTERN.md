@@ -2,9 +2,9 @@
 
 ## Overview
 
-This document describes the field name normalization pattern used throughout the RaceSight application, specifically for metadata fields in the UnifiedDataStore and HuniDB.
+This document describes the field name normalization pattern used throughout the RaceSight application for metadata fields in the UnifiedDataStore, **channel-values API responses** (explore timeseries, overlays, etc.), and **HuniDB** where it is still used (events, meta, json, density).
 
-**Note:** Timeseries, map data, and aggregates are **no longer cached in HuniDB**; only events, meta.datasets, meta.sources, meta.channel_names, and json.* tables are used. The **agg.aggregates** table is deprecated and not created; race/leg metadata is sourced from **agg.events** (JSON `tags` column). The conventions below still apply to those tables and to API response handling.
+**Note:** Raw explore timeseries rows are **not** stored in HuniDB `ts.*` tables; they are loaded from the file/channel-values API and normalized in memory. HuniDB continues to use events, `meta.datasets`, `meta.sources`, `meta.channel_names`, and `json.*`. The **agg.aggregates** table is deprecated and not created; race/leg metadata is sourced from **agg.events** (JSON `tags` column). The conventions below apply to those tables, API responses, and `normalizeDataFields` in `unifiedDataStore`.
 
 ## Core Principle
 
@@ -26,7 +26,9 @@ The following metadata fields are normalized to lowercase:
 
 ### Channel Names
 
-**Channel names are stored in their ORIGINAL CASE in HuniDB** to preserve InfluxDB case sensitivity:
+**Historical / HuniDB library:** Per-channel tables `ts.<Channel>` preserved original case for Influx compatibility. The **application** does not persist explore timeseries in those tables today; channel-values responses still use original case column names from parquet/API.
+
+**When HuniDB still stores channel-scoped data (legacy paths / library docs):** original case is preserved:
 - API/InfluxDB may return: `Tws_kts`, `Twa_deg`, `Bsp_kph` (mixed case)
 - HuniDB stores as: `ts.Tws_kts`, `ts.Twa_deg`, `ts.Bsp_kph` (preserves original case)
 - Original case is preserved in both table names and `meta.channel_names` table
@@ -79,7 +81,7 @@ FROM "agg.events"
 WHERE json_extract(tags, '$.race_number') IS NOT NULL
   AND json_extract(tags, '$.leg_number') > 0
 
--- Channel tables (case-insensitive lookup, but preserve case in results)
+-- Historical: per-channel ts.* tables (HuniDB library / legacy; not the explore timeseries path today)
 SELECT value FROM "ts.Bsp_kts" WHERE dataset_id = ? AND project_id = ? AND source_id = ?
 -- SQLite treats ts.Bsp_kts and ts.bsp_kts as the same table
 ```
@@ -163,9 +165,17 @@ await db.exec(`
 `, ['TRAINING', 1, 2]);
 ```
 
-### Timeseries tags and client-side filtering
+### Explore timeseries / API rows and client-side filtering
 
-Timeseries rows in HuniDB are stored in per-channel tables (`ts.<channel>`) with a `tags` JSON column. For client-side filtering to work when data is served from cache, the per-row tags **must** include all filter-related metadata: **Grade**, **Race_number**, **Leg_number**, **State**, and optionally **Tack**. Components (Probability, Scatter, Rose, Parallel, Grid, Table, TimeSeries) apply `applyDataFilter` / `filterByTwa`, which expect each row to have these fields (e.g. `state`/`State` for State filter H0/H1/H2). If State (or Tack) is omitted from tags when populating HuniDB, cached data will lack those fields and filtering will fail. Store only defined values in tags (omit keys whose value is undefined/null).
+Chart data from the **channel-values API** arrives as one row per timestamp with requested columns. For **Probability, Scatter, Rose, Parallel, Grid, Table, TimeSeries**, filters use `applyDataFilter` / `filterByTwa`: each point should carry filter-related fields when those channels were requested—typically **Grade**, **Race_number**, **Leg_number**, **State** (foiling / H0–H2 style), and **Twa_deg** where applicable. Missing keys mean that filter dimension cannot be applied to that dataset load.
+
+### Foiling_state vs State (parquet and charts)
+
+Parquet processing uses **`Foiling_state`**. `extractAndNormalizeMetadata` maps variants to internal **`State`**. `normalizeDataFields` standardizes to **`State`** on each point; if the requested channel list includes **`Foiling_state`**, it also sets **`Foiling_state`** as an alias of **`State`** so chart series saved with the parquet name still resolve Y values.
+
+### Historical: timeseries rows and tags in HuniDB
+
+If any code path still serves rows from HuniDB `ts.*` tables with a `tags` JSON column, filter metadata in **tags** should mirror the same fields above for client-side filtering. This is **not** the primary path for dataset explore timeseries today.
 
 ### Using UnifiedDataStore
 
@@ -263,7 +273,8 @@ const leg = point.leg_number;
 
 1. **Schema**: 
    - Metadata columns: lowercase (`race_number`, `leg_number`, etc.)
-   - Channel table names: original case (`ts.Bsp_kts`, `ts.Tws_kts`)
+   - Channel names from API/parquet: original case; **`Foiling_state`** may be aliased to **`State`** plus **`Foiling_state`** when requested
+   - Historical HuniDB channel tables: original case (`ts.Bsp_kts`, …) — not used for explore timeseries persistence
 2. **Queries**: 
    - Metadata: Use lowercase column names in SQL
    - Channels: Use original case, but SQLite handles case-insensitive matching

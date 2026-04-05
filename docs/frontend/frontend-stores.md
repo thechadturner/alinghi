@@ -45,8 +45,8 @@ Playback Store (frontend/store/playbackStore.ts)
 - Cleanup: registerPlaybackStoreCleanup() registers automatic cleanup via onCleanup. disposePlaybackStore() stops intervals and clears synced keys (clearSyncData now automatically triggers cleanup for registered signals).
 
 Unified Data Store (frontend/store/unifiedDataStore.ts)
-- Purpose: Unified interface to fetch, filter, and query datasets (timeseries, mapdata, aggregates). HuniDB is used only for events and metadata, not for timeseries/map/aggregate data.
-- Architecture: Two-layer for data (in-memory cache → API). HuniDB used for events, channel names, sources, and settings only.
+- Purpose: Unified interface to fetch, filter, and query datasets (timeseries, mapdata, aggregates). **Explore timeseries**: in-memory cache → channel-values API; see [Data Caching Policy](./data-caching-policy.md).
+- Architecture: Chart data is **in-memory cache + API**. HuniDB: events (e.g. time ranges for selection), meta, json objects/settings, density—not raw `ts.*` timeseries for explore.
 - Sources: CHART_SOURCE_MAPPING maps chart types to data sources: mapdata, timeseries, aggregates, objects.
 - API integration: unifiedDataAPI.getDataByChannels for data; storeDataInIndexedDB is a no-op for timeseries/map/aggregates.
 - Cache Validation: CRITICAL - Always validates in-memory cache contains ALL requested channels before using (prevents incomplete data).

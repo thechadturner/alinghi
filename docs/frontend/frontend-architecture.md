@@ -1,7 +1,7 @@
 RaceSight Frontend Architecture (frontend/)
 
 Overview
-The frontend is a SolidJS application that manages authentication, routing, multi-window synchronization, and data visualization. It uses a unified data store with in-session in-memory caches and HuniDB for non-timeseries data (events, aggregates, mapdata, objects). Timeseries/channel-values are not persisted locally. See [Data Caching Policy](./data-caching-policy.md) for details.
+The frontend is a SolidJS application that manages authentication, routing, multi-window synchronization, and data visualization. **Dataset explore timeseries** and other channel-values loads use `unifiedDataStore` → file **channel-values API** (parquet/DuckDB on the file server), with **in-session in-memory caches** (`dataCache`, `queryCache`, etc.—see [Data Caching Policy](./data-caching-policy.md)). **HuniDB** is used for client-side **events**, **metadata** (datasets, sources, channel hints), **json/settings**, **targets**, and **density** writes—not for persisting raw explore timeseries rows.
 
 Entry Points
 - frontend/index.tsx: Bootstraps app, installs fetch interceptor and console gate, initializes selection and playback stores, performs auth handshake, renders <App />.
@@ -18,8 +18,8 @@ State Management
 - Persistent store (persistantStore.ts) maintains user selections across sessions.
 
 Data Flow
-- Services in frontend/services fetch data from the API. Channel-values/timeseries are held in the unified data store's in-memory caches only; HuniDB is used for events, aggregates, mapdata, and objects (see [Data Caching Policy](./data-caching-policy.md)).
-- The unified data store frontend/store/unifiedDataStore.ts provides read/query helpers that apply global filters and time windows. Overlay gauge data must be retrieved from the API (timeseries) only—not from map cache—and is held in the Overlay component state (fetched once from API, passed to gauge children via props); no separate overlay cache or HuniDB.
+- Services in frontend/services call backend APIs. Timeseries/channel-values responses are merged into **unifiedDataStore** in-memory caches; explore flow details and diagrams are in [Data Caching Policy](./data-caching-policy.md).
+- The unified data store frontend/store/unifiedDataStore.ts provides read/query helpers that apply global filters and time windows. Overlay gauge data must be retrieved from the **channel-values API** (full channel set)—not from map-specific payloads—and is held in Overlay component state (passed to gauge children via props).
 
 Sidebar Component
 - Dynamic menu generation based on application context (dataset, day, project source, project level).

@@ -2,7 +2,22 @@
 
 ## Overview
 
-Timeseries and channel-values data are **not** persisted locally (no IndexedDB/HuniDB cache for raw channel data). This avoids stale data and reduces maintenance cost. Data is fetched from the API and held in in-session in-memory caches only.
+Timeseries and channel-values data are **not** persisted locally (no IndexedDB/HuniDB cache for raw channel data). This avoids stale data and reduces maintenance cost. Data is fetched from the **file server channel-values API** (DuckDB over parquet, with optional Influx backfill on the server) and held in **in-session in-memory caches** in `unifiedDataStore`.
+
+### Dataset explore / timeseries data path
+
+Explore timeseries (dataset reports) loads chart channels through `unifiedDataStore.fetchDataWithChannelCheckingFromFile` → channel-values API. **HuniDB is not used** to read or write that timeseries payload.
+
+```mermaid
+flowchart LR
+  explorePage[Explore_TimeSeries_page]
+  uds[unifiedDataStore]
+  mem[dataCache_queryCache_etc]
+  api[channel_values_file_API]
+  explorePage --> uds
+  uds --> mem
+  uds --> api
+```
 
 ## What Is Cached
 
@@ -29,13 +44,16 @@ Additional in-memory behavior:
 
 ### HuniDB (non-timeseries)
 
-HuniDB is still used for non-timeseries data:
+HuniDB is still used for client-side data that is **not** raw explore timeseries rows. Map tracks and channel-values timeseries are loaded from the **API** and cached in **unifiedDataStore in-memory** structures above—not stored in HuniDB as `ts.*` tables.
 
-- **Events** – per-class event lists for datasets.
-- **Aggregates** – aggregate/performance data.
-- **Map data** – map tracks and related data.
-- **Objects** – simple key/value object storage.
+Typical HuniDB uses:
+
+- **Events** – per-class event lists for datasets (time ranges, tags).
+- **Metadata** – datasets, sources, channel name hints (`meta.*`).
+- **Objects / settings** – `json.objects`, targets, sidebar cache, etc.
 - **Density optimization** – optimized scatter results are written to HuniDB for persistence; the read path was removed so density is always recomputed in the worker.
+
+See [HuniDB caching scope](../optimization/HUNIDB_CACHING_AND_INDEXING.md) for the full split.
 
 ## Clearing caches
 

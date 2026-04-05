@@ -18,9 +18,9 @@ Data Flow Summary (timeseries/map/aggregates)
 3) Fetch from API via unifiedDataAPI.getDataByChannels (or fetchAndStoreMapData for mapdata)
 4) Update in-memory cache and return complete dataset to chart
 
-Timeseries, map data, and aggregates are not cached in HuniDB; only in-memory and API are used.
+Timeseries/channel-values: **file server API** + **unifiedDataStore in-memory caches** ([Data Caching Policy](./data-caching-policy.md)). HuniDB is out of scope for that raw payload.
 
-**Important:** See `docs/frontend/unifiedDataStore-guide.md` for detailed architecture, cache validation rules, and common pitfalls.
+**Important:** See `docs/frontend/unifiedDataStore-guide.md` for cache validation rules and pitfalls.
 
 Error Handling & Logging
 - All services log via src/utils/console with API-level verbosity toggles.

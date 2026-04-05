@@ -31,7 +31,7 @@
 
 - **Multi-service backend:** Separate services for app API, admin, file/media, streaming, and Python script execution (server_app, server_admin, server_file, server_media, server_stream, server_python).
 - **Class-driven schema:** Database and APIs are organized by sailing “class” (e.g. `ac75`, `ac40`) with parallel table sets per class (datasets, events, media, targets, etc.).
-- **Unified data store and caching policy:** Central frontend store that applies global filters and time windows; in-session in-memory caches for chart/query data; HuniDB used only for non-timeseries (events, aggregates, map data, objects). Timeseries are not persisted client-side.
+- **Unified data store and caching policy:** Central frontend store that applies global filters and time windows; in-session in-memory caches (`dataCache`, `queryCache`, etc.) for chart/channel-values data loaded from the **channel-values API**; **HuniDB** for events, metadata, settings, density, and related client features—not for persisting raw explore timeseries. See `docs/frontend/data-caching-policy.md`.
 - **Data normalization pattern:** Metadata fields normalized to lowercase with underscores in store/HuniDB; channel names preserved in original case for InfluxDB compatibility. Documented in `docs/architecture/DATA_NORMALIZATION_PATTERN.md`.
 - **Multi-window synchronization:** Hybrid approach using SyncStore (localStorage/IndexedDB) plus hub-based postMessage (filter store, selection store) for cross-window and cross-browser-window sync; guard flags to avoid echo loops.
 
@@ -68,7 +68,7 @@
 
 ### 3.4 Client-Side Libraries and Patterns
 
-- **HuniDB:** TypeScript library for SQLite/WASM in the browser with IndexedDB persistence; migrations, transactions, query/exec API, schema DSL, query builder. Used for events, aggregates, map data, objects; not used for raw timeseries in current design.
+- **HuniDB:** TypeScript library for SQLite/WASM in the browser with IndexedDB persistence; migrations, transactions, query/exec API, schema DSL, query builder. Used for events, metadata, json/settings, targets, density, etc. Raw timeseries for explore uses **API + unifiedDataStore in-memory** instead of HuniDB `ts.*` storage.
 - **UnifiedDataStore:** Single entry point for chart/builders; applies filters and time windows; LRU and query caches; channel availability and “no data” backoff; clearCacheForDataSource / clearAllData.
 - **FilterStore, SelectionStore, PlaybackStore:** Global filter state (states, races, legs, grades); selection (ranges, events, cut events); playback time; all integrated with SyncStore and cross-window hub.
 - **Sidebar and menu logic:** Dynamic menu generation by context (dataset, day, project source/level); multiple modes and auto-selection behaviors; reactive updates and video menu integration.

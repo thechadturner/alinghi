@@ -1,6 +1,6 @@
 ## HuniDB in RaceSight (Metadata & Settings Only)
 
-HuniDB is **no longer used** to cache timeseries, map data, aggregates, or density-optimized data. Those flows use the API only (with in-memory cache where applicable).
+HuniDB is **no longer used** to cache timeseries, map data, aggregates, or density-optimized data. Those flows use the API only (with **unifiedDataStore in-memory** caches where applicable—see [`docs/frontend/data-caching-policy.md`](../frontend/data-caching-policy.md)).
 
 This document describes the **remaining** uses of HuniDB: metadata and settings tables used for events, channel discovery, sources, targets, and persisted UI state.
 

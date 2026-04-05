@@ -1,6 +1,6 @@
 # HuniDB Time-Series Optimization Guide
 
-**Note:** Timeseries are **no longer cached in HuniDB** in RaceSight. This doc describes the HuniDB library’s time-series capabilities; the app uses API + in-memory cache for timeseries. See `HUNIDB_CACHING_AND_INDEXING.md` for current HuniDB usage in RaceSight.
+**Note:** Timeseries are **no longer cached in HuniDB** in RaceSight. This doc describes the HuniDB library’s time-series capabilities; the app uses the channel-values API plus **unifiedDataStore in-memory** caches ([`docs/frontend/data-caching-policy.md`](../frontend/data-caching-policy.md)). See `HUNIDB_CACHING_AND_INDEXING.md` for current HuniDB usage in RaceSight.
 
 ## Overview
 

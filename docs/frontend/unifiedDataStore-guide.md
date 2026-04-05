@@ -2,13 +2,13 @@
 
 ## Overview
 
-The `unifiedDataStore` is the central data management system for fetching and querying timeseries, map, and aggregate data. For that data it uses **in-memory cache** and the **API** only; timeseries, map data, and aggregates are **not** cached in HuniDB. HuniDB is used only for events (time ranges), metadata (datasets, sources, channel names), and settings (json.objects, json.targets).
+The `unifiedDataStore` is the central data management system for fetching and querying timeseries, map, and aggregate data. **Primary path:** in-memory caches (`dataCache`, `queryCache`, channel availability, etc.) plus the **channel-values / events APIs**—documented in [Data Caching Policy](./data-caching-policy.md) (including the explore timeseries flow). **HuniDB** supports events, metadata, settings, and related features—not persistence of raw explore timeseries rows.
 
 ## Architecture
 
 ### Data flow for timeseries / map / aggregates
 
-Two-layer flow (no HuniDB data cache):
+Two-layer flow (API + in-memory; see [Data Caching Policy](./data-caching-policy.md)):
 
 1. **In-Memory Cache** (`dataCache`): Fastest, but volatile and chart-specific
 2. **API**: Remote data source when cache misses occur
@@ -112,7 +112,7 @@ const channelsToFetch = newMissingChannels.length > 0
       : ['Datetime', ...newMissingChannels])  // API requires Datetime
   : channelsToEnsure;
 
-// Fetch from API and merge into in-memory cache (no HuniDB for timeseries/map/aggregates)
+// Fetch from API and merge into in-memory cache
 const data = await fetchFromAPIAndMergeIntoCache(..., channelsToFetch, ...);
 ```
 
@@ -146,8 +146,7 @@ return getMergedDataFromCache(cacheKey, validRequestedChannels);
 ```
 
 **Why:**
-- Timeseries, map, and aggregate data use in-memory cache + API only (no HuniDB).
-- If merge isn't complete, callers may get incomplete channel data.
+- Chart payloads are served from in-memory cache + API; incomplete merge yields missing channels.
 
 ### Merging channels in cache
 
