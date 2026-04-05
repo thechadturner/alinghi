@@ -189,10 +189,6 @@ function correctedPointerPlotX(target: HTMLElement, clientX: number, plotWidth: 
   return Math.max(0, Math.min(plotWidth, localX));
 }
 
-function timeSecFromPointer(u: uPlot, target: HTMLElement, clientX: number): number {
-  return u.posToVal(correctedPointerPlotX(target, clientX, u.bbox.width), "x");
-}
-
 function statsForSeries(
   rawSeries: any,
   visLoMs: number,
@@ -245,6 +241,8 @@ export interface ExploreTimeSeriesUPlotProps {
 export default function ExploreTimeSeriesUPlot(props: ExploreTimeSeriesUPlotProps) {
   let rootEl: HTMLDivElement | null = null;
   const instancesRef: { current: uPlot[] } = { current: [] };
+  const interactionStateRef: WeakMap<uPlot, { hoverLeft: number | null; brushLeft: number | null; brushWidth: number | null }> =
+    new WeakMap();
   const perChartLegendContainersRef: { current: (HTMLDivElement | null)[] } = { current: [] };
   const resizeObserversRef: { current: ResizeObserver[] } = { current: [] };
   const fullDomainRef: { current: { min: number; max: number } } = { current: { min: 0, max: 1 } };
@@ -253,7 +251,6 @@ export default function ExploreTimeSeriesUPlot(props: ExploreTimeSeriesUPlotProp
   let programmaticScale = false;
   let wheelHandler: ((e: WheelEvent) => void) | null = null;
   let dblClickHandler: ((ev: MouseEvent) => void) | null = null;
-  let lastPointerDown: { x: number; y: number } | null = null;
 
   const [visibleDomainSec, setVisibleDomainSec] = createSignal<[number, number] | null>(null);
 
@@ -407,6 +404,21 @@ export default function ExploreTimeSeriesUPlot(props: ExploreTimeSeriesUPlotProp
     }
   }
 
+  function clearAllBrushes() {
+    for (const u of instancesRef.current) {
+      const state = interactionStateRef.get(u);
+      if (state) {
+        state.brushLeft = null;
+        state.brushWidth = null;
+      }
+      try {
+        u.redraw();
+      } catch {
+        /* noop */
+      }
+    }
+  }
+
   function mountPlots() {
     destroyPlots();
     const host = props.getHostElement();
@@ -505,10 +517,10 @@ export default function ExploreTimeSeriesUPlot(props: ExploreTimeSeriesUPlotProp
           },
         ],
         cursor: {
-          x: true,
+          x: false,
           y: false,
           points: { show: false },
-          drag: { x: true, y: false, dist: 5, uni: 12, setScale: true },
+          drag: { x: false, y: false, dist: 5, uni: 12, setScale: false },
         },
         select: { show: true, left: 0, top: 0, width: 0, height: 0 },
         legend: { show: false },
@@ -560,6 +572,32 @@ export default function ExploreTimeSeriesUPlot(props: ExploreTimeSeriesUPlotProp
               ctx.restore();
             },
             (u) => {
+              const state = interactionStateRef.get(u);
+              if (!state) return;
+              const { top, height, left } = u.bbox;
+              const { ctx } = u;
+              if ((state.brushWidth ?? 0) > 0 && state.brushLeft != null) {
+                ctx.save();
+                ctx.fillStyle = "rgba(211, 211, 211, 0.28)";
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+                ctx.lineWidth = 1;
+                ctx.fillRect(left + state.brushLeft, top, state.brushWidth ?? 0, height);
+                ctx.strokeRect(left + state.brushLeft, top, state.brushWidth ?? 0, height);
+                ctx.restore();
+              }
+              if (state.hoverLeft != null) {
+                ctx.save();
+                ctx.strokeStyle = "rgba(255,255,255,0.95)";
+                ctx.lineWidth = 1;
+                ctx.setLineDash([]);
+                ctx.beginPath();
+                ctx.moveTo(left + state.hoverLeft, top);
+                ctx.lineTo(left + state.hoverLeft, top + height);
+                ctx.stroke();
+                ctx.restore();
+              }
+            },
+            (u) => {
               const st = selectedTime();
               if (!(st instanceof Date) || !Number.isFinite(st.getTime())) return;
               const sec = st.getTime() / 1000;
@@ -582,46 +620,109 @@ export default function ExploreTimeSeriesUPlot(props: ExploreTimeSeriesUPlotProp
             (u) => {
               const over = u.root.querySelector(".u-over") as HTMLElement | null;
               if (!over) return;
+              const interactionState = { hoverLeft: null, brushLeft: null, brushWidth: null };
+              interactionStateRef.set(u, interactionState);
+              let activePointerId: number | null = null;
               let dragMoved = false;
+              let dragStartClient: { x: number; y: number } | null = null;
+              let dragStartLeft: number | null = null;
+
+              const syncCursorToPointer = (clientX: number) => {
+                const left = correctedPointerPlotX(over, clientX, u.bbox.width);
+                interactionState.hoverLeft = left;
+                return left;
+              };
+
+              const clearSelection = () => {
+                interactionState.brushLeft = null;
+                interactionState.brushWidth = null;
+              };
+
               over.addEventListener("pointerdown", (ev: Event) => {
                 const pe = ev as PointerEvent;
-                lastPointerDown = { x: pe.clientX, y: pe.clientY };
+                activePointerId = pe.pointerId;
+                dragStartClient = { x: pe.clientX, y: pe.clientY };
+                dragStartLeft = syncCursorToPointer(pe.clientX);
                 dragMoved = false;
-              });
-              over.addEventListener("pointermove", (ev: Event) => {
-                const pe = ev as PointerEvent;
-                if (!lastPointerDown) return;
+                clearSelection();
+                u.redraw();
                 try {
-                  u.setCursor({
-                    left: correctedPointerPlotX(over, pe.clientX, u.bbox.width),
-                  });
+                  over.setPointerCapture(pe.pointerId);
                 } catch {
                   /* noop */
                 }
-                if (Math.abs(pe.clientX - lastPointerDown.x) > 4 || Math.abs(pe.clientY - lastPointerDown.y) > 4) {
+              });
+              over.addEventListener("pointermove", (ev: Event) => {
+                const pe = ev as PointerEvent;
+                const left = syncCursorToPointer(pe.clientX);
+                if (activePointerId !== pe.pointerId || !dragStartClient || dragStartLeft == null) return;
+                if (Math.abs(pe.clientX - dragStartClient.x) > 4 || Math.abs(pe.clientY - dragStartClient.y) > 4) {
                   dragMoved = true;
                 }
+                if (dragMoved) {
+                  interactionState.brushLeft = Math.min(dragStartLeft, left);
+                  interactionState.brushWidth = Math.abs(left - dragStartLeft);
+                } else {
+                  clearSelection();
+                }
+                u.redraw();
               });
-              over.addEventListener("pointercancel", () => {
-                lastPointerDown = null;
-                dragMoved = false;
-              });
-              over.addEventListener("click", (ev: Event) => {
-                const me = ev as MouseEvent;
-                if (!lastPointerDown) return;
-                const dx = Math.abs(me.clientX - lastPointerDown.x);
-                const dy = Math.abs(me.clientY - lastPointerDown.y);
-                lastPointerDown = null;
-                if (dragMoved || dx > 6 || dy > 6) {
+              over.addEventListener("pointerup", (ev: Event) => {
+                const pe = ev as PointerEvent;
+                if (activePointerId !== pe.pointerId) return;
+                const left = syncCursorToPointer(pe.clientX);
+                const startClient = dragStartClient;
+                const startLeft = dragStartLeft;
+                activePointerId = null;
+                dragStartClient = null;
+                dragStartLeft = null;
+                try {
+                  over.releasePointerCapture(pe.pointerId);
+                } catch {
+                  /* noop */
+                }
+                if (!startClient || startLeft == null) {
                   dragMoved = false;
+                  clearSelection();
                   return;
                 }
-                const tSec = timeSecFromPointer(u, over, me.clientX);
-                if (!Number.isFinite(tSec)) return;
-                if (requestTimeControl("timeseries")) {
-                  setIsManualTimeChange(true);
-                  setSelectedTime(new Date(tSec * 1000), "timeseries");
+                const dx = Math.abs(pe.clientX - startClient.x);
+                if (dragMoved && dx > 6) {
+                  const minLeft = Math.min(startLeft, left);
+                  const maxLeft = Math.max(startLeft, left);
+                  clearAllBrushes();
+                  if (maxLeft - minLeft > 1) {
+                    const minSec = u.posToVal(minLeft, "x");
+                    const maxSec = u.posToVal(maxLeft, "x");
+                    if (Number.isFinite(minSec) && Number.isFinite(maxSec) && maxSec > minSec) {
+                      applyXAll(minSec, maxSec);
+                      syncStoresForVisibleWindow(minSec, maxSec, "zoom");
+                    }
+                  }
+                } else {
+                  clearSelection();
+                  const tSec = u.posToVal(left, "x");
+                  if (Number.isFinite(tSec) && requestTimeControl("timeseries")) {
+                    setIsManualTimeChange(true);
+                    setSelectedTime(new Date(tSec * 1000), "timeseries");
+                  }
+                  u.redraw();
                 }
+                dragMoved = false;
+              });
+              over.addEventListener("pointercancel", () => {
+                activePointerId = null;
+                dragStartClient = null;
+                dragStartLeft = null;
+                dragMoved = false;
+                interactionState.hoverLeft = null;
+                clearSelection();
+                u.redraw();
+              });
+              over.addEventListener("pointerleave", () => {
+                if (activePointerId != null) return;
+                interactionState.hoverLeft = null;
+                clearSelection();
                 u.redraw();
               });
             },
