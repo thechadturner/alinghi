@@ -3719,13 +3719,13 @@ export default function MapContainer(props: MapContainerProps) {
         </>
       )}
 
-      {/* Wind Arrow - Shows wind direction and speed */}
+      {/* Wind Arrow - Shows wind direction and speed; color bar matches track maptype (same as TrackLayer / MultiTrackLayer) */}
       <Show when={map()}>
         <WindArrow
           map={map()}
           tws={windData().tws}
           twd={windData().twd}
-          maptype={sourceMode === 'multi' ? 'DEFAULT' : maptype()}
+          maptype={maptype()}
           trackData={trackData()}
           selectedTime={selectedTime()}
           objectName={objectName}

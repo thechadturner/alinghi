@@ -16164,6 +16164,11 @@ html[data-theme="dark"] {
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.8), 0 0 2px rgba(0, 0, 0, 0.8);
 }
 
+/* Wind arrow + color legend: must sit above track-overlay (100) and selection SVG (200) */
+.wind-arrow-svg {
+  z-index: 350 !important;
+}
+
 /* Polar Plot Styles */
 .polar-plot-tooltip {
   background-color: var(--color-bg-modal);

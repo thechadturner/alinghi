@@ -112,29 +112,34 @@ export default function WindArrow(props: WindArrowProps) {
   
   const updateColorBar = () => {
     if (!colorBarGroup) return;
-    
-    const maptype = props.maptype;
-    
-    // Clear existing color bar
+
+    // Same source as TrackLayer / timeline (avoids stale props). Uppercase so branches match API/persisted casing.
+    const raw = persistantStore.colorType?.() ?? props.maptype;
+    const mt = String(raw ?? "DEFAULT").trim().toUpperCase();
+
     colorBarGroup.selectAll("*").remove();
-    
-    // Hide color bar if maptype is null, undefined, empty, or not one of the allowed types
-    if (!maptype || maptype === null || maptype === undefined || maptype === 'DEFAULT') {
+
+    if (!mt || mt === "DEFAULT") {
       colorBarGroup.style("opacity", "0");
       colorBarGroup.style("display", "none");
       colorBarGroup.style("visibility", "hidden");
       return;
     }
-    
-    // Only show color bar for GRADE, WIND, VMG%, and VMG - hide for all other types (including STATE which is discrete)
-    const normalizedMaptype = maptype?.toUpperCase();
-    if (normalizedMaptype !== 'GRADE' && normalizedMaptype !== 'WIND' && normalizedMaptype !== 'VMG%' && normalizedMaptype !== 'VMG') {
+
+    const showLegend =
+      mt === "GRADE" ||
+      mt === "WIND" ||
+      mt === "VMG%" ||
+      mt === "VMG" ||
+      mt === "STATE" ||
+      mt === "PHASE";
+    if (!showLegend) {
       colorBarGroup.style("opacity", "0");
       colorBarGroup.style("display", "none");
       colorBarGroup.style("visibility", "hidden");
       return;
     }
-    
+
     colorBarGroup.style("opacity", "1");
     colorBarGroup.style("display", "block");
     colorBarGroup.style("visibility", "visible");
@@ -172,19 +177,19 @@ export default function WindArrow(props: WindArrowProps) {
       if (!closestPoint || minDiff > 5000) return null; // Only use if within 5 seconds
       
       // Get value based on maptype
-      if (maptype === 'GRADE') {
+      if (mt === 'GRADE') {
         return closestPoint.Grade ?? closestPoint.grade ?? null;
-      } else if (maptype === 'VMG%') {
+      } else if (mt === 'VMG%') {
         // Use vmg_perc_name channel
         const vmgPercField = vmgPercName();
         const val = closestPoint[vmgPercField] ?? closestPoint[vmgPercField.toLowerCase()] ?? closestPoint[vmgPercField.toUpperCase()] ?? closestPoint.Vmg_perc ?? closestPoint.vmg_perc;
         return val !== undefined && val !== null && !isNaN(Number(val)) ? Number(val) : null;
-      } else if (maptype === 'VMG') {
+      } else if (mt === 'VMG') {
         // Use vmg_name channel
         const vmgField = vmgName();
         const val = closestPoint[vmgField] ?? closestPoint[vmgField.toLowerCase()] ?? closestPoint[vmgField.toUpperCase()] ?? closestPoint.Vmg ?? closestPoint.vmg;
         return val !== undefined && val !== null && !isNaN(Number(val)) ? Number(val) : null;
-      } else if (maptype === 'WIND') {
+      } else if (mt === 'WIND') {
         return getTwd(closestPoint);
       }
       
@@ -196,18 +201,18 @@ export default function WindArrow(props: WindArrowProps) {
       const value = getValueAtSelectedTime();
       if (value === null || isNaN(value)) return null;
       
-      if (maptype === 'GRADE') {
+      if (mt === 'GRADE') {
         // GRADE: 0 (bottom) to 4 (top), map to barHeight
         // 0 = bottom (barY + barHeight), 4 = top (barY)
         const normalized = value / 4; // 0 to 1
         return barY + (barHeight * (1 - normalized)); // Invert so 0 is at bottom
-      } else if (maptype === 'VMG%') {
+      } else if (mt === 'VMG%') {
         // VMG%: Fixed scale 25% (min) to 125% (max)
         const minVMG = 25;
         const maxVMG = 125;
         const normalized = Math.max(0, Math.min(1, (value - minVMG) / (maxVMG - minVMG)));
         return barY + (barHeight * (1 - normalized)); // Invert so min is at bottom
-      } else if (maptype === 'VMG') {
+      } else if (mt === 'VMG') {
         // VMG: Dynamic scale based on data
         if (!props.trackData || props.trackData.length === 0) return null;
         
@@ -235,7 +240,7 @@ export default function WindArrow(props: WindArrowProps) {
         // Clamp normalized value to [0, 1] to ensure indicator stays within bar bounds
         const normalized = Math.max(0, Math.min(1, (value - minVMG) / (maxVMG - minVMG)));
         return barY + (barHeight * (1 - normalized)); // Invert so min is at bottom
-      } else if (maptype === 'WIND') {
+      } else if (mt === 'WIND') {
         // WIND: TWD value, need min/max from trackData
         if (!props.trackData || props.trackData.length === 0) return null;
         
@@ -255,23 +260,8 @@ export default function WindArrow(props: WindArrowProps) {
       
       return null;
     };
-    
-    // Add label above the bar (centered) - remove existing first
-    const labelFontSize = "8px";
-    colorBarGroup.select("text.title-label").remove();
-    colorBarGroup
-      .append("text")
-      .attr("class", "title-label")
-      .attr("x", barX + (barWidth / 2))
-      .attr("y", barY - 5)
-      .attr("text-anchor", "middle")
-      .style("font-size", labelFontSize)
-      .style("font-weight", "300")
-      .style("fill", "white")
-      .style("stroke", "none")
-      .text(maptype);
-    
-    if (maptype === 'GRADE') {
+
+    if (mt === 'GRADE') {
       // Three sections: red (low), lightgreen (med), green (high)
       const sectionHeight = barHeight / 3;
       
@@ -348,7 +338,7 @@ export default function WindArrow(props: WindArrowProps) {
         .style("fill", "white")
         .style("stroke", "none")
         .text("high");
-    } else if (maptype === 'VMG%') {
+    } else if (mt === 'VMG%') {
       // VMG%: Fixed scale 25% (min) to 125% (max)
       // Gradient: blue -> lightblue -> yellow -> red
       const minVMG = 25;
@@ -417,19 +407,26 @@ export default function WindArrow(props: WindArrowProps) {
         .style("fill", "white")
         .style("stroke", "none")
         .text("25%");
-    } else if (maptype === 'VMG') {
+    } else if (mt === 'VMG') {
       // VMG: Dynamic scale based on data
-      if (!props.trackData || props.trackData.length === 0) return;
-      
+      if (!props.trackData || props.trackData.length === 0) {
+        colorBarGroup.style("opacity", "0");
+        colorBarGroup.style("display", "none");
+        colorBarGroup.style("visibility", "hidden");
+        return;
+      }
+
       const vmgField = vmgName();
       const [minVMG, maxVMG] = getOneSigmaRange(props.trackData, (p: any) => {
         const val = p[vmgField] ?? p[vmgField.toLowerCase()] ?? p[vmgField.toUpperCase()] ?? p.Vmg ?? p.vmg;
         return val !== undefined && val !== null ? Number(val) : 0;
       });
-      
-      // Ensure we have a valid range
+
       if (maxVMG === minVMG || !isFinite(minVMG) || !isFinite(maxVMG)) {
-        return; // Can't draw bar with invalid range
+        colorBarGroup.style("opacity", "0");
+        colorBarGroup.style("display", "none");
+        colorBarGroup.style("visibility", "hidden");
+        return;
       }
       
       const gradientId = `vmg-gradient-${Date.now()}`;
@@ -496,7 +493,7 @@ export default function WindArrow(props: WindArrowProps) {
         .style("fill", "white")
         .style("stroke", "none")
         .text(round(minVMG, 1).toString());
-    } else if (maptype === 'WIND') {
+    } else if (mt === 'WIND') {
       // Gradient: red -> lightgrey -> green (for TWD)
       const gradientId = `wind-gradient-${Date.now()}`;
       const gradient = colorBarGroup
@@ -561,8 +558,93 @@ export default function WindArrow(props: WindArrowProps) {
         .style("fill", "white")
         .style("stroke", "none")
         .text("left");
+    } else if (mt === "STATE") {
+      const rowH = barHeight / 3;
+      const stLabelSize = "8px";
+      const stLabelX = barX - 4;
+      const stateRows: { fill: string; label: string }[] = [
+        { fill: "red", label: "0" },
+        { fill: "orange", label: "1" },
+        { fill: "blue", label: "2" },
+      ];
+      stateRows.forEach((row, i) => {
+        colorBarGroup
+          .append("rect")
+          .attr("x", barX)
+          .attr("y", barY + i * rowH)
+          .attr("width", barWidth)
+          .attr("height", Math.max(1, rowH - 1))
+          .style("fill", row.fill)
+          .style("stroke", "white")
+          .style("stroke-width", 0.5);
+        colorBarGroup
+          .append("text")
+          .attr("class", "value-label")
+          .attr("x", stLabelX)
+          .attr("y", barY + i * rowH + rowH * 0.72)
+          .attr("text-anchor", "end")
+          .style("font-size", stLabelSize)
+          .style("font-weight", "200")
+          .style("fill", "white")
+          .style("stroke", "none")
+          .text(row.label);
+      });
+    } else if (mt === "PHASE") {
+      const rowH = barHeight / 2;
+      const phLabelSize = "8px";
+      const phLabelX = barX - 4;
+      colorBarGroup
+        .append("rect")
+        .attr("x", barX)
+        .attr("y", barY)
+        .attr("width", barWidth)
+        .attr("height", Math.max(1, rowH - 1))
+        .style("fill", "orange")
+        .style("stroke", "white")
+        .style("stroke-width", 0.5);
+      colorBarGroup
+        .append("text")
+        .attr("class", "value-label")
+        .attr("x", phLabelX)
+        .attr("y", barY + rowH * 0.65)
+        .attr("text-anchor", "end")
+        .style("font-size", phLabelSize)
+        .style("fill", "white")
+        .style("stroke", "none")
+        .text("on");
+      colorBarGroup
+        .append("rect")
+        .attr("x", barX)
+        .attr("y", barY + rowH)
+        .attr("width", barWidth)
+        .attr("height", Math.max(1, rowH - 1))
+        .style("fill", "#94a3b8")
+        .style("stroke", "white")
+        .style("stroke-width", 0.5);
+      colorBarGroup
+        .append("text")
+        .attr("class", "value-label")
+        .attr("x", phLabelX)
+        .attr("y", barY + rowH + rowH * 0.65)
+        .attr("text-anchor", "end")
+        .style("font-size", phLabelSize)
+        .style("fill", "white")
+        .style("stroke", "none")
+        .text("off");
     }
-    
+
+    colorBarGroup
+      .append("text")
+      .attr("class", "title-label")
+      .attr("x", barX + barWidth / 2)
+      .attr("y", barY - 5)
+      .attr("text-anchor", "middle")
+      .style("font-size", "8px")
+      .style("font-weight", "300")
+      .style("fill", "white")
+      .style("stroke", "none")
+      .text(mt);
+
     // Add indicator line for selectedTime
     const indicatorY = calculateIndicatorPosition();
     if (indicatorY !== null) {
@@ -586,26 +668,30 @@ export default function WindArrow(props: WindArrowProps) {
       logDebug('WindArrow: initializeWindArrow - no map');
       return;
     }
-    
-    const canvasContainer = props.map?.getCanvasContainer ? props.map.getCanvasContainer() : null;
-    if (!canvasContainer) {
-      logDebug('WindArrow: initializeWindArrow - no canvasContainer', { 
-        hasMap: !!props.map, 
-        hasGetCanvasContainer: !!props.map?.getCanvasContainer 
-      });
+
+    // Attach to map.getContainer(), *sibling* of .mapboxgl-map — not inside the canvas container.
+    // TrackLayer draws in the canvas container at z-index 100; staying there left the grade legend
+    // under the full-size track SVG no matter our z-index (same stacking subtree as Mapbox).
+    const mapHost = props.map.getContainer?.() ?? null;
+    if (!mapHost) {
+      logDebug('WindArrow: initializeWindArrow - no map container', { hasMap: !!props.map });
       return;
     }
-    
+
+    const legacyCanvas = props.map.getCanvasContainer?.() ?? null;
+    if (legacyCanvas && legacyCanvas !== mapHost) {
+      d3.select(legacyCanvas).select("svg.wind-arrow-svg").remove();
+    }
+
     logDebug('WindArrow: initializeWindArrow - starting initialization');
 
-    let svg = d3.select(canvasContainer).select<SVGSVGElement>("svg.wind-arrow-svg");
-    
-    if (svg.empty()) {
-      const mapContainer = props.map?.getContainer ? props.map.getContainer() : null;
-      const mapWidth = mapContainer?.offsetWidth || 1400;
-      const mapHeight = mapContainer?.offsetHeight || 900;
+    let svg = d3.select(mapHost).select<SVGSVGElement>("svg.wind-arrow-svg");
 
-      svg = d3.select(canvasContainer)
+    if (svg.empty()) {
+      const mapWidth = mapHost.offsetWidth || 1400;
+      const mapHeight = mapHost.offsetHeight || 900;
+
+      svg = d3.select(mapHost)
         .append<SVGSVGElement>("svg")
         .attr("class", "wind-arrow-svg")
         .attr("width", mapWidth)
@@ -613,7 +699,6 @@ export default function WindArrow(props: WindArrowProps) {
         .style("position", "absolute")
         .style("top", "0")
         .style("left", "0")
-        .style("z-index", 2)
         .style("pointer-events", "none");
     }
 
@@ -756,6 +841,11 @@ export default function WindArrow(props: WindArrowProps) {
       hasWindGroup: !!windGroup, 
       hasColorBarGroup: !!colorBarGroup 
     });
+
+    // createEffect often runs before the map fires "load"; if we only init here, updateColorBar never
+    // runs again until another prop changes — so the legend stays missing. Refresh arrow + bar once DOM exists.
+    updateArrow();
+    updateColorBar();
   };
 
   const updateArrow = () => {
@@ -862,6 +952,9 @@ export default function WindArrow(props: WindArrowProps) {
 
   // Update arrow and color bar when props change
   createEffect(() => {
+    // Explicit subscription so legend updates when Color By changes (nested reads can miss tracking).
+    void persistantStore.colorType?.();
+
     // Ensure initialization happens if map becomes available
     if (!isInitialized && props.map) {
       if (props.map.loaded && props.map.loaded()) {
