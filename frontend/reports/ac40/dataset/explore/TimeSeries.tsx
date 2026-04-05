@@ -576,7 +576,7 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
         debug('🕐 TimeSeriesPage: Added Datetime to required channels');
       }
 
-      // Chart component defines what it needs: timeseries uses only Race_number and Leg_number for explore filters (not Grade, Config, Foiling_state, etc.).
+      // Auto-add filter axes for explore: race/leg (Grade/State/Foiling_state come from chart series or unifiedDataAPI metadata merge when configured).
       const TIMESERIES_FILTER_CHANNELS = ['Race_number', 'Leg_number'];
       TIMESERIES_FILTER_CHANNELS.forEach(channel => {
         if (!requiredChannels.some(ch => ch.toLowerCase() === channel.toLowerCase())) {
@@ -782,7 +782,7 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
           const allLegs = (opts.legs || opts.legOptions || []).slice().sort((a, b) => a - b);
 
           // Use local setters to populate race, leg, and grade options
-          // Only set if we have data - don't overwrite huniDB-fetched options with empty arrays
+          // Only set if we have data - don't overwrite filter options from store/API with empty arrays
           if (allRaces.length > 0) {
             setRaceOptions(allRaces);
           }
@@ -797,7 +797,7 @@ export default function TimeSeriesPage(props: TimeSeriesPageProps) {
             racesList: allRaces,
             legs: allLegs.length,
             grades: allGrades.length,
-            note: allRaces.length === 0 ? 'Races empty - TimeSeriesSettings will fetch from huniDB' : 'Races loaded from store'
+            note: allRaces.length === 0 ? 'Races empty - TimeSeriesSettings may load options when opened' : 'Races loaded from store'
           });
         }
       } catch (error) {

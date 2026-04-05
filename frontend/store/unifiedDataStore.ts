@@ -1518,6 +1518,14 @@ export const unifiedDataStore: UnifiedDataStore = (() => {
       if (normalizedMetadata.State !== undefined && normalizedMetadata.State !== null) {
         normalized.State = normalizedMetadata.State;
       }
+      // Parquet uses Foiling_state; charts may request that name. After cleanup we only have State—alias so yaxis lookups work.
+      if (
+        requestedChannelsLower.has('foiling_state') &&
+        normalized.State !== undefined &&
+        normalized.State !== null
+      ) {
+        normalized.Foiling_state = normalized.State;
+      }
       if (normalizedMetadata.Race_number !== undefined && normalizedMetadata.Race_number !== null) {
         normalized.Race_number = normalizedMetadata.Race_number;
       }

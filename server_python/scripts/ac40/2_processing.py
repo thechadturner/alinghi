@@ -67,7 +67,7 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
             {'name': 'AC40_CWA_n', 'type': 'angle180'},
             {'name': 'AC40_VMG_kts', 'type': 'float'},
             {'name': 'AC40_COG', 'type': 'angle360'},
-            {'name': 'AC40_HullAltitude', 'type': 'int'},
+            {'name': 'AC40_HullAltitude', 'type': 'float'},
             {'name': 'AC40_Loads_MainSheetLoad', 'type': 'float'},
             {'name': 'AC40_FoilPort_Cant', 'type': 'float'},
             {'name': 'AC40_FoilStbd_Cant', 'type': 'float'},
@@ -134,7 +134,7 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
             dfo['Foiling_state'] = np.select(
                 [
                     (dfo['Bsp_kts'] > 15) & (dfo['Hull_altitude'] > 0),  # H0
-                    (dfo['Bsp_kts'] > 15) & (dfo['Hull_altitude'] < 0.2),  # H1
+                    (dfo['Bsp_kts'] > 15) & (dfo['Hull_altitude'] <= 0), # H1
                     (dfo['Bsp_kts'] < 15),  # H2
                 ],
                 [0, 1, 2],

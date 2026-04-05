@@ -38,21 +38,21 @@ LOG_SCRIPT = "0_map.py"
 if __name__ == "__main__":
     parameters_json = {}
     # Set True to run from IDE / CLI without argv JSON (edit values in the branch below). Same pattern as 2_processing.py / 3_corrections.py.
-    USE_MANUAL_TEST_INPUTS = False
+    USE_MANUAL_INPUTS = False
 
     try:
-        if USE_MANUAL_TEST_INPUTS:
+        if USE_MANUAL_INPUTS:
             class_name = "AC40"
             project_id = 2
-            dataset_id = 2
-            date = "20260330"
+            dataset_id = 1
+            date = "20260328"
             source_name = "AC40-SUI1"
             start_time = None
             end_time = None
             batch = False
             verbose = True
-            day_type = ["TRAINING", "RACING"]
-            race_type = ["INSHORE", "COASTAL", "OFFSHORE"]
+            day_type = "TRAINING"
+            race_type = "INSHORE"
             parameters_json = {"verbose": verbose}
         else:
             parameters_str = sys.argv[1]
