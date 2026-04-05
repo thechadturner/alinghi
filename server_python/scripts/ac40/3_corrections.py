@@ -14,14 +14,23 @@ corrected columns added (``Awa_cor``, ``Aws_cor``, ``Twa_cor``, etc.).
 ``_finalize_corrections_geometry`` derives course and normalized-angle columns.
 
 ``fusion_corrections_racesight.parquet`` is **narrow**: join keys, offset columns,
-fused ``*_cor*`` outputs, geometry derived from corrected wind, and per-sensor
-``Awa{n}_*`` / ``Aws{n}_*`` when multi-sensor. Raw instrument columns (``Awa_deg``,
+fused corrected outputs under ``AC40_*`` public names (e.g. ``AC40_BowWand_AWA_cor_deg``),
+geometry derived from corrected wind, and per-sensor
+``AC40_BowWand_AWA{n}_*`` / ``AC40_BowWand_AWS{n}_*`` when multi-sensor. Raw instrument columns (``Awa_deg``,
 ``Bsp_kts``, etc.) are **not** written here; UIs that need before/after should use
 ``get_channel_values`` (or equivalent), which merges this file with other parquets.
+
+Internal steps keep short suffixed names (``Awa_cor_deg``, …) until
+``_finalize_corrections_geometry``; ``_rename_fusion_outputs_to_ac40`` maps them to
+``AC40_…`` before return / parquet write.
 
 Multi-sensor usage: set ``multi_sensor=True`` in ``calibrate_pipeline`` call and
 supply ``awa_sensors`` / ``aws_sensors`` lists — see
 ``utilities.cal_utils.calibrate_pipeline`` docstring for details.
+
+CLI / ``run_corrections_pipeline``: ``skip_corrections`` skips ``calibrate_pipeline``
+and writes source channels as ``*_cor`` with zero offsets (same as the
+sanity-check fallback path).
 """
 
 import re
@@ -131,6 +140,25 @@ LWY_FEATURES = [
     'Bsp', 'Tws', 'Heel_n', 'Altitude', 'Foil_lwd_sink', 'Foil_lwd_cant_eff',
     'Main_sheet_load', 'Swh', 'Awa_n',
 ]
+
+# Short fusion columns (after ``_finalize_corrections_geometry``) → public AC40 parquet names.
+FUSION_SHORT_TO_AC40 = {
+    'Awa_offset_deg': 'AC40_BowWand_AWA_offset_deg',
+    'Lwy_offset_deg': 'AC40_Leeway_offset_deg',
+    'Lwy_offset_norm_deg': 'AC40_Leeway_offset_n_deg',
+    'Awa_cor_deg': 'AC40_BowWand_AWA_cor_deg',
+    'Aws_cor_kts': 'AC40_BowWand_AWS_cor_kts',
+    'Tws_cor_kts': 'AC40_BowWand_TWS_cor_kts',
+    'Twa_cor_deg': 'AC40_TWA_cor_deg',
+    'Twd_cor_deg': 'AC40_BowWand_TWD_cor_deg',
+    'Lwy_cor_deg': 'AC40_Leeway_cor_deg',
+    'Awa_n_cor_deg': 'AC40_BowWand_AWA_n_cor_deg',
+    'Twa_n_cor_deg': 'AC40_TWA_n_cor_deg',
+    'Lwy_n_cor_deg': 'AC40_Leeway_n_cor_deg',
+    'Cse_cor_deg': 'AC40_Cse_cor_deg',
+    'Cwa_cor_deg': 'AC40_CWA_cor_deg',
+    'Cwa_n_cor_deg': 'AC40_CWA_n_cor_deg',
+}
 
 # ---------------------------------------------------------------------------
 # EMA CONSTANTS (shared with 1_normalization_influx.py)
@@ -370,6 +398,40 @@ def _rename_simple_to_suffixed(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# RENAME FUSION COLUMNS → AC40 (parquet / channel-values public names)
+# ---------------------------------------------------------------------------
+
+def _rename_fusion_outputs_to_ac40(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Map short suffixed fusion columns to ``AC40_…`` names aligned with raw fetch
+    channels in ``2_processing.get_data``. Multi-sensor: ``Awa1_cor_deg`` →
+    ``AC40_BowWand_AWA1_cor_deg``, etc.
+    """
+    if df is None or len(df) == 0:
+        return df
+    rename_map: dict[str, str] = {}
+    for col in df.columns:
+        if col in FUSION_SHORT_TO_AC40:
+            rename_map[col] = FUSION_SHORT_TO_AC40[col]
+            continue
+        m_awa_cor = re.match(r'^Awa(\d+)_cor_deg$', col)
+        if m_awa_cor:
+            rename_map[col] = f'AC40_BowWand_AWA{m_awa_cor.group(1)}_cor_deg'
+            continue
+        m_awa_off = re.match(r'^Awa(\d+)_offset_deg$', col)
+        if m_awa_off:
+            rename_map[col] = f'AC40_BowWand_AWA{m_awa_off.group(1)}_offset_deg'
+            continue
+        m_aws_cor = re.match(r'^Aws(\d+)_cor_kts$', col)
+        if m_aws_cor:
+            rename_map[col] = f'AC40_BowWand_AWS{m_aws_cor.group(1)}_cor_kts'
+            continue
+    if not rename_map:
+        return df
+    return df.rename(columns=rename_map, copy=False)
+
+
+# ---------------------------------------------------------------------------
 # FINALIZE GEOMETRY
 # ---------------------------------------------------------------------------
 
@@ -396,8 +458,8 @@ def _reindex_fill_numeric_columns(df_idx: pd.DataFrame) -> None:
 def _finalize_corrections_geometry(df_out):
     """
     After rename to suffixed names: smooth TWS/TWD, smooth AWA offset, then derive
-    ``Lwy_n_cor_deg``, ``Cse_cor_deg``, ``Cwa_cor_deg``, ``Cwa_n_cor_deg``, and
-    normalized _cor angles on the same grid.
+    ``Lwy_n_cor_deg`` (exported as ``AC40_Leeway_n_cor_deg`` in fusion parquet),
+    ``Cse_cor_deg``, ``Cwa_cor_deg``, ``Cwa_n_cor_deg``, and normalized _cor angles on the same grid.
     """
     df_out = apply_exponential_filter_tws_twd(df_out)
     df_out = apply_exponential_filter_awa_offset(df_out)
@@ -408,7 +470,7 @@ def _finalize_corrections_geometry(df_out):
 
 
 def add_cse_cwa_leeway_columns(df_out):
-    """Compute ``Cse_cor_deg``, ``Cwa_cor_deg``, ``Lwy_n_cor_deg``, ``Cwa_n_cor_deg``."""
+    """Compute ``Cse_cor_deg``, ``Cwa_cor_deg``, ``Lwy_n_cor_deg`` (→ ``AC40_Leeway_n_cor_deg`` on export), ``Cwa_n_cor_deg``."""
     if df_out is None or len(df_out) == 0:
         return df_out
     if 'Twa_cor_deg' not in df_out.columns:
@@ -522,6 +584,7 @@ def run_corrections_pipeline(
     multi_sensor: bool = False,
     awa_sensors: Optional[List[str]] = None,
     aws_sensors: Optional[List[str]] = None,
+    skip_corrections: bool = False,
 ):
     """
     Full corrections pipeline.
@@ -529,10 +592,12 @@ def run_corrections_pipeline(
     1. Fetch raw data and rename to simple names (``SIMPLE_RENAME``).
     2. Compute foil-derived features (``_compute_foil_features``).
     3. Pre-flight sanity check (``_check_calibration_data``).
-    4. If check passes: run ``calibrate_pipeline`` (AWA + leeway + TW recompute).
-       If check fails: use identity-copy fallback (``_build_fallback_cor_df``).
+    4. If ``skip_corrections``: skip calibration and use ``_build_fallback_cor_df``
+       (raw → ``*_cor``, offsets 0). Else if check passes:
+       run ``calibrate_pipeline``. If check fails: same fallback.
     5. Rename simple names → suffixed (``_rename_simple_to_suffixed``).
     6. Derive geometry columns (``_finalize_corrections_geometry``).
+    7. Rename fusion outputs to ``AC40_…`` (``_rename_fusion_outputs_to_ac40``).
 
     Returns ``(df_out, calibration_applied)`` where ``calibration_applied`` is
     ``True`` when the full calibration pipeline ran successfully.
@@ -541,6 +606,12 @@ def run_corrections_pipeline(
     ``aws_sensors`` (e.g. ``['Awa1', 'Awa2']`` / ``['Aws1', 'Aws2']``). The caller
     is responsible for ensuring those simple-named columns are present in the
     fetched dataframe before this function is called.
+
+    **Bypass calibration**: set ``skip_corrections=True`` to skip
+    ``calibrate_pipeline`` and the sanity check for training; outputs are raw
+    channels copied into ``*_cor`` with AWA/leeway offsets set to zero (same
+    shape as ``_build_fallback_cor_df``). Useful for testing downstream consumers
+    without learned offsets.
     """
     from utilities.cal_utils import calibrate_pipeline
 
@@ -553,6 +624,20 @@ def run_corrections_pipeline(
 
     _compute_foil_features(df_raw)
 
+    if skip_corrections:
+        msg = (
+            'Skipping calibration by request: source channels as *_cor outputs, '
+            'offsets zero'
+        )
+        u.log(api_token, '3_corrections.py', 'info', 'pipeline', msg)
+        if verbose:
+            print(msg, flush=True)
+        df_cal = _build_fallback_cor_df(df_raw)
+        df_out = _rename_simple_to_suffixed(df_cal)
+        df_out = _finalize_corrections_geometry(df_out)
+        df_out = _rename_fusion_outputs_to_ac40(df_out)
+        return df_out, False
+
     ok, reason = _check_calibration_data(df_raw, min_samples_per_model=min_samples_per_model)
 
     if not ok:
@@ -563,6 +648,7 @@ def run_corrections_pipeline(
         df_cal = _build_fallback_cor_df(df_raw)
         df_out = _rename_simple_to_suffixed(df_cal)
         df_out = _finalize_corrections_geometry(df_out)
+        df_out = _rename_fusion_outputs_to_ac40(df_out)
         return df_out, False
 
     if verbose:
@@ -593,6 +679,7 @@ def run_corrections_pipeline(
 
     df_out = _rename_simple_to_suffixed(df_cal)
     df_out = _finalize_corrections_geometry(df_out)
+    df_out = _rename_fusion_outputs_to_ac40(df_out)
     return df_out, True
 
 
@@ -647,9 +734,10 @@ def add_vmg_bsp_perc_columns(df):
     if df is None or len(df) == 0:
         return df
     bsp_kts = _bsp_values_as_kts_for_vmg(df)
-    if bsp_kts is not None and 'Cwa_cor_deg' in df.columns:
+    cwa_col = 'AC40_CWA_cor_deg' if 'AC40_CWA_cor_deg' in df.columns else 'Cwa_cor_deg'
+    if bsp_kts is not None and cwa_col in df.columns:
         cwa = np.radians(
-            pd.to_numeric(df['Cwa_cor_deg'], errors='coerce').to_numpy(dtype=np.float64)
+            pd.to_numeric(df[cwa_col], errors='coerce').to_numpy(dtype=np.float64)
         )
         df['Vmg_cor_kts'] = np.abs(bsp_kts * np.cos(cwa))
     if 'Vmg_cor_kts' in df.columns and 'Vmg_tgt_cor_kts' in df.columns:
@@ -671,35 +759,56 @@ def add_vmg_bsp_perc_columns(df):
 # ``_columns_for_fusion_corrections_parquet`` (includes dynamic Awa{n}_*/Aws{n}_*).
 PARQUET_DATA_ORDER = [
     'ts', 'Datetime', 'Grade', 'Race_number', 'Leg_number',
-    'Awa_offset_deg', 'Lwy_offset_deg', 'Lwy_offset_norm_deg',
-    'Awa_cor_deg', 'Aws_cor_kts', 'Tws_cor_kts', 'Twa_cor_deg', 'Twd_cor_deg', 'Lwy_cor_deg',
-    'Awa_n_cor_deg', 'Twa_n_cor_deg', 'Lwy_n_cor_deg',
-    'Cse_cor_deg', 'Cwa_cor_deg', 'Cwa_n_cor_deg',
+    'AC40_BowWand_AWA_offset_deg', 'AC40_Leeway_offset_deg', 'AC40_Leeway_offset_n_deg',
+    'AC40_BowWand_AWA_cor_deg', 'AC40_BowWand_AWS_cor_kts', 'AC40_BowWand_TWS_cor_kts',
+    'AC40_TWA_cor_deg', 'AC40_BowWand_TWD_cor_deg', 'AC40_Leeway_cor_deg',
+    'AC40_BowWand_AWA_n_cor_deg', 'AC40_TWA_n_cor_deg', 'AC40_Leeway_n_cor_deg',
+    'AC40_Cse_cor_deg', 'AC40_CWA_cor_deg', 'AC40_CWA_n_cor_deg',
 ]
 
 
 def _columns_for_fusion_corrections_parquet(df: pd.DataFrame) -> List[str]:
     """
     Columns allowed in ``fusion_corrections_racesight.parquet``: join keys, offsets,
-    fused corrected wind/navigation, geometry derived from ``_cor`` columns, and
-    per-sensor ``Awa{n}_*`` / ``Aws{n}_*`` when present. Excludes raw inputs and targets.
+    fused corrected wind/navigation (``AC40_*``), geometry derived from corrected wind, and
+    per-sensor ``AC40_BowWand_AWA{n}_*`` / ``AC40_BowWand_AWS{n}_*`` when present.
+    Excludes raw inputs and targets.
     """
     if df is None or len(df.columns) == 0:
         return []
 
     key_cols = ['ts', 'Datetime', 'Grade', 'Race_number', 'Leg_number']
-    offset_fixed = ['Awa_offset_deg', 'Lwy_offset_deg', 'Lwy_offset_norm_deg']
+    offset_fixed = [
+        'AC40_BowWand_AWA_offset_deg',
+        'AC40_Leeway_offset_deg',
+        'AC40_Leeway_offset_n_deg',
+    ]
     fused_cor = [
-        'Awa_cor_deg', 'Aws_cor_kts', 'Tws_cor_kts', 'Twa_cor_deg', 'Twd_cor_deg', 'Lwy_cor_deg',
+        'AC40_BowWand_AWA_cor_deg',
+        'AC40_BowWand_AWS_cor_kts',
+        'AC40_BowWand_TWS_cor_kts',
+        'AC40_TWA_cor_deg',
+        'AC40_BowWand_TWD_cor_deg',
+        'AC40_Leeway_cor_deg',
     ]
     derived_cor = [
-        'Awa_n_cor_deg', 'Twa_n_cor_deg', 'Lwy_n_cor_deg',
-        'Cse_cor_deg', 'Cwa_cor_deg', 'Cwa_n_cor_deg',
+        'AC40_BowWand_AWA_n_cor_deg',
+        'AC40_TWA_n_cor_deg',
+        'AC40_Leeway_n_cor_deg',
+        'AC40_Cse_cor_deg',
+        'AC40_CWA_cor_deg',
+        'AC40_CWA_n_cor_deg',
     ]
 
-    awa_n_offset = sorted(c for c in df.columns if re.match(r'^Awa\d+_offset_deg$', c))
-    awa_n_cor = sorted(c for c in df.columns if re.match(r'^Awa\d+_cor_deg$', c))
-    aws_n_cor = sorted(c for c in df.columns if re.match(r'^Aws\d+_cor_kts$', c))
+    awa_n_offset = sorted(
+        c for c in df.columns if re.match(r'^AC40_BowWand_AWA\d+_offset_deg$', c)
+    )
+    awa_n_cor = sorted(
+        c for c in df.columns if re.match(r'^AC40_BowWand_AWA\d+_cor_deg$', c)
+    )
+    aws_n_cor = sorted(
+        c for c in df.columns if re.match(r'^AC40_BowWand_AWS\d+_cor_kts$', c)
+    )
 
     ordered: List[str] = []
     for group in (
@@ -782,10 +891,11 @@ LOG_SCRIPT = "3_corrections.py"
 
 if __name__ == "__main__":
     parameters_json = {}
-    USE_MANUAL_TEST_INPUTS = True
+    USE_MANUAL_INPUTS = False
+    SKIP_CORRECTIONS = True
 
     try:
-        if USE_MANUAL_TEST_INPUTS:
+        if USE_MANUAL_INPUTS:
             class_name = "AC40"
             project_id = 2
             dataset_id = 1
@@ -798,7 +908,8 @@ if __name__ == "__main__":
             step_sec = 60
             model_update_interval_sec = 30 * 60
             min_samples_per_model = 100
-            parameters_json = {"verbose": verbose}
+            skip_corrections = SKIP_CORRECTIONS
+            parameters_json = {"verbose": verbose, "skip_corrections": skip_corrections}
         else:
             parameters_str = sys.argv[1]
             parameters_json = json.loads(parameters_str)
@@ -820,6 +931,7 @@ if __name__ == "__main__":
             step_sec = parameters_json.get("step_sec", 60)
             model_update_interval_sec = parameters_json.get("model_update_interval_sec", 30 * 60)
             min_samples_per_model = parameters_json.get("min_samples_per_model", 100)
+            skip_corrections = bool(parameters_json.get("skip_corrections", False))
 
         if parameters_json.get("use_perf_model") is False:
             u.log(api_token, LOG_SCRIPT, "warning", "parameters",
@@ -859,6 +971,7 @@ if __name__ == "__main__":
                 step_sec=step_sec,
                 model_update_interval_sec=model_update_interval_sec,
                 min_samples_per_model=min_samples_per_model,
+                skip_corrections=skip_corrections,
             )
 
         if df_out is None or len(df_out) == 0:
@@ -867,11 +980,13 @@ if __name__ == "__main__":
             sys.exit(1)
 
         path = save_corrections_parquet(df_out, class_name, project_id, date, source_name)
-        print(
-            f"Corrections saved: {len(df_out)} records"
-            + (" (calibrated)" if calibration_applied else " (not calibrated — fallback only)"),
-            flush=True,
-        )
+        if skip_corrections:
+            save_note = " (source-only, zero offsets — calibration skipped)"
+        elif calibration_applied:
+            save_note = " (calibrated)"
+        else:
+            save_note = " (not calibrated — fallback only)"
+        print(f"Corrections saved: {len(df_out)} records{save_note}", flush=True)
 
         if dataset_id:
             jsondata = {

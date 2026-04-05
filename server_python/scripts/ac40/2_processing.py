@@ -1283,11 +1283,11 @@ def apply_race_status_channel(df):
 
 if __name__ == "__main__":
     parameters_json = {}
-    # Set True to run from IDE / CLI without argv JSON (edit values in the branch below). Same pattern as 3_systems.py / 3_corrections.py.
-    USE_MANUAL_TEST_INPUTS = True
+
+    USE_MANUAL_INPUTS = False
 
     try:
-        if USE_MANUAL_TEST_INPUTS:
+        if USE_MANUAL_INPUTS:
             class_name = "AC40"
             project_id = 2
             dataset_id = 1

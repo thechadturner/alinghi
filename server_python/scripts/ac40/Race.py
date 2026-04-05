@@ -14,6 +14,7 @@ if sys.stderr.encoding != 'utf-8':
     sys.stderr.reconfigure(encoding='utf-8')
 
 import utilities as u
+from utilities.ac40_channel_maps import apply_ac40_fusion_legacy_names
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 maneuvers_path = os.path.join(current_dir, 'maneuvers')
@@ -57,11 +58,15 @@ _GET_DATA_CHANNELS = [
     {'name': 'Lat_dd', 'type': 'float'},
     {'name': 'Lng_dd', 'type': 'float'},
     {'name': 'Twd_cor_deg', 'type': 'angle360'},
+    {'name': 'AC40_BowWand_TWD_cor_deg', 'type': 'angle360'},
     {'name': 'Tws_cor_kph', 'type': 'float'},
+    {'name': 'AC40_BowWand_TWS_cor_kts', 'type': 'float'},
     {'name': 'Polar_perc', 'type': 'float'},
     {'name': 'Bsp_kts', 'type': 'float'},
     {'name': 'Twa_cor_deg', 'type': 'float'},
+    {'name': 'AC40_TWA_cor_deg', 'type': 'float'},
     {'name': 'Twa_n_cor_deg', 'type': 'float'},
+    {'name': 'AC40_TWA_n_cor_deg', 'type': 'float'},
     {'name': 'Vmg_cor_kph', 'type': 'float'},
     {'name': 'Vmg_cor_perc', 'type': 'float'},
     {'name': 'Tws_kph', 'type': 'float'},
@@ -225,6 +230,7 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
         )
 
         if dfi is not None and len(dfi) > 0:
+            apply_ac40_fusion_legacy_names(dfi)
             # Rename corrected (_cor) channels to standard names. If a corrected column exists,
             # drop the standard column first (to avoid duplicate names), then rename. Otherwise keep standard as fallback.
             cor_to_standard = {
@@ -240,6 +246,14 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
                     if std_name in dfi.columns:
                         dfi.drop(columns=[std_name], inplace=True)
                     dfi.rename(columns={cor_name: std_name}, inplace=True)
+
+            kts_to_kph = 1.852
+            if 'Tws_cor_kts' in dfi.columns:
+                if 'Tws_kph' in dfi.columns:
+                    dfi.drop(columns=['Tws_kph'], inplace=True)
+                dfi['Tws_kph'] = pd.to_numeric(
+                    dfi['Tws_cor_kts'], errors='coerce'
+                ) * kts_to_kph
 
             u.log(api_token, "Race.py", "info", "get_data", str(len(dfi))+" records found!")
 

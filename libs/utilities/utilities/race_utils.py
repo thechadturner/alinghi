@@ -318,7 +318,10 @@ def PrepareManeuverVmg(df: pd.DataFrame) -> None:
         # Compute CSE (Course Through Water) = Hdg - Lwy (using corrected leeway if available)
         if 'Hdg_deg' in df.columns:
             # Use corrected leeway if available, otherwise fallback to uncorrected
-            lwy_col = 'Lwy_cor_deg' if 'Lwy_cor_deg' in df.columns else 'Lwy_deg'
+            lwy_col = (
+                'AC40_Leeway_cor_deg' if 'AC40_Leeway_cor_deg' in df.columns
+                else ('Lwy_cor_deg' if 'Lwy_cor_deg' in df.columns else 'Lwy_deg')
+            )
             if lwy_col in df.columns:
                 cse = ((df['Hdg_deg'] - df[lwy_col]) + 180) % 360 - 180
                 cse[cse == -180] = 180
@@ -462,7 +465,10 @@ def PrepareManeuverData(df: pd.DataFrame, event_type: str = 'NONE') -> None:
     # Compute CSE (Course Through Water) = Hdg - Lwy (using corrected leeway if available)
     if 'Hdg_deg' in df.columns:
         # Use corrected leeway if available, otherwise fallback to uncorrected
-        lwy_col = 'Lwy_cor_deg' if 'Lwy_cor_deg' in df.columns else 'Lwy_deg'
+        lwy_col = (
+            'AC40_Leeway_cor_deg' if 'AC40_Leeway_cor_deg' in df.columns
+            else ('Lwy_cor_deg' if 'Lwy_cor_deg' in df.columns else 'Lwy_deg')
+        )
         if lwy_col in df.columns:
             cse = ((df['Hdg_deg'] - df[lwy_col]) + 180) % 360 - 180
             cse[cse == -180] = 180

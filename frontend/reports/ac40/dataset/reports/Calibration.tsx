@@ -15,9 +15,9 @@ import Violin from "../../../../components/charts/Violin";
 const { selectedClassName, selectedProjectId, selectedDatasetId, selectedSourceId } = persistantStore;
 
 /**
- * Channel names for violins / AWS baseline (single-sensor AC40: ``Awa_deg`` / ``Aws_kts``).
- * ``*_cor*`` and offsets come from ``fusion_corrections_racesight.parquet`` (merged in channel-values).
- * Optional legacy: ``Aws_fused_kts``, ``Awa_n_fused_deg`` when a pre-fusion column exists.
+ * Channel names for violins / AWS baseline (single-sensor AC40: legacy ``Awa_deg`` / ``Aws_kts`` after normalize).
+ * Request payloads use ``AC40_*`` where applicable; ``normalizeCalibrationChannelRows`` maps to legacy names
+ * where we still use short keys. Normalized corrected leeway uses ``AC40_Leeway_n_cor_deg`` (legacy ``Lwy_n_cor_deg`` mirrored in normalize for old parquets). Optional: ``Aws_fused_kts``, ``Awa_n_fused_deg`` for older datasets.
  */
 const CalParquet = {
   twsKnots: "Tws_kts",
@@ -28,6 +28,8 @@ const CalParquet = {
   awsCorKnots: "Aws_cor_kts",
   bspKnots: "Bsp_kts",
   bspMetric: "Bsp_kph",
+  /** Normalized corrected leeway (fusion / racesight public name). */
+  lwyNCorDeg: "AC40_Leeway_n_cor_deg",
 } as const;
 
 const CalAxisLabel = {
@@ -112,9 +114,72 @@ function smoothOffsetsByTimeSec(
   return out;
 }
 
+/** AC40 (fetch / parquet) → legacy short names used by the rest of this report (mirrors ``2_processing`` + fusion). */
+const AC40_TO_LEGACY_CALIBRATION: Record<string, string> = {
+  AC40_Latitude: "Lat_dd",
+  AC40_Longitude: "Lng_dd",
+  AC40_BowWand_TWS_kts: "Tws_kts",
+  AC40_HDG: "Hdg_deg",
+  AC40_BowWand_TWD: "Twd_deg",
+  AC40_Speed_kts: "Bsp_kts",
+  AC40_TWA: "Twa_deg",
+  AC40_TWA_n: "Twa_n_deg",
+  AC40_CWA: "Cwa_deg",
+  AC40_CWA_n: "Cwa_n_deg",
+  AC40_VMG_kts: "Vmg_kts",
+  AC40_COG: "Cog_deg",
+  AC40_HullAltitude: "Hull_altitude",
+  AC40_BowWand_AWA: "Awa_deg",
+  AC40_BowWand_AWA_n: "Awa_n_deg",
+  AC40_BowWand_AWS: "Aws_kts",
+  AC40_Leeway: "Lwy_deg",
+  AC40_Leeway_n: "Lwy_n_deg",
+  AC40_BowWand_AWA_offset_deg: "Awa_offset_deg",
+  AC40_Leeway_offset_deg: "Lwy_offset_deg",
+  AC40_Leeway_offset_n_deg: "Lwy_offset_norm_deg",
+  AC40_BowWand_AWA_cor_deg: "Awa_cor_deg",
+  AC40_BowWand_AWS_cor_kts: "Aws_cor_kts",
+  AC40_BowWand_TWS_cor_kts: "Tws_cor_kts",
+  AC40_TWA_cor_deg: "Twa_cor_deg",
+  AC40_BowWand_TWD_cor_deg: "Twd_cor_deg",
+  AC40_Leeway_cor_deg: "Lwy_cor_deg",
+  AC40_BowWand_AWA_n_cor_deg: "Awa_n_cor_deg",
+  AC40_TWA_n_cor_deg: "Twa_n_cor_deg",
+  AC40_Cse_cor_deg: "Cse_cor_deg",
+  AC40_CWA_cor_deg: "Cwa_cor_deg",
+  AC40_CWA_n_cor_deg: "Cwa_n_cor_deg",
+};
+
 /**
- * Channels for calibration time-series request (deduped). Single-sensor pipeline: no ``Awa1``/``Awa2``/``Aws1``/``Aws2``.
- * Raw + ``Aws_fused_kts`` / ``Awa_n_fused_deg`` when present; corrections parquet supplies ``*_cor*`` / offsets (merged on ``ts``).
+ * Map each row from AC40 column names to legacy names in place (copy when AC40 key has a value).
+ */
+function normalizeCalibrationChannelRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  return rows.map((row) => {
+    const out: Record<string, unknown> = { ...row };
+    for (const [ac40, legacy] of Object.entries(AC40_TO_LEGACY_CALIBRATION)) {
+      if (Object.prototype.hasOwnProperty.call(out, ac40)) {
+        const v = out[ac40];
+        if (v !== undefined && v !== null) {
+          out[legacy] = v;
+        }
+      }
+    }
+    const ac40LwyNCor = CalParquet.lwyNCorDeg;
+    const legacyLwyNCor = "Lwy_n_cor_deg";
+    if (
+      out[legacyLwyNCor] != null &&
+      out[legacyLwyNCor] !== undefined &&
+      (out[ac40LwyNCor] === undefined || out[ac40LwyNCor] === null)
+    ) {
+      out[ac40LwyNCor] = out[legacyLwyNCor];
+    }
+    return out;
+  });
+}
+
+/**
+ * Channels for calibration time-series request (deduped). Request **AC40** names where applicable; normalize to legacy after fetch.
+ * Single-sensor: no ``Awa1``/``Aws2`` numbered columns unless multi-sensor fusion adds them later.
  */
 const CALIBRATION_CHANNELS = [
   "ts",
@@ -122,33 +187,69 @@ const CALIBRATION_CHANNELS = [
   "Grade",
   "Race_number",
   "Leg_number",
+  "AC40_BowWand_AWA",
+  "AC40_BowWand_AWA_n",
+  "AC40_BowWand_AWS",
+  "AC40_BowWand_TWS_kts",
+  "AC40_BowWand_TWD",
+  "AC40_Speed_kts",
+  "AC40_TWA",
+  "AC40_TWA_n",
+  "AC40_CWA",
+  "AC40_CWA_n",
+  "AC40_VMG_kts",
+  "AC40_HDG",
+  "AC40_COG",
+  "AC40_Leeway",
+  "AC40_Leeway_n",
+  "AC40_BowWand_AWA_offset_deg",
+  "AC40_Leeway_offset_deg",
+  "AC40_Leeway_offset_n_deg",
+  "AC40_BowWand_AWA_cor_deg",
+  "AC40_BowWand_AWS_cor_kts",
+  "AC40_BowWand_TWS_cor_kts",
+  "AC40_TWA_cor_deg",
+  "AC40_BowWand_TWD_cor_deg",
+  "AC40_Leeway_cor_deg",
+  "AC40_BowWand_AWA_n_cor_deg",
+  "AC40_TWA_n_cor_deg",
+  "AC40_Leeway_n_cor_deg",
+  "AC40_Cse_cor_deg",
+  "AC40_CWA_cor_deg",
+  "AC40_CWA_n_cor_deg",
+  // Legacy column names (older processed/fusion parquets); AC40 values overwrite in normalize when present.
   "Awa_deg",
-  "Awa_cor_deg",
-  "Awa_offset_deg",
   "Awa_n_deg",
-  "Awa_n_fused_deg",
-  "Awa_n_cor_deg",
+  "Aws_kts",
+  "Tws_kts",
+  "Twd_deg",
+  "Bsp_kts",
+  "Twa_deg",
   "Twa_n_deg",
-  "Twa_n_cor_deg",
+  "Cwa_deg",
+  "Cwa_n_deg",
+  "Vmg_kts",
+  "Hdg_deg",
+  "Cog_deg",
+  "Lwy_deg",
   "Lwy_n_deg",
-  "Lwy_n_cor_deg",
-  "Lwy_cor_deg",
+  "Awa_offset_deg",
   "Lwy_offset_deg",
   "Lwy_offset_norm_deg",
-  "Cwa_n_deg",
-  "Cwa_deg",
-  "Cwa_n_cor_deg",
-  "Cse_cor_deg",
-  "Twa_deg",
-  "Twa_cor_deg",
-  "Tws_kts",
-  "Tws_cor_kts",
-  "Aws_kts",
-  "Aws_fused_kts",
+  "Awa_cor_deg",
   "Aws_cor_kts",
-  "Bsp_kts",
-  "Twd_deg",
+  "Tws_cor_kts",
+  "Twa_cor_deg",
   "Twd_cor_deg",
+  "Lwy_cor_deg",
+  "Awa_n_cor_deg",
+  "Twa_n_cor_deg",
+  "Lwy_n_cor_deg",
+  "Cse_cor_deg",
+  "Cwa_cor_deg",
+  "Cwa_n_cor_deg",
+  "Awa_n_fused_deg",
+  "Aws_fused_kts",
 ];
 
 /** Maneuver channels for tack/gybe angle comparison. Only request Twa_entry and Twa_exit; the API always returns event_id and Datetime in the SELECT. */
@@ -185,7 +286,7 @@ interface ManeuverAngleRow {
   meanTwaCor: number;
   /** Mean |Cwa_n_cor_deg| where present; same row filter. */
   meanCwaCor: number;
-  /** Mean |Lwy_n_cor_deg| where present; same row filter. */
+  /** Mean |AC40_Leeway_n_cor_deg| where present; same row filter. */
   meanLwyCor: number;
   /** Tack: mean(Turn_angle_max) ÷ 2. Gybe: 180° − mean(Turn_angle_max) ÷ 2. */
   turnRefDeg: number;
@@ -295,7 +396,7 @@ const CAL_LEGEND_SECTOR =
 
 /** Offsets-vs-time uses every loaded row; tables/violins use Grade ≥ 2 + sector (matches AWA training grade floor). */
 const CAL_TIMESERIES_GRADES_NOTE =
-  "All grades: offset curves use the full calibration dataset (offsets trained on grade ≥ 2 only). AWA Δ: Awa_offset_deg when present, else Awa_n_cor−before; 10 s box smooth; clamp ±5°. LWY Δ: Lwy_offset_norm_deg or Lwy_n_cor−Lwy_n; 5 min box smooth; clamp ±5°.";
+  "All grades: offset curves use the full calibration dataset (offsets trained on grade ≥ 2 only). AWA Δ: Awa_offset_deg when present, else Awa_n_cor−before; 10 s box smooth; clamp ±5°. LWY Δ: Lwy_offset_norm_deg or AC40_Leeway_n_cor−Lwy_n; 5 min box smooth; clamp ±5°.";
 
 /** Fused-channel before/after row config. */
 interface BeforeAfterPairConfig {
@@ -321,7 +422,7 @@ const CALIBRATION_BEFORE_AFTER_PAIRS: BeforeAfterPairConfig[] = [
   { label: "AWS", before: "Aws_kts", after: "Aws_cor_kts", unit: "kts" },
   { label: "TWA", before: "Twa_n_deg", after: "Twa_n_cor_deg", unit: "°", useAbsMean: true },
   { label: "CWA", before: "Cwa_n_deg", after: "Cwa_n_cor_deg", unit: "°", useAbsMean: true },
-  { label: "LWY", before: "Lwy_n_deg", after: "Lwy_n_cor_deg", unit: "°", useAbsMean: true },
+  { label: "LWY", before: "Lwy_n_deg", after: CalParquet.lwyNCorDeg, unit: "°", useAbsMean: true },
   { label: "TWS", before: "Tws_kts", after: "Tws_cor_kts", unit: "kts", beforeScale: 1, afterScale: 1 },
   { label: "TWD", before: "Twd_deg", after: "Twd_cor_deg", unit: "°" },
 ];
@@ -329,6 +430,9 @@ const CALIBRATION_BEFORE_AFTER_PAIRS: BeforeAfterPairConfig[] = [
 function findCalibrationPairForField(field: string): BeforeAfterPairConfig | undefined {
   const fromStatic = CALIBRATION_BEFORE_AFTER_PAIRS.find((p) => p.before === field || p.after === field);
   if (fromStatic) return fromStatic;
+  if (field === "Lwy_n_cor_deg" || field === CalParquet.lwyNCorDeg) {
+    return CALIBRATION_BEFORE_AFTER_PAIRS.find((p) => p.label === "LWY");
+  }
   if (field === "Cwa_deg") {
     return { label: "CWA", before: "Cwa_deg", after: "Cwa_n_cor_deg", unit: "°", useAbsMean: true };
   }
@@ -742,7 +846,7 @@ export default function CalibrationPage() {
         twaVals.push(calibrationAngleMagnitudeDeg(twa));
         const cwa = getVal(d, "Cwa_n_cor_deg") ?? getVal(d, "Cwa_cor_deg");
         if (cwa !== null) cwaVals.push(calibrationAngleMagnitudeDeg(cwa));
-        const lwy = getVal(d, "Lwy_n_cor_deg") ?? getVal(d, "Lwy_cor_deg");
+        const lwy = getVal(d, CalParquet.lwyNCorDeg) ?? getVal(d, "Lwy_cor_deg");
         if (lwy !== null) lwyVals.push(calibrationAngleMagnitudeDeg(lwy));
       }
       debug("[Calibration] getSectorAbsMetrics", {
@@ -979,8 +1083,12 @@ export default function CalibrationPage() {
   );
   const violinTwaUpwind = createMemo(() => buildBeforeAfterViolinData("Twa_n_deg", "Twa_n_cor_deg", "upwind"));
   const violinTwaDownwind = createMemo(() => buildBeforeAfterViolinData("Twa_n_deg", "Twa_n_cor_deg", "downwind"));
-  const violinLwyUpwind = createMemo(() => buildBeforeAfterViolinData("Lwy_n_deg", "Lwy_n_cor_deg", "upwind"));
-  const violinLwyDownwind = createMemo(() => buildBeforeAfterViolinData("Lwy_n_deg", "Lwy_n_cor_deg", "downwind"));
+  const violinLwyUpwind = createMemo(() =>
+    buildBeforeAfterViolinData("Lwy_n_deg", CalParquet.lwyNCorDeg, "upwind")
+  );
+  const violinLwyDownwind = createMemo(() =>
+    buildBeforeAfterViolinData("Lwy_n_deg", CalParquet.lwyNCorDeg, "downwind")
+  );
   const violinCwaUpwind = createMemo(() => buildBeforeAfterViolinData("Cwa_n_deg", "Cwa_n_cor_deg", "upwind"));
   const violinCwaDownwind = createMemo(() => buildBeforeAfterViolinData("Cwa_n_deg", "Cwa_n_cor_deg", "downwind"));
 
@@ -1026,14 +1134,14 @@ export default function CalibrationPage() {
         return clampCalibrationOffsetDisplayDeg(after - before);
       });
 
-      // LWY Δ: Lwy_offset_norm_deg from pipeline, or Lwy_n_cor − Lwy_n (same sign convention as stored columns).
+      // LWY Δ: Lwy_offset_norm_deg from pipeline, or AC40_Leeway_n_cor − Lwy_n (same sign convention as stored columns).
       const lwyOffsetRaw = sorted.map((d) => {
         const directNorm = getVal(d, "Lwy_offset_norm_deg");
         if (directNorm !== null) {
           return clampCalibrationOffsetDisplayDeg(directNorm);
         }
         const before = getVal(d, "Lwy_n_deg");
-        const after = getVal(d, "Lwy_n_cor_deg");
+        const after = getVal(d, CalParquet.lwyNCorDeg);
         if (before === null || after === null) return NaN;
         return clampCalibrationOffsetDisplayDeg(after - before);
       });
@@ -1487,7 +1595,8 @@ export default function CalibrationPage() {
         );
         if (cancelled) return;
 
-        const arr = Array.isArray(data) ? data : [];
+        const rawArr = Array.isArray(data) ? data : [];
+        const arr = normalizeCalibrationChannelRows(rawArr);
         setError(null);
         setChannelData(arr);
         logCalibrationFetchOutput(arr);

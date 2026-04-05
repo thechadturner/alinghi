@@ -5,7 +5,9 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
 
-import utilities as u 
+import utilities as u
+from utilities.ac40_channel_maps import apply_ac40_fusion_legacy_names
+
 
 def get_data(api_token, project_id, class_name, date, source_name, start_ts, end_ts, verbose):
     df = pd.DataFrame()
@@ -23,10 +25,22 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
             {'name': 'Awa_n_cor_deg', 'type': 'angle180'},
             {'name': 'Aws_cor_kph', 'type': 'float'},
             {'name': 'Lwy_cor_deg', 'type': 'float'},
-            {'name': 'Lwy_n_cor_deg', 'type': 'float'},
             {'name': 'Cwa_cor_deg', 'type': 'angle180'},
             {'name': 'Cwa_n_cor_deg', 'type': 'angle180'},
             {'name': 'Cse_cor_deg', 'type': 'angle180'},
+            # AC40 racesight fusion (merged); renamed to legacy _cor names below
+            {'name': 'AC40_BowWand_TWD_cor_deg', 'type': 'angle360'},
+            {'name': 'AC40_TWA_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_TWA_n_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_BowWand_AWA_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_BowWand_AWA_n_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_Leeway_cor_deg', 'type': 'float'},
+            {'name': 'AC40_Leeway_n_cor_deg', 'type': 'float'},
+            {'name': 'AC40_CWA_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_CWA_n_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_Cse_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_BowWand_TWS_cor_kts', 'type': 'float'},
+            {'name': 'AC40_BowWand_AWS_cor_kts', 'type': 'float'},
 
             # Per-sensor corrected (bow/mhu)
             {'name': 'Tws_bow_cor_kph', 'type': 'float'},
@@ -126,6 +140,7 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
         dfi = u.get_channel_values(api_token, class_name, project_id, date, source_name, channels, '100ms', start_ts, end_ts, 'UTC')
 
         if dfi is not None and len(dfi) > 0:
+            apply_ac40_fusion_legacy_names(dfi)
             # Rename corrected (_cor) channels to standard names so rest of code is unchanged
             cor_to_standard = {
                 'Tws_cor_kph': 'Tws_kph',
@@ -157,6 +172,16 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
             rename_map = {k: v for k, v in cor_to_standard.items() if k in dfi.columns}
             if rename_map:
                 dfi.rename(columns=rename_map, inplace=True)
+
+            kts_to_kph = 1.852
+            if 'Tws_cor_kts' in dfi.columns:
+                dfi['Tws_kph'] = pd.to_numeric(
+                    dfi['Tws_cor_kts'], errors='coerce'
+                ) * kts_to_kph
+            if 'Aws_cor_kts' in dfi.columns:
+                dfi['Aws_kph'] = pd.to_numeric(
+                    dfi['Aws_cor_kts'], errors='coerce'
+                ) * kts_to_kph
 
             if 'Cur_rate_est_kph' not in dfi.columns:
                 dfi['Cur_rate_est_kph'] = 0

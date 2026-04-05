@@ -5,7 +5,8 @@ import sys
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import utilities as u  
+import utilities as u
+from utilities.ac40_channel_maps import apply_ac40_fusion_legacy_names
 
 originlat = 39.476984
 originlon = -0.291140
@@ -26,7 +27,13 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
             {'name': 'Twa_n_cor_deg', 'type': 'angle180'},
             {'name': 'Cwa_cor_deg', 'type': 'angle180'},
             {'name': 'Lwy_cor_deg', 'type': 'float'},
-            {'name': 'Lwy_n_cor_deg', 'type': 'float'},
+            {'name': 'AC40_BowWand_TWD_cor_deg', 'type': 'angle360'},
+            {'name': 'AC40_TWA_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_TWA_n_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_CWA_cor_deg', 'type': 'angle180'},
+            {'name': 'AC40_Leeway_cor_deg', 'type': 'float'},
+            {'name': 'AC40_Leeway_n_cor_deg', 'type': 'float'},
+            {'name': 'AC40_BowWand_TWS_cor_kts', 'type': 'float'},
             {'name': 'Twd_bow_cor_deg', 'type': 'angle360'},
             {'name': 'Twd_mhu_cor_deg', 'type': 'angle360'},
             {'name': 'Twa_bow_cor_deg', 'type': 'angle180'},
@@ -98,6 +105,7 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
         dfi = u.get_channel_values(api_token, class_name, project_id, date, source_name, channels, '100ms', start_ts, end_ts, 'UTC')
 
         if dfi is not None and len(dfi) > 0:
+            apply_ac40_fusion_legacy_names(dfi)
             # Rename corrected (_cor) channels to standard names
             cor_to_standard = {
                 'Tws_cor_kph': 'Tws_kph',
@@ -122,6 +130,11 @@ def get_data(api_token, project_id, class_name, date, source_name, start_ts, end
             rename_map = {k: v for k, v in cor_to_standard.items() if k in dfi.columns}
             if rename_map:
                 dfi.rename(columns=rename_map, inplace=True)
+            kts_to_kph = 1.852
+            if 'Tws_cor_kts' in dfi.columns:
+                dfi['Tws_kph'] = pd.to_numeric(
+                    dfi['Tws_cor_kts'], errors='coerce'
+                ) * kts_to_kph
             if 'Tws_kph' in dfi.columns:
                 dfi['Tws_kts'] = dfi['Tws_kph'] * 0.539957
             if 'Cwa_deg' not in dfi.columns and 'Twa_deg' in dfi.columns:
