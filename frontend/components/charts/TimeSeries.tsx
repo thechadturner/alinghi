@@ -2,6 +2,7 @@ import { onMount, onCleanup, createSignal, createEffect, on, Show, For, createMe
 import * as d3 from "d3";
 
 import LoadingOverlay from "../utilities/Loading";
+import ExploreTimeSeriesUPlot, { type ExploreUPlotBridgeRefs } from "./ExploreTimeSeriesUPlot";
 
 import { setHasSelection, setSelection, setSelectedRange, selectedRange, cutEvents, hasSelection, clearSelection, clearActiveSelection, selectedEvents, selectedRanges, isCut } from "../../store/selectionStore";
 import { unifiedDataStore } from "../../store/unifiedDataStore";
@@ -24,6 +25,8 @@ import {
   lineTypeUsesAcrossSegmentCarry,
   dataResampleLegendBracket,
   buildExploreResampleFetchPlan,
+  exploreChartsNeedD3FallbackForLineTypes,
+  exploreChartsNeedUPlotRenderer,
   rawReadingPlotKeyForExploreChannel,
   useRawReadingsForCumulativeLineTypes,
   type ExploreResampleFetchPlan,
@@ -1055,12 +1058,24 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
   // Data fetching signals
   const [charts, setCharts] = createSignal<any[]>([]);
+  const [uPlotVisualEpoch, bumpUPlotVisualEpoch] = createSignal(0);
   const [fleetLegendHighlightNames, setFleetLegendHighlightNames] = createSignal<string[]>([]);
   const [isLoading, setIsLoading] = createSignal(false);
   const [dataLoadingMessage, setDataLoadingMessage] = createSignal<string>('');
   const [isDataLoading, setIsDataLoading] = createSignal(false);
 
   let containerRef: HTMLElement | null = null;
+
+  const chartListForRenderer = createMemo(() =>
+    !props.chart ? [] : Array.isArray(props.chart) ? props.chart : [props.chart]
+  );
+
+  const useExploreUPlotRenderer = createMemo(
+    () =>
+      !props.showLegendTable &&
+      exploreChartsNeedUPlotRenderer(chartListForRenderer()) &&
+      !exploreChartsNeedD3FallbackForLineTypes(chartListForRenderer())
+  );
 
   /** Fleet multi-chart (showLegendTable): viewport virtualization observers */
   let fleetMultiIntersectionObservers: IntersectionObserver[] = [];
@@ -1988,9 +2003,32 @@ const TimeSeries = (props: TimeSeriesProps) => {
     return heightPerChart;
   };
 
-  const requestDrawPlots = () => {
+  /**
+   * Explore uPlot mounts under `.time-series` but skips `drawPlots()`, so D3 SVG from an earlier
+   * draw (e.g. 1 Hz → RAW switch) can remain. Timeseries-page CSS gives those SVGs an opaque
+   * background, which fully hides the uPlot canvas until they are removed.
+   */
+  const stripD3DomForExploreUPlot = () => {
+    if (!containerRef) return;
+    if (wheelHandler) {
+      containerRef.removeEventListener("wheel", wheelHandler, { capture: true });
+      wheelHandler = null;
+    }
+    d3.select(containerRef).selectAll("svg").remove();
+    d3.select(containerRef).selectAll(".timeseries-scroll-spacer").remove();
+    d3.select(containerRef).property("__timeSeriesRefs", null);
+  };
+
+  const requestChartVisualUpdate = () => {
+    if (useExploreUPlotRenderer() && charts().length > 0) {
+      stripD3DomForExploreUPlot();
+      bumpUPlotVisualEpoch((n) => n + 1);
+      return;
+    }
     drawPlots();
   };
+
+  const requestDrawPlots = () => requestChartVisualUpdate();
 
   const drawPlots = () => {
     debug('🎨 TimeSeries: drawPlots() called');
@@ -2008,6 +2046,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
       debug('🎨 TimeSeries: No chart data, skipping draw');
       return;
     }
+
+    if (useExploreUPlotRenderer()) {
+      stripD3DomForExploreUPlot();
+      debug("🎨 TimeSeries: Skipping D3 draw — explore uPlot renderer active");
+      return;
+    }
+
+    d3.select(containerRef).property("__timeSeriesUPlotRefs", null);
 
     const segmentGapForLayout = exploreChartSegmentGapSplitMs(!props.showLegendTable);
 
@@ -5460,6 +5506,13 @@ const TimeSeries = (props: TimeSeriesProps) => {
 
               // Wait a bit for drawPlots to complete and refs to be available
               setTimeout(() => {
+                const uPlotCutRefs = d3.select(containerRef).property("__timeSeriesUPlotRefs") as ExploreUPlotBridgeRefs | null | undefined;
+                if (uPlotCutRefs?.resetZoomToFull) {
+                  uPlotCutRefs.resetZoomToFull();
+                  setZoom(false);
+                  debug("🔄 TimeSeries: uPlot zoom reset after cut change");
+                  return;
+                }
                 const refs = d3.select(containerRef).property("__timeSeriesRefs");
                 if (refs && refs.xZoom && refs.xScale && typeof refs.xZoom.domain === 'function') {
                   // Get the full domain from the current xScale (which reflects the current data - cut or full)
@@ -6240,6 +6293,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
         lastClearedZoomState = ''; // Allow clear path when user later clears cuts
         debug('🔄 TimeSeries: Selection cleared but cuts exist - resetting zoom to cut data extent');
 
+        const uPlotRefs = d3.select(containerRef).property("__timeSeriesUPlotRefs") as ExploreUPlotBridgeRefs | null | undefined;
+        if (uPlotRefs?.resetZoomToFull) {
+          uPlotRefs.resetZoomToFull();
+          setZoom(false);
+          setHasSelection(false);
+          return;
+        }
+
         // Reset zoom to full extent of cut data (xScale already reflects cut data)
         const refs = d3.select(containerRef).property("__timeSeriesRefs");
         if (refs && refs.xZoom && refs.xScale && typeof refs.xZoom.domain === 'function') {
@@ -6285,6 +6346,14 @@ const TimeSeries = (props: TimeSeriesProps) => {
         if (props.chart && !isProcessingData && !isFetchingData) {
           debug('🔄 TimeSeries: Reloading data after selection clear');
           processDataForCharts().then(() => {
+            if (useExploreUPlotRenderer()) {
+              bumpUPlotVisualEpoch((n) => n + 1);
+              setZoom(false);
+              setHasSelection(false);
+              setSelection([]);
+              debug("🔄 TimeSeries: Zoom reset after data reload (uPlot epoch bump)");
+              return;
+            }
             // After data is reloaded, reset zoom and redraw
             const refs = d3.select(containerRef).property("__timeSeriesRefs");
 
@@ -6327,6 +6396,18 @@ const TimeSeries = (props: TimeSeriesProps) => {
             }
           }).catch((error) => {
             logError('🔄 TimeSeries: Error reloading data after selection clear:', error);
+            if (useExploreUPlotRenderer()) {
+              const uPlotRefs = d3.select(containerRef).property("__timeSeriesUPlotRefs") as ExploreUPlotBridgeRefs | null | undefined;
+              if (uPlotRefs?.resetZoomToFull) {
+                uPlotRefs.resetZoomToFull();
+              } else {
+                bumpUPlotVisualEpoch((n) => n + 1);
+              }
+              setZoom(false);
+              setHasSelection(false);
+              setSelection([]);
+              return;
+            }
             // Fallback to just resetting zoom without reloading data
             const refs = d3.select(containerRef).property("__timeSeriesRefs");
             if (refs && refs.xZoom && typeof refs.xZoom.domain === 'function' && refs.xScale) {
@@ -6346,6 +6427,16 @@ const TimeSeries = (props: TimeSeriesProps) => {
           });
         } else {
           // If we can't reload data, at least reset the zoom
+          const uPlotRefs2 = d3.select(containerRef).property("__timeSeriesUPlotRefs") as ExploreUPlotBridgeRefs | null | undefined;
+          if (uPlotRefs2?.resetZoomToFull) {
+            uPlotRefs2.resetZoomToFull();
+            setZoom(false);
+            setHasSelection(false);
+            setSelection([]);
+            debug("🔄 TimeSeries: uPlot full zoom reset (data reload skipped)");
+            return;
+          }
+
           const refs = d3.select(containerRef).property("__timeSeriesRefs");
 
           if (refs && refs.xZoom && typeof refs.xZoom.domain === 'function' && refs.xScale) {
@@ -6419,12 +6510,48 @@ const TimeSeries = (props: TimeSeriesProps) => {
           usingCutRanges: currentIsCut && cuts && cuts.length > 0
         });
 
+        let minTime = Infinity;
+        let maxTime = -Infinity;
+
+        rangesToUse.forEach(range => {
+          if (range.start_time && range.end_time) {
+            const startTime = new Date(range.start_time).getTime();
+            const endTime = new Date(range.end_time).getTime();
+            minTime = Math.min(minTime, startTime);
+            maxTime = Math.max(maxTime, endTime);
+          }
+        });
+
+        if (minTime !== Infinity && maxTime !== -Infinity) {
+          const startTime = new Date(minTime);
+          const endTime = new Date(maxTime);
+
+          const uPlotRangeRefs = d3.select(containerRef).property("__timeSeriesUPlotRefs") as ExploreUPlotBridgeRefs | null | undefined;
+          if (uPlotRangeRefs?.setZoomDomainFromMs) {
+            debug('🧹 TimeSeries: Setting uPlot zoom domain to combined ranges', {
+              rangeCount: rangesToUse.length,
+              startTime: startTime.toISOString(),
+              endTime: endTime.toISOString(),
+              isCut: currentIsCut
+            });
+            uPlotRangeRefs.setZoomDomainFromMs(minTime, maxTime);
+            setZoom(true);
+            setHasSelection(true);
+            setSelection(rangesToUse);
+            debug('🧹 TimeSeries: Range zoom completed (uPlot)', {
+              rangeCount: rangesToUse.length,
+              isCut: currentIsCut
+            });
+            return;
+          }
+        }
+
         // Zoom to show all ranges (combined extent)
         const refs = d3.select(containerRef).property("__timeSeriesRefs");
         if (refs && refs.xZoom && refs.xScale) {
           // Calculate the combined extent of all ranges
-          let minTime = Infinity;
-          let maxTime = -Infinity;
+          minTime = Infinity;
+          maxTime = -Infinity;
 
           rangesToUse.forEach(range => {
             if (range.start_time && range.end_time) {
@@ -6591,13 +6718,22 @@ const TimeSeries = (props: TimeSeriesProps) => {
       return;
     }
 
+    // When playing, right edge = reference + lead so playhead is 10s from end; when not playing, playhead at right edge
+    const windowEnd = playing ? center.getTime() + PLAYBACK_WINDOW_LEAD_MS : center.getTime();
+    const windowStart = windowEnd - (tw * 60 * 1000);
+
+    const uPlotWinRefs = d3.select(containerRef).property("__timeSeriesUPlotRefs") as ExploreUPlotBridgeRefs | null | undefined;
+    if (uPlotWinRefs?.setZoomDomainFromMs) {
+      uPlotWinRefs.setZoomDomainFromMs(windowStart, windowEnd, false);
+      if (!playing) setZoom(true);
+      uPlotWinRefs.redraw();
+      return;
+    }
+
     const refs = d3.select(containerRef).property("__timeSeriesRefs");
     if (!refs || !refs.xZoom || !refs.redraw) return;
 
     const { xZoom, redraw } = refs;
-    // When playing, right edge = reference + lead so playhead is 10s from end; when not playing, playhead at right edge
-    const windowEnd = playing ? center.getTime() + PLAYBACK_WINDOW_LEAD_MS : center.getTime();
-    const windowStart = windowEnd - (tw * 60 * 1000);
 
     const domain = xZoom.domain && xZoom.domain();
     const currMinMs = Array.isArray(domain) && domain[0] ? (domain[0] as Date).getTime() : null;
@@ -6656,6 +6792,16 @@ const TimeSeries = (props: TimeSeriesProps) => {
     const tw = (typeof timeWindow === 'function') ? timeWindow() : 0;
     if (tw !== 0) return;
     if (!containerRef) return;
+    const uPlotTwRefs = d3.select(containerRef).property("__timeSeriesUPlotRefs") as ExploreUPlotBridgeRefs | null | undefined;
+    if (uPlotTwRefs?.resetZoomToFull) {
+      const full = uPlotTwRefs.getFullDomainMs();
+      const zoomed = uPlotTwRefs.getZoomDomainMs();
+      if (full && zoomed && (zoomed[0] !== full[0] || zoomed[1] !== full[1])) {
+        uPlotTwRefs.resetZoomToFull();
+        setZoom(false);
+      }
+      return;
+    }
     const refs = d3.select(containerRef).property("__timeSeriesRefs");
     if (!refs || !refs.xZoom || !refs.xScale || !refs.redraw) return;
     const fullDomain = refs.xScale.domain && refs.xScale.domain();
@@ -6717,6 +6863,21 @@ const TimeSeries = (props: TimeSeriesProps) => {
             "pointer-events": (isLoading() || isDataLoading()) ? "none" : "auto",
             "transition": "opacity 0.5s ease"
           }}>
+            <Show when={useExploreUPlotRenderer() && charts().length > 0}>
+              <ExploreTimeSeriesUPlot
+                charts={charts()}
+                timezone={datasetTimezone()}
+                visualEpoch={uPlotVisualEpoch()}
+                getHostElement={() => containerRef}
+                onBridgeReady={(refs: ExploreUPlotBridgeRefs | null) => {
+                  if (containerRef) {
+                    d3.select(containerRef).property("__timeSeriesUPlotRefs", refs);
+                  }
+                  requestAnimationFrame(() => setRefsReady(!!refs));
+                }}
+                onZoomedChange={(z: boolean) => setZoom(z)}
+              />
+            </Show>
           </div>
         )}
       </Show>

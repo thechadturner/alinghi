@@ -83,6 +83,32 @@ const truncateMessage = (message: string, maxLength: number = 500): string => {
   return message.length > maxLength ? message.substring(0, maxLength) + '...' : message;
 };
 
+/** Max serialized context length — keeps POST bodies under typical proxy limits (avoids 413). */
+const MAX_LOG_CONTEXT_CHARS = 8192;
+const CONTEXT_TRUNC_SUFFIX = '...[truncated]';
+
+function truncateContextString(raw: string): string {
+  const s = typeof raw === 'string' ? raw : String(raw ?? '');
+  if (s.length <= MAX_LOG_CONTEXT_CHARS) return s;
+  const keep = MAX_LOG_CONTEXT_CHARS - CONTEXT_TRUNC_SUFFIX.length;
+  return (keep > 0 ? s.substring(0, keep) : '') + CONTEXT_TRUNC_SUFFIX;
+}
+
+/** Serialize + cap context for API and localStorage (never send huge JSON blobs). */
+function serializeContext(context: Record<string, any> | string): string {
+  let raw: string;
+  if (typeof context === 'string') {
+    raw = context;
+  } else {
+    try {
+      raw = JSON.stringify(context);
+    } catch {
+      raw = '[context: JSON.stringify failed]';
+    }
+  }
+  return truncateContextString(raw);
+}
+
 // Store logs locally when not authenticated
 export const storeLocalLog = (type: 'message' | 'activity' | 'user_activity', payload: LogPayload | ActivityPayload): void => {
   // Prevent infinite recursion
@@ -102,10 +128,12 @@ export const storeLocalLog = (type: 'message' | 'activity' | 'user_activity', pa
   
   isStoringLocalLog = true;
   try {
-    // Truncate message in payload before storing
-    const truncatedPayload = {
-      ...payload,
-      message: truncateMessage(payload.message || '')
+    // Truncate message and context in payload before storing
+    const p = payload as LogPayload | ActivityPayload;
+    const truncatedPayload: LogPayload | ActivityPayload = {
+      ...p,
+      message: truncateMessage(p.message || ''),
+      context: truncateContextString(String(p.context ?? '')),
     };
     
     const logs: PendingLog[] = JSON.parse(localStorage.getItem('pending_logs') || '[]');
@@ -214,7 +242,7 @@ export async function logMessage(file_name: string, message_type: LogLevel, mess
       file_name: file_name,
       message_type: message_type,
       message: truncatedMessage,
-      context: typeof context === 'string' ? context : JSON.stringify(context)
+      context: serializeContext(context),
     });
     return;
   }
@@ -225,7 +253,7 @@ export async function logMessage(file_name: string, message_type: LogLevel, mess
     file_name: file_name, 
     message_type: message_type, 
     message: truncatedMessage, 
-    context: typeof context === 'string' ? context : JSON.stringify(context)
+    context: serializeContext(context),
   };
 
   isLogging = true;
@@ -264,7 +292,13 @@ export async function logMessage(file_name: string, message_type: LogLevel, mess
       // Only log to console if it's a real error (not just unauthenticated or endpoint not found)
       // NEVER call logError here - it would cause infinite recursion!
       // 404 means endpoint doesn't exist - don't log as error (endpoint may not be deployed)
-      if (response.status !== 401 && response.status !== 403 && response.status !== 404 && response.status !== 502) {
+      if (
+        response.status !== 401 &&
+        response.status !== 403 &&
+        response.status !== 404 &&
+        response.status !== 413 &&
+        response.status !== 502
+      ) {
         consoleError(`[Logging] Failed to log message: ${response.status} ${response.statusText}`, errorText);
       }
       // DON'T store locally if authenticated - it means the endpoint is failing/missing
@@ -300,7 +334,7 @@ export async function logError(file_name: string, error: Error, additionalContex
       file_name: file_name,
       message_type: LOG_LEVELS.ERROR,
       message: truncatedErrorMessage,
-      context: JSON.stringify(buildContext(error, additionalContext))
+      context: serializeContext(buildContext(error, additionalContext)),
     });
     return;
   }
@@ -336,7 +370,7 @@ export async function logActivity(project_id: number, dataset_id: number, file_n
     dataset_id: dataset_id, 
     file_name: file_name, 
     message: truncatedMessage, 
-    context: typeof context === 'string' ? context : JSON.stringify(context)
+    context: serializeContext(context),
   };
 
   try {
@@ -366,7 +400,7 @@ export async function logActivity(project_id: number, dataset_id: number, file_n
     if (!response.ok) {
       const errorText = await response.text();
       // Only log to console if it's a real error (not just unauthenticated)
-      if (response.status !== 401 && response.status !== 403 && response.status !== 404) {
+      if (response.status !== 401 && response.status !== 403 && response.status !== 404 && response.status !== 413) {
         consoleError(`[Logging] Activity logging failed: ${response.status} ${response.statusText}`, errorText);
       }
       // DON'T store locally if authenticated - it means the endpoint is failing/missing

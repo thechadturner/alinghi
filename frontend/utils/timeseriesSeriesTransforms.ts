@@ -96,6 +96,42 @@ export function finerTimeseriesDataResample(a: TimeseriesDataResample, b: Timese
   return RESAMPLE_RANK[a] <= RESAMPLE_RANK[b] ? a : b;
 }
 
+/** Chart list shape for uPlot vs D3 routing (explore only). */
+export type ChartLikeForExploreRenderer = {
+  series?: Array<{ dataResample?: unknown; lineType?: unknown }>;
+};
+
+/**
+ * True when any series uses finer-than-1Hz resampling (RAW or 10 Hz), so explore should prefer uPlot.
+ * Empty / no series → false (default 1 Hz assumption).
+ */
+export function exploreChartsNeedUPlotRenderer(charts: ChartLikeForExploreRenderer[] | null | undefined): boolean {
+  if (!charts?.length) return false;
+  let finest: TimeseriesDataResample = DEFAULT_TIMESERIES_DATA_RESAMPLE;
+  for (const chart of charts) {
+    for (const ser of chart.series || []) {
+      finest = finerTimeseriesDataResample(finest, normalizeTimeseriesDataResample(ser.dataResample));
+    }
+  }
+  return finest === "RAW" || finest === "10HZ";
+}
+
+/**
+ * True when any series uses a non-standard line type (cumulative, derivative, etc.).
+ * v1 uPlot path only supports standard/raw-value series; D3 handles the rest.
+ */
+export function exploreChartsNeedD3FallbackForLineTypes(charts: ChartLikeForExploreRenderer[] | null | undefined): boolean {
+  if (!charts?.length) return false;
+  for (const chart of charts) {
+    for (const ser of chart.series || []) {
+      if (normalizeLineType(ser.lineType) !== DEFAULT_TIMESERIES_LINE_TYPE) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** channel-values API: `null` = DuckDB raw rows (no bucket SQL). */
 export type ChannelValuesApiResolution = null | "1s" | "100ms";
 
@@ -356,8 +392,8 @@ export function buildExploreResampleFetchPlan(charts: ChartLikeForResample[]): E
     }
   };
 
-  charts.forEach((chart, chartIndex) => {
-    (chart.series || []).forEach((ser, seriesIndex) => {
+  charts.forEach((chart) => {
+    (chart.series || []).forEach((ser) => {
       if (!ser.yaxis?.name) return;
       const y = stripFleetChannelSuffix(ser.yaxis.name);
       const mode = normalizeTimeseriesDataResample(ser.dataResample);

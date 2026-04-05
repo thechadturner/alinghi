@@ -6026,6 +6026,64 @@ html.scaling-page #window #main-content:has([data-maneuver-solo-window]) {
   /* Match header background color */
 }
 
+/* Explore high-frequency time series (uPlot) on dataset timeseries page */
+#media-container.timeseries-page .time-series .explore-uplot-root {
+  position: relative;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Floated over the plot so flex layout does not squeeze the uPlot canvas (regression when legend was in-flow). */
+#media-container.timeseries-page .explore-uplot-chart-wrap .explore-uplot-chart-legend-inner {
+  position: absolute;
+  top: 8px;
+  left: 77px;
+  z-index: 2;
+  pointer-events: none;
+  max-width: min(920px, 92%);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+#media-container.timeseries-page .explore-uplot-chart-wrap .explore-uplot-chart-legend-inner .explore-uplot-legend-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 2px;
+  text-shadow: 0 0 2px var(--color-bg-header, #0a0a0a), 0 0 6px var(--color-bg-header, #0a0a0a);
+}
+
+.explore-uplot-chart-wrap {
+  width: 100%;
+  min-height: 360px;
+  margin-bottom: 24px;
+  position: relative;
+}
+
+.explore-uplot-chart-wrap .uplot {
+  font-family: inherit;
+}
+
+.explore-uplot-chart-wrap .uplot,
+.explore-uplot-chart-wrap .uplot .u-axis,
+.explore-uplot-chart-wrap .uplot .u-label,
+.explore-uplot-chart-wrap .uplot .u-legend,
+.explore-uplot-chart-wrap .uplot .u-cursor-x,
+.explore-uplot-chart-wrap .uplot .u-cursor-y {
+  color: #fff;
+}
+
+.explore-uplot-chart-wrap .u-select {
+  background: rgba(211, 211, 211, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-sizing: border-box;
+}
+
+.explore-uplot-empty {
+  padding: 24px;
+  opacity: 0.7;
+}
+
 /* TimeSeries chart wrapper styling */
 .timeseries-chart-wrapper {
   display: inline-block;
