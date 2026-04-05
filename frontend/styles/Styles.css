@@ -678,7 +678,7 @@ body.index-page #root {
   top: auto;
   right: auto;
   bottom: auto;
-  transform: translateY(-15px);
+  transform: translateY(-75px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -690,8 +690,9 @@ body.index-page #root {
   min-height: 44px;
   max-height: 44px;
   flex: 0 0 auto;
-  padding: 6px 18px;
-  gap: 20px;
+  padding: 6px 18px 6px 6px;
+  gap: 24px;
+  border: 1px solid rgb(78, 78, 78);
   /* Extra space so speed and time window are not crunched */
   box-sizing: border-box;
 }
@@ -711,9 +712,17 @@ body.index-page #root {
   margin: 0;
 }
 
-.play-pause-container.position-timeline-overlay .play-pause-button svg,
-.play-pause-container.position-timeline-overlay .fast-forward-button svg,
 .play-pause-container.position-timeline-overlay .time-window-button svg {
+  width: 15px !important;
+  height: 15px !important;
+  flex-shrink: 0;
+  min-width: 15px;
+  min-height: 15px;
+  padding-left: 5px;
+}
+
+.play-pause-container.position-timeline-overlay .play-pause-button svg,
+.play-pause-container.position-timeline-overlay .fast-forward-button svg {
   width: 20px !important;
   height: 20px !important;
   flex-shrink: 0;
@@ -723,8 +732,7 @@ body.index-page #root {
 
 .play-pause-container.position-timeline-overlay .time-display {
   font-size: 0.9375rem;
-  margin: 0 0 0 -6px;
-  /* Pull time closer to play button */
+  margin: 0 0 0 -8px;
   line-height: 1;
 }
 
@@ -735,8 +743,7 @@ body.index-page #root {
 }
 
 .play-pause-container.position-timeline-overlay .fast-forward-button {
-  margin-left: -6px;
-  /* Pull speed control a bit left */
+  margin-left: -8px;
 }
 
 .play-pause-container.position-timeline-overlay .speed-label,
