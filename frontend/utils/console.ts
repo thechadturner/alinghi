@@ -629,11 +629,25 @@ export const console_logger = {
         console.log(`${prefix} ${message}`);
       }
     }
-  }
+  },
+
+  /**
+   * Always prints to the browser console (ignores VITE_VERBOSE). Use for page-level diagnostics
+   * where operators must see output (e.g. report data loaded).
+   */
+  pageReport: (message: string, data?: unknown) => {
+    const location = getCallerInfo(true);
+    const prefix = location ? `${location} ` : '';
+    if (data !== undefined) {
+      console.log(`${prefix}${message}`, data);
+    } else {
+      console.log(`${prefix}${message}`);
+    }
+  },
 };
 
 // Export individual functions for convenience
-export const { log, warn, error, info, debug, data, indexedDB, api, chart } = console_logger;
+export const { log, warn, error, info, debug, data, indexedDB, api, chart, pageReport } = console_logger;
 
 // Optional: install global console wrapper so legacy console.* calls are gated by VITE_VERBOSE
 export function installConsoleGate(): void {

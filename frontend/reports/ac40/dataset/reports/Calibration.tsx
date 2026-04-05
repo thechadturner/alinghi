@@ -4,16 +4,21 @@ import * as d3 from "d3";
 import { getData, setupMediaContainerScaling } from "../../../../utils/global";
 import { persistantStore } from "../../../../store/persistantStore";
 import { apiEndpoints } from "@config/env";
-import { debug, error as logError } from "../../../../utils/console";
+import { debug, pageReport, warn, error as logError } from "../../../../utils/console";
 import { logPageLoad } from "../../../../utils/logging";
 import Loading from "../../../../components/utilities/Loading";
 import { unifiedDataStore } from "../../../../store/unifiedDataStore";
+import { sourcesStore } from "../../../../store/sourcesStore";
 import { resolveDataField } from "../../../../utils/colorScale";
 import Violin from "../../../../components/charts/Violin";
 
-const { selectedClassName, selectedProjectId, selectedDatasetId, selectedSourceId, selectedSourceName } = persistantStore;
+const { selectedClassName, selectedProjectId, selectedDatasetId, selectedSourceId } = persistantStore;
 
-/** Parquet column names for TWS/BSP violins and AWS baseline checks (matches AC40 corrections output). */
+/**
+ * Channel names for violins / AWS baseline (single-sensor AC40: ``Awa_deg`` / ``Aws_kts``).
+ * ``*_cor*`` and offsets come from ``fusion_corrections_racesight.parquet`` (merged in channel-values).
+ * Optional legacy: ``Aws_fused_kts``, ``Awa_n_fused_deg`` when a pre-fusion column exists.
+ */
 const CalParquet = {
   twsKnots: "Tws_kts",
   twsCorKnots: "Tws_cor_kts",
@@ -33,10 +38,13 @@ const CalAxisLabel = {
 } as const;
 
 const CAL_VIOLIN_UNITS_NOTE =
-  "TWS left, BSP right. Red port / green stbd (TWA sign). Units follow parquet columns.";
+  "TWS left, BSP right. Red port / green stbd (TWA sign). AWA/TWA/CWA/LWY angle violins: |°| after ±180° wrap (same as summary tables).";
 
-/** Max magnitude (deg) for offset-vs-time curves: matches backend MAX_AWA_LWY_CALIBRATION_OFFSET_DEG. */
-const CAL_OFFSET_DISPLAY_CLAMP_DEG = 5;
+/** Tighter y-scale for TWA/CWA magnitude violins (less padding than default; no d3.nice expansion). */
+const CAL_VIOLIN_TWA_CWA_YPAD = 0.03;
+
+/** Max magnitude (deg) for AWA offset vs time: matches backend MAX_AWA_CALIBRATION_OFFSET_DEG (leeway still ±5°). */
+const CAL_OFFSET_DISPLAY_CLAMP_DEG = 3;
 
 /** Symmetric box smooth for AWA offset vs time: full window width in seconds (±half around each sample). */
 const CAL_OFFSET_TIMESERIES_SMOOTH_WIDTH_SEC = 10;
@@ -104,12 +112,17 @@ function smoothOffsetsByTimeSec(
   return out;
 }
 
-/** Channels for calibration parquet request (deduped; matches corrections parquet columns). */
+/**
+ * Channels for calibration time-series request (deduped). Single-sensor pipeline: no ``Awa1``/``Awa2``/``Aws1``/``Aws2``.
+ * Raw + ``Aws_fused_kts`` / ``Awa_n_fused_deg`` when present; corrections parquet supplies ``*_cor*`` / offsets (merged on ``ts``).
+ */
 const CALIBRATION_CHANNELS = [
   "ts",
   "Datetime",
+  "Grade",
+  "Race_number",
+  "Leg_number",
   "Awa_deg",
-  "Awa_bow_deg",
   "Awa_cor_deg",
   "Awa_offset_deg",
   "Awa_n_deg",
@@ -119,18 +132,21 @@ const CALIBRATION_CHANNELS = [
   "Twa_n_cor_deg",
   "Lwy_n_deg",
   "Lwy_n_cor_deg",
+  "Lwy_cor_deg",
+  "Lwy_offset_deg",
   "Lwy_offset_norm_deg",
   "Cwa_n_deg",
   "Cwa_deg",
   "Cwa_n_cor_deg",
+  "Cse_cor_deg",
   "Twa_deg",
   "Twa_cor_deg",
   "Tws_kts",
   "Tws_cor_kts",
   "Aws_kts",
+  "Aws_fused_kts",
   "Aws_cor_kts",
   "Bsp_kts",
-  "Aws_fused_kts",
   "Twd_deg",
   "Twd_cor_deg",
 ];
@@ -165,7 +181,7 @@ interface PortStbdRow {
 interface ManeuverAngleRow {
   eventType: string;
   count: number;
-  /** Mean |Twa_cor| (fallback Twa_deg); grades 2–3; |TWA| &lt; 80 upwind, &gt; 115 downwind. */
+  /** Mean |Twa_cor| (fallback Twa_deg); Grade ≥ 2; |TWA| &lt; 80 upwind, &gt; 115 downwind. */
   meanTwaCor: number;
   /** Mean |Cwa_n_cor_deg| where present; same row filter. */
   meanCwaCor: number;
@@ -185,10 +201,33 @@ function getVal(d: Record<string, unknown>, key: string): number | null {
   return Number(v);
 }
 
-/** Prefer fused AWS (multi-sensor path), else raw Aws_kts (matches summary table “before” priority). */
+/** Log channel-values result for this report; full array on ``window.__calibrationChannelData`` for DevTools. */
+function logCalibrationFetchOutput(rows: Record<string, unknown>[]): void {
+  const n = rows.length;
+  const first = n > 0 ? rows[0] : null;
+  const columns = first ? Object.keys(first).sort() : [];
+  const sampleHead = n > 0 ? rows.slice(0, Math.min(3, n)).map((r) => ({ ...r })) : [];
+  const sampleTail = n > 3 ? rows.slice(-2).map((r) => ({ ...r })) : [];
+  pageReport("[Calibration] channel-values data returned", {
+    rowCount: n,
+    columns,
+    sampleHead,
+    ...(n > 3 ? { sampleTail } : {}),
+  });
+  if (typeof window !== "undefined") {
+    (window as unknown as { __calibrationChannelData?: Record<string, unknown>[] }).__calibrationChannelData =
+      rows;
+    debug(
+      "[Calibration] Full data: window.__calibrationChannelData (same array as report; inspect or JSON.stringify a slice in console)"
+    );
+  }
+}
+
+/** AWS “before”: legacy ``Aws_fused_kts`` if present, else ``Aws_kts``. After is always ``Aws_cor_kts``. */
 function awsBeforeFieldForData(data: Record<string, unknown>[]): string {
-  if (data.some((d) => getVal(d, CalParquet.awsFusedKnots) !== null)) return CalParquet.awsFusedKnots;
-  return CalParquet.awsKnots;
+  const P = CalParquet;
+  if (data.some((d) => getVal(d, P.awsFusedKnots) !== null)) return P.awsFusedKnots;
+  return P.awsKnots;
 }
 
 function formatCalibrationTableMean(v: number | null): string {
@@ -204,15 +243,35 @@ function calibrationDeltaCellClass(delta: number | null): string {
   return delta > 0 ? "calibration-delta-positive" : delta < 0 ? "calibration-delta-negative" : "";
 }
 
-function getTackFromTwa(twa: number): "port" | "stbd" {
-  return twa < 0 ? "port" : "stbd";
+/**
+ * Map degrees to (-180, 180] (aligns with backend wrap180-style logic for display).
+ * Stops 350° vs −10° from splitting violins / means before |·|.
+ */
+function wrapAngleSigned180Deg(deg: number): number {
+  if (!Number.isFinite(deg)) return deg;
+  let x = deg % 360;
+  if (x > 180) x -= 360;
+  if (x <= -180) x += 360;
+  return x;
 }
 
-/** Port/stbd coloring in violins: prefer signed instrument TWA when present (merged row). */
+/** |angle| after wrap — used for TWA/CWA/LWY/AWA calibration magnitudes. */
+function calibrationAngleMagnitudeDeg(deg: number): number {
+  return Math.abs(wrapAngleSigned180Deg(deg));
+}
+
+function getTackFromTwa(twa: number): "port" | "stbd" {
+  const w = wrapAngleSigned180Deg(twa);
+  return w < 0 ? "port" : "stbd";
+}
+
+/** Port/stbd coloring in violins: prefer signed instrument TWA when present (wrapped ±180°). */
 function twaSignedForViolinRow(d: Record<string, unknown>, twaFilterField: string): number | null {
   const inst = getVal(d, "Twa_deg");
-  if (inst !== null) return inst;
-  return getVal(d, twaFilterField);
+  if (inst !== null) return wrapAngleSigned180Deg(inst);
+  const cor = getVal(d, twaFilterField);
+  if (cor !== null) return wrapAngleSigned180Deg(cor);
+  return null;
 }
 
 /**
@@ -223,18 +282,18 @@ const CALIBRATION_UPWIND_ABS_TWA_MAX = 80;
 const CALIBRATION_DOWNWIND_ABS_TWA_MIN = 115;
 
 function isCalibrationUpwindTwa(twa: number): boolean {
-  return Math.abs(twa) < CALIBRATION_UPWIND_ABS_TWA_MAX;
+  return calibrationAngleMagnitudeDeg(twa) < CALIBRATION_UPWIND_ABS_TWA_MAX;
 }
 
 function isCalibrationDownwindTwa(twa: number): boolean {
-  return Math.abs(twa) > CALIBRATION_DOWNWIND_ABS_TWA_MIN;
+  return calibrationAngleMagnitudeDeg(twa) > CALIBRATION_DOWNWIND_ABS_TWA_MIN;
 }
 
 /** Short filter line reused in legends (plain text; use in JSX with {' '} between spans if needed). */
 const CAL_LEGEND_SECTOR =
-  `Grade 2–3 · upwind |TWA| < ${CALIBRATION_UPWIND_ABS_TWA_MAX}° · downwind |TWA| > ${CALIBRATION_DOWNWIND_ABS_TWA_MIN}°`;
+  `Grade ≥ 2 · upwind |TWA| < ${CALIBRATION_UPWIND_ABS_TWA_MAX}° · downwind |TWA| > ${CALIBRATION_DOWNWIND_ABS_TWA_MIN}°`;
 
-/** Offsets-vs-time uses every loaded row; violins/tables above still use Grade 2–3 + sector filters. */
+/** Offsets-vs-time uses every loaded row; tables/violins use Grade ≥ 2 + sector (matches AWA training grade floor). */
 const CAL_TIMESERIES_GRADES_NOTE =
   "All grades: offset curves use the full calibration dataset (offsets trained on grade ≥ 2 only). AWA Δ: Awa_offset_deg when present, else Awa_n_cor−before; 10 s box smooth; clamp ±5°. LWY Δ: Lwy_offset_norm_deg or Lwy_n_cor−Lwy_n; 5 min box smooth; clamp ±5°.";
 
@@ -299,16 +358,16 @@ function buildEffectiveBeforeAfterPairs(data: Record<string, unknown>[]): Before
 }
 
 /**
- * Map a raw channel value to what we average in the **Before vs After** summary tables only.
- * Angles: |·| for signed boat-frame °. TWS/BSP before: scale knots→metric speed where configured.
- * Port vs stbd tables use raw values (same as violins).
+ * Map a raw channel value to what we average in **Before vs After** tables, port/stbd tables, and angle violins.
+ * Boat angles with useAbsMean: wrap to ±180° then |·| (avoids ± wrap duplicates and mixed-sign CWA/TWA outliers).
+ * TWS/BSP: scale knots→metric where configured.
  */
 function calibrationValueForMean(field: string, raw: number, channelIsBefore: boolean): number {
   const p = findCalibrationPairForField(field);
   if (p) {
     const scale = channelIsBefore ? (p.beforeScale ?? 1) : (p.afterScale ?? 1);
     let x = raw * scale;
-    if (p.useAbsMean) x = Math.abs(x);
+    if (p.useAbsMean) x = calibrationAngleMagnitudeDeg(x);
     return x;
   }
   if (
@@ -319,23 +378,33 @@ function calibrationValueForMean(field: string, raw: number, channelIsBefore: bo
     field === "Awa_mhu_deg" ||
     field === "Awa_mhu_cor_deg"
   ) {
-    return Math.abs(raw);
+    return calibrationAngleMagnitudeDeg(raw);
   }
   return raw;
 }
 
+/**
+ * TWA for upwind/downwind **sector** bands (|TWA| below 80° vs above 115°). Prefer **instrument** ``Twa_deg``
+ * first so classification matches Explore scatter/map; ``Twa_cor_deg`` can sit in the 80–115° band while
+ * ``Twa_deg`` is still VMG-upwind, which hid rows when corrected was preferred. Then normalized fallbacks.
+ */
+function calibrationWindSectorTwaDeg(d: Record<string, unknown>): number | null {
+  return (
+    getVal(d, "Twa_deg") ??
+    getVal(d, "Twa_cor_deg") ??
+    getVal(d, "Twa_n_deg") ??
+    getVal(d, "Twa_n_cor_deg")
+  );
+}
+
 /** Rows for calibration summary tables / violins: |TWA| < 80° (upwind) or > 115° (downwind). */
-function includeRowForCalibrationSummary(
-  d: Record<string, unknown>,
-  twaField: string,
-  wind: "upwind" | "downwind"
-): boolean {
-  const twa = getVal(d, twaField);
+function includeRowForCalibrationSummary(d: Record<string, unknown>, wind: "upwind" | "downwind"): boolean {
+  const twa = calibrationWindSectorTwaDeg(d);
   if (twa === null) return false;
   return wind === "upwind" ? isCalibrationUpwindTwa(twa) : isCalibrationDownwindTwa(twa);
 }
 
-/** Grade column from calibration rows (matches violin filters). */
+/** Grade column from calibration rows (same field as ``isCalibrationSummaryGradeRow``). */
 function calibrationRowGradeNum(d: Record<string, unknown>): number | null {
   const raw = (d as { Grade?: unknown; grade?: unknown; GRADE?: unknown }).Grade
     ?? (d as { grade?: unknown }).grade
@@ -345,13 +414,42 @@ function calibrationRowGradeNum(d: Record<string, unknown>): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Grades 2–3: violins and aligned calibration tables. */
-const CALIBRATION_VIOLIN_GRADES: ReadonlySet<number> = new Set([2, 3]);
-
-/** Same population as `buildBeforeAfterViolinData` / wind-sector tack violins. */
-function isCalibrationViolinGradeRow(d: Record<string, unknown>): boolean {
+/**
+ * Grade ≥ 2 only (strictly &gt; 1). Missing or non-finite Grade excluded.
+ * Used for: before→after tables, port–stbd tables, maneuver check sector metrics, TWS/BSP sector violins, angle violins.
+ */
+function isCalibrationSummaryGradeRow(d: Record<string, unknown>): boolean {
   const g = calibrationRowGradeNum(d);
-  return g !== null && CALIBRATION_VIOLIN_GRADES.has(g);
+  if (g === null) return false;
+  return g >= 2;
+}
+
+/** Console: how many rows pass grade vs TWA bands (spot mismatches vs scatter). */
+function logCalibrationTableFilterDebug(rows: Record<string, unknown>[]): void {
+  if (rows.length === 0) return;
+  let gradePass = 0;
+  let upwindIfInstrumentTwa = 0;
+  let upwindIfCorFirst = 0;
+  let upwindSectorFinal = 0;
+  for (const d of rows) {
+    if (!isCalibrationSummaryGradeRow(d)) continue;
+    gradePass++;
+    const inst = getVal(d, "Twa_deg");
+    if (inst !== null && isCalibrationUpwindTwa(inst)) upwindIfInstrumentTwa++;
+    const corFirst =
+      getVal(d, "Twa_cor_deg") ?? getVal(d, "Twa_deg") ?? getVal(d, "Twa_n_cor_deg") ?? getVal(d, "Twa_n_deg");
+    if (corFirst !== null && isCalibrationUpwindTwa(corFirst)) upwindIfCorFirst++;
+    const sector = calibrationWindSectorTwaDeg(d);
+    if (sector !== null && isCalibrationUpwindTwa(sector)) upwindSectorFinal++;
+  }
+  pageReport("[Calibration] Table/violin filters vs row counts", {
+    totalRows: rows.length,
+    rowsPassingGradeGte2: gradePass,
+    ofThose_upwind_ifTwa_degOnly: upwindIfInstrumentTwa,
+    ofThose_upwind_ifTwa_corFirstOld: upwindIfCorFirst,
+    ofThose_upwind_sectorColumnUsedNow: upwindSectorFinal,
+    note: "Rows in 80°≤|TWA|≤115° are in neither upwind nor downwind tables.",
+  });
 }
 
 export default function CalibrationPage() {
@@ -400,6 +498,9 @@ export default function CalibrationPage() {
         } else if (beforeVals.length === 0 && data.some((d) => getVal(d, "Awa_bow_deg") !== null)) {
           beforeField = "Awa_bow_deg";
           beforeVals = beforeAfterValsForField(data, beforeField, true);
+        } else if (beforeVals.length === 0 && data.some((d) => getVal(d, "Awa_mhu_deg") !== null)) {
+          beforeField = "Awa_mhu_deg";
+          beforeVals = beforeAfterValsForField(data, beforeField, true);
         }
       }
       if (label === "CWA" && beforeVals.length === 0 && afterVals.length > 0) {
@@ -408,7 +509,10 @@ export default function CalibrationPage() {
           beforeVals = beforeAfterValsForField(data, beforeField, true);
         }
       }
-      if (label === "AWA" && (beforeField === "Awa_deg" || beforeField === "Awa_bow_deg")) {
+      if (
+        label === "AWA" &&
+        (beforeField === "Awa_deg" || beforeField === "Awa_bow_deg" || beforeField === "Awa_mhu_deg")
+      ) {
         suppressSignedAwaRow = true;
       }
 
@@ -436,11 +540,22 @@ export default function CalibrationPage() {
     }
 
     const hasSignedAwaBefore = data.some(
-      (d) => getVal(d, "Awa_deg") !== null || getVal(d, "Awa_bow_deg") !== null
+      (d) =>
+        getVal(d, "Awa_deg") !== null ||
+        getVal(d, "Awa_bow_deg") !== null ||
+        getVal(d, "Awa_mhu_deg") !== null
     );
     if (hasSignedAwaBefore && !suppressSignedAwaRow) {
-      const beforeKey = data.some((d) => getVal(d, "Awa_deg") !== null) ? "Awa_deg" : "Awa_bow_deg";
-      const afterKey = data.some((d) => getVal(d, "Awa_cor_deg") !== null) ? "Awa_cor_deg" : "Awa_bow_cor_deg";
+      const beforeKey = data.some((d) => getVal(d, "Awa_deg") !== null)
+        ? "Awa_deg"
+        : data.some((d) => getVal(d, "Awa_bow_deg") !== null)
+          ? "Awa_bow_deg"
+          : "Awa_mhu_deg";
+      const afterKey = data.some((d) => getVal(d, "Awa_cor_deg") !== null)
+        ? "Awa_cor_deg"
+        : data.some((d) => getVal(d, "Awa_bow_cor_deg") !== null)
+          ? "Awa_bow_cor_deg"
+          : "Awa_mhu_cor_deg";
       const beforeVals = beforeAfterValsForField(data, beforeKey, true);
       const afterVals = beforeAfterValsForField(data, afterKey, false);
       if (beforeVals.length || afterVals.length) {
@@ -467,34 +582,35 @@ export default function CalibrationPage() {
     return rows;
   }
 
-  const twaFieldForFilter = createMemo(() =>
-    channelData().some((d) => getVal(d, "Twa_cor_deg") !== null) ? "Twa_cor_deg" : "Twa_deg"
-  );
-
   const beforeAfterTableUpwind = createMemo((): BeforeAfterRow[] => {
     const data = channelData();
-    const twaF = twaFieldForFilter();
     const filtered = data
-      .filter((d) => includeRowForCalibrationSummary(d, twaF, "upwind"))
-      .filter(isCalibrationViolinGradeRow);
+      .filter((d) => includeRowForCalibrationSummary(d, "upwind"))
+      .filter(isCalibrationSummaryGradeRow);
     return buildBeforeAfterRows(filtered);
   });
 
   const beforeAfterTableDownwind = createMemo((): BeforeAfterRow[] => {
     const data = channelData();
-    const twaF = twaFieldForFilter();
     const filtered = data
-      .filter((d) => includeRowForCalibrationSummary(d, twaF, "downwind"))
-      .filter(isCalibrationViolinGradeRow);
+      .filter((d) => includeRowForCalibrationSummary(d, "downwind"))
+      .filter(isCalibrationSummaryGradeRow);
     return buildBeforeAfterRows(filtered);
   });
 
   function buildPortStbdRows(data: Record<string, unknown>[], useBefore: boolean = false): PortStbdRow[] {
     if (!data.length) return [];
     const pairs = buildEffectiveBeforeAfterPairs(data);
-    const twaField = data.some((d) => getVal(d, "Twa_cor_deg") !== null) ? "Twa_cor_deg" : "Twa_deg";
-    const portMask = (d: Record<string, unknown>) => getTackFromTwa(getVal(d, twaField) ?? 0) === "port";
-    const stbdMask = (d: Record<string, unknown>) => getTackFromTwa(getVal(d, twaField) ?? 0) === "stbd";
+    const portMask = (d: Record<string, unknown>) => {
+      const twa = calibrationWindSectorTwaDeg(d);
+      if (twa === null) return false;
+      return getTackFromTwa(twa) === "port";
+    };
+    const stbdMask = (d: Record<string, unknown>) => {
+      const twa = calibrationWindSectorTwaDeg(d);
+      if (twa === null) return false;
+      return getTackFromTwa(twa) === "stbd";
+    };
     const rows: PortStbdRow[] = [];
 
     for (const pair of pairs) {
@@ -507,12 +623,7 @@ export default function CalibrationPage() {
           .map((d) => {
             const raw = getVal(d, field);
             if (raw === null) return null;
-            const p = findCalibrationPairForField(field);
-            if (!p) return raw;
-            const scale = useBefore ? (p.beforeScale ?? 1) : (p.afterScale ?? 1);
-            let val = raw * scale;
-            if (p.useAbsMean) val = Math.abs(val);
-            return val;
+            return calibrationValueForMean(field, raw, useBefore);
           })
           .filter((v): v is number => v !== null);
       };
@@ -532,6 +643,8 @@ export default function CalibrationPage() {
             field = "Awa_deg";
           } else if (data.some((d) => getVal(d, "Awa_bow_deg") !== null)) {
             field = "Awa_bow_deg";
+          } else if (data.some((d) => getVal(d, "Awa_mhu_deg") !== null)) {
+            field = "Awa_mhu_deg";
           }
           if (field !== pair.before) {
             portVals = getTransformedVals(portMask);
@@ -565,37 +678,33 @@ export default function CalibrationPage() {
 
   const portStbdTableBeforeUpwind = createMemo((): PortStbdRow[] => {
     const data = channelData();
-    const twaF = twaFieldForFilter();
     const filtered = data
-      .filter((d) => includeRowForCalibrationSummary(d, twaF, "upwind"))
-      .filter(isCalibrationViolinGradeRow);
+      .filter((d) => includeRowForCalibrationSummary(d, "upwind"))
+      .filter(isCalibrationSummaryGradeRow);
     return buildPortStbdRows(filtered, true); // useBefore = true
   });
 
   const portStbdTableBeforeDownwind = createMemo((): PortStbdRow[] => {
     const data = channelData();
-    const twaF = twaFieldForFilter();
     const filtered = data
-      .filter((d) => includeRowForCalibrationSummary(d, twaF, "downwind"))
-      .filter(isCalibrationViolinGradeRow);
+      .filter((d) => includeRowForCalibrationSummary(d, "downwind"))
+      .filter(isCalibrationSummaryGradeRow);
     return buildPortStbdRows(filtered, true); // useBefore = true
   });
 
   const portStbdTableUpwind = createMemo((): PortStbdRow[] => {
     const data = channelData();
-    const twaF = twaFieldForFilter();
     const filtered = data
-      .filter((d) => includeRowForCalibrationSummary(d, twaF, "upwind"))
-      .filter(isCalibrationViolinGradeRow);
+      .filter((d) => includeRowForCalibrationSummary(d, "upwind"))
+      .filter(isCalibrationSummaryGradeRow);
     return buildPortStbdRows(filtered, false); // useBefore = false (after correction)
   });
 
   const portStbdTableDownwind = createMemo((): PortStbdRow[] => {
     const data = channelData();
-    const twaF = twaFieldForFilter();
     const filtered = data
-      .filter((d) => includeRowForCalibrationSummary(d, twaF, "downwind"))
-      .filter(isCalibrationViolinGradeRow);
+      .filter((d) => includeRowForCalibrationSummary(d, "downwind"))
+      .filter(isCalibrationSummaryGradeRow);
     return buildPortStbdRows(filtered, false); // useBefore = false (after correction)
   });
 
@@ -607,22 +716,20 @@ export default function CalibrationPage() {
 
     const rows: ManeuverAngleRow[] = [];
 
-    /** Grades 2–3; |TWA| < 80 (tack / upwind slice) vs > 115 (gybe / downwind slice). */
+    /** Same grade + |TWA| bands as summary tables (Grade ≥ 2). */
     const getSectorAbsMetrics = (wantUpwind: boolean): { twaVals: number[]; cwaVals: number[]; lwyVals: number[] } => {
       const twaVals: number[] = [];
       const cwaVals: number[] = [];
       const lwyVals: number[] = [];
       let checked = 0;
-      let grade23Count = 0;
+      let gradeBandCount = 0;
       let windMatchCount = 0;
       for (const d of data) {
         checked++;
-        const grade = (d as any).Grade ?? (d as any).grade ?? (d as any).GRADE;
-        const gradeNum = grade !== undefined && grade !== null ? Number(grade) : null;
-        if (gradeNum === null || !CALIBRATION_VIOLIN_GRADES.has(gradeNum)) continue;
-        grade23Count++;
+        if (!isCalibrationSummaryGradeRow(d)) continue;
+        gradeBandCount++;
 
-        const twa = getVal(d, "Twa_cor_deg") ?? getVal(d, "Twa_deg");
+        const twa = calibrationWindSectorTwaDeg(d);
         if (twa === null) continue;
 
         if (wantUpwind) {
@@ -632,16 +739,16 @@ export default function CalibrationPage() {
         }
         windMatchCount++;
 
-        twaVals.push(Math.abs(twa));
+        twaVals.push(calibrationAngleMagnitudeDeg(twa));
         const cwa = getVal(d, "Cwa_n_cor_deg") ?? getVal(d, "Cwa_cor_deg");
-        if (cwa !== null) cwaVals.push(Math.abs(cwa));
+        if (cwa !== null) cwaVals.push(calibrationAngleMagnitudeDeg(cwa));
         const lwy = getVal(d, "Lwy_n_cor_deg") ?? getVal(d, "Lwy_cor_deg");
-        if (lwy !== null) lwyVals.push(Math.abs(lwy));
+        if (lwy !== null) lwyVals.push(calibrationAngleMagnitudeDeg(lwy));
       }
       debug("[Calibration] getSectorAbsMetrics", {
         wantUpwind,
         checked,
-        grade23Count,
+        gradeBandCount,
         windMatchCount,
         twaValsFound: twaVals.length,
         cwaValsFound: cwaVals.length,
@@ -651,7 +758,7 @@ export default function CalibrationPage() {
       return { twaVals, cwaVals, lwyVals };
     };
 
-    // Tacks: maneuver Turn_angle grade > 1; channel means from grades 2–3, |TWA| < 80
+    // Tacks: maneuver Turn_angle grade > 1; channel means from Grade ≥ 2 rows, |TWA| < 80
     if (tacks.length > 0) {
       // Filter tacks by grade > 1 (check tags.GRADE or direct Grade field)
       const gradeFilteredTacks = tacks.filter((m) => {
@@ -689,7 +796,7 @@ export default function CalibrationPage() {
       }
     }
 
-    // Gybes: maneuver Turn_angle grade > 1; channel means from grades 2–3, |TWA| > 115
+    // Gybes: maneuver Turn_angle grade > 1; channel means from Grade ≥ 2 rows, |TWA| > 115
     if (gybes.length > 0) {
       // Filter gybes by grade > 1 (check tags.GRADE or direct Grade field)
       const gradeFilteredGybes = gybes.filter((m) => {
@@ -730,69 +837,71 @@ export default function CalibrationPage() {
 
   /**
    * Combined before/after rows for violins: x-axis shows "Before" and "After", each with port/stbd halves.
-   * Uses one TWA column for wind sector (same rule as summary tables: `twaFieldForFilter()`),
-   * so Before and After points from the same row share one classification — unlike filtering Before by
-   * Twa_deg and After by Twa_cor separately, which skewed means and counts.
-   * Grades 2–3 only.
+   * Wind sector uses per-row `Twa_deg` then `Twa_cor_deg` (same as summary tables) so classification matches Explore.
+   * Grade ≥ 2 (same filter as summary tables).
    */
   function buildBeforeAfterViolinData(
     beforeField: string,
     afterField: string,
-    twaFilterField: string,
     windFilter?: "upwind" | "downwind"
   ): { Phase: string; Value: number; Twa_signed: number }[] {
     const data = channelData();
     const out: { Phase: string; Value: number; Twa_signed: number }[] = [];
     for (const d of data) {
-      if (!isCalibrationViolinGradeRow(d)) continue;
+      if (!isCalibrationSummaryGradeRow(d)) continue;
 
-      const twa = getVal(d, twaFilterField);
+      const twa = calibrationWindSectorTwaDeg(d);
       if (twa === null) continue;
 
       if (windFilter === "upwind" || windFilter === "downwind") {
-        if (!includeRowForCalibrationSummary(d, twaFilterField, windFilter)) continue;
+        if (!includeRowForCalibrationSummary(d, windFilter)) continue;
       } else if (!isCalibrationUpwindTwa(twa) && !isCalibrationDownwindTwa(twa)) {
         continue;
       }
 
-      const signedForViolin = twaSignedForViolinRow(d, twaFilterField) ?? twa;
+      const signedForViolin = twaSignedForViolinRow(d, "Twa_cor_deg") ?? twa;
       const beforeVal = getVal(d, beforeField);
       const afterVal = getVal(d, afterField);
-      if (beforeVal !== null) out.push({ Phase: "Before", Value: beforeVal, Twa_signed: signedForViolin });
-      if (afterVal !== null) out.push({ Phase: "After", Value: afterVal, Twa_signed: signedForViolin });
+      if (beforeVal !== null) {
+        out.push({
+          Phase: "Before",
+          Value: calibrationValueForMean(beforeField, beforeVal, true),
+          Twa_signed: signedForViolin,
+        });
+      }
+      if (afterVal !== null) {
+        out.push({
+          Phase: "After",
+          Value: calibrationValueForMean(afterField, afterVal, false),
+          Twa_signed: signedForViolin,
+        });
+      }
     }
     return out;
   }
 
   /**
    * TWS/BSP violins: Upwind (|TWA| < 80°) vs Downwind (|TWA| > 115°), port/stbd from signed TWA.
-   * Grades 2–3; matches other calibration violins.
+   * Grade ≥ 2; matches other calibration violins.
    */
-  function buildWindSectorTackViolinData(
-    valueField: string,
-    twaField: string
-  ): { Sector: "Upwind" | "Downwind"; Value: number; Twa_signed: number }[] {
+  function buildWindSectorTackViolinData(valueField: string): { Sector: "Upwind" | "Downwind"; Value: number; Twa_signed: number }[] {
     const data = channelData();
     const out: { Sector: "Upwind" | "Downwind"; Value: number; Twa_signed: number }[] = [];
     for (const d of data) {
-      if (!isCalibrationViolinGradeRow(d)) continue;
+      if (!isCalibrationSummaryGradeRow(d)) continue;
 
-      const twa = getVal(d, twaField);
+      const twa = calibrationWindSectorTwaDeg(d);
       if (twa === null) continue;
 
       const val = getVal(d, valueField);
       if (val === null) continue;
 
-      const signedForViolin = twaSignedForViolinRow(d, twaField) ?? twa;
+      const signedForViolin = twaSignedForViolinRow(d, "Twa_cor_deg") ?? twa;
       if (isCalibrationUpwindTwa(twa)) out.push({ Sector: "Upwind", Value: val, Twa_signed: signedForViolin });
       else if (isCalibrationDownwindTwa(twa)) out.push({ Sector: "Downwind", Value: val, Twa_signed: signedForViolin });
     }
     return out;
   }
-
-  const twaFieldForViolins = createMemo(() =>
-    channelData().some((d) => getVal(d, "Twa_cor_deg") !== null) ? "Twa_cor_deg" : "Twa_deg"
-  );
 
   /** AWA before column: fused when present, else normalized raw (matches timeseries Δ fallback). */
   const awaBeforeFieldForViolins = createMemo((): "Awa_n_fused_deg" | "Awa_n_deg" => {
@@ -823,10 +932,10 @@ export default function CalibrationPage() {
   });
 
   const violinTwsWindSector = createMemo(() =>
-    buildWindSectorTackViolinData(twsViolinValueField().field, twaFieldForViolins())
+    buildWindSectorTackViolinData(twsViolinValueField().field)
   );
   const violinBspWindSector = createMemo(() =>
-    buildWindSectorTackViolinData(bspViolinValueField().field, twaFieldForViolins())
+    buildWindSectorTackViolinData(bspViolinValueField().field)
   );
 
   const violinChartTwsWindSector = createMemo(() => ({
@@ -855,7 +964,7 @@ export default function CalibrationPage() {
     series: [
       {
         xaxis: { name: "Before / after" },
-        yaxis: { name: "°", dataField: "Value" },
+        yaxis: { name: "|°| magnitude", dataField: "Value" },
         groupField: "Phase",
         originalData: [] as { Phase: string; Value: number; Twa_signed: number }[],
       },
@@ -863,17 +972,17 @@ export default function CalibrationPage() {
   };
 
   const violinAwaUpwind = createMemo(() =>
-    buildBeforeAfterViolinData(awaBeforeFieldForViolins(), "Awa_n_cor_deg", twaFieldForFilter(), "upwind")
+    buildBeforeAfterViolinData(awaBeforeFieldForViolins(), "Awa_n_cor_deg", "upwind")
   );
   const violinAwaDownwind = createMemo(() =>
-    buildBeforeAfterViolinData(awaBeforeFieldForViolins(), "Awa_n_cor_deg", twaFieldForFilter(), "downwind")
+    buildBeforeAfterViolinData(awaBeforeFieldForViolins(), "Awa_n_cor_deg", "downwind")
   );
-  const violinTwaUpwind = createMemo(() => buildBeforeAfterViolinData("Twa_n_deg", "Twa_n_cor_deg", twaFieldForFilter(), "upwind"));
-  const violinTwaDownwind = createMemo(() => buildBeforeAfterViolinData("Twa_n_deg", "Twa_n_cor_deg", twaFieldForFilter(), "downwind"));
-  const violinLwyUpwind = createMemo(() => buildBeforeAfterViolinData("Lwy_n_deg", "Lwy_n_cor_deg", twaFieldForFilter(), "upwind"));
-  const violinLwyDownwind = createMemo(() => buildBeforeAfterViolinData("Lwy_n_deg", "Lwy_n_cor_deg", twaFieldForFilter(), "downwind"));
-  const violinCwaUpwind = createMemo(() => buildBeforeAfterViolinData("Cwa_n_deg", "Cwa_n_cor_deg", twaFieldForFilter(), "upwind"));
-  const violinCwaDownwind = createMemo(() => buildBeforeAfterViolinData("Cwa_n_deg", "Cwa_n_cor_deg", twaFieldForFilter(), "downwind"));
+  const violinTwaUpwind = createMemo(() => buildBeforeAfterViolinData("Twa_n_deg", "Twa_n_cor_deg", "upwind"));
+  const violinTwaDownwind = createMemo(() => buildBeforeAfterViolinData("Twa_n_deg", "Twa_n_cor_deg", "downwind"));
+  const violinLwyUpwind = createMemo(() => buildBeforeAfterViolinData("Lwy_n_deg", "Lwy_n_cor_deg", "upwind"));
+  const violinLwyDownwind = createMemo(() => buildBeforeAfterViolinData("Lwy_n_deg", "Lwy_n_cor_deg", "downwind"));
+  const violinCwaUpwind = createMemo(() => buildBeforeAfterViolinData("Cwa_n_deg", "Cwa_n_cor_deg", "upwind"));
+  const violinCwaDownwind = createMemo(() => buildBeforeAfterViolinData("Cwa_n_deg", "Cwa_n_cor_deg", "downwind"));
 
   function drawTimeSeries() {
     try {
@@ -890,7 +999,7 @@ export default function CalibrationPage() {
         return;
       }
 
-      // Full timeline: backend applies corrections to all grades; do not restrict to 2–3 here.
+      // Full timeline: backend applies corrections to all grades; no grade filter on this chart.
       const filteredData = data;
 
       const getTs = (d: Record<string, unknown>): number => {
@@ -904,7 +1013,7 @@ export default function CalibrationPage() {
       const sorted = [...filteredData].sort((a, b) => getTs(a) - getTs(b));
       const ts = sorted.map(getTs);
 
-      // AWA Δ: pipeline Awa_offset_deg as stored (additive ° on signed AWA); fallback Awa_n_cor − Awa_n_fused.
+      // AWA Δ: ``Awa_offset_deg`` from pipeline; else Awa_n_cor − before (Awa_n_fused or Awa_n).
       const awaBeforeField = sorted.some((d) => getVal(d, "Awa_n_fused_deg") !== null) ? "Awa_n_fused_deg" : "Awa_n_deg";
       const awaOffsetRaw = sorted.map((d) => {
         const recorded = getVal(d, "Awa_offset_deg");
@@ -1233,90 +1342,187 @@ export default function CalibrationPage() {
     onCleanup(cleanupScaling);
   });
 
-  onMount(async () => {
-    // Safety timeout to ensure loading doesn't hang forever
-    let timeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+  /**
+   * Channel-values resolves files by `source_name` + calendar `date` (YYYYMMDD), not by dataset_id.
+   * Always use the dataset row's `source_name` from `/datasets/info` — not `selectedSourceName()`,
+   * or another boat's parquet can be loaded for the same date. Refetch when dataset/project/class changes.
+   */
+  createEffect(() => {
+    const datasetId = selectedDatasetId();
+    const projectId = selectedProjectId();
+    const className = selectedClassName();
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    onCleanup(() => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (typeof window !== "undefined") {
+        delete (window as unknown as { __calibrationChannelData?: unknown }).__calibrationChannelData;
+      }
+    });
+
+    if (!datasetId || !projectId || !className) {
+      setError("No dataset or project selected.");
+      setLoading(false);
+      setChannelData([]);
+      setManeuversTack([]);
+      setManeuversGybe([]);
+      setMissingChannels([]);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    timeoutId = setTimeout(() => {
+      if (cancelled) return;
       logError("[Calibration] Loading timeout - forcing loading to false");
       setLoading(false);
       setError("Loading timed out. Please refresh the page.");
       timeoutId = null;
-    }, 30000); // 30 second timeout
+    }, 30000);
 
-    try {
-      await logPageLoad("Calibration.tsx", "Calibration");
-      const datasetId = selectedDatasetId();
-      const projectId = selectedProjectId();
-      const className = selectedClassName();
-      const sourceId = selectedSourceId();
-      if (!datasetId || !projectId || !className || !sourceId) {
-        if (timeoutId) clearTimeout(timeoutId);
-        setError("No dataset or project selected.");
-        setLoading(false);
-        return;
-      }
+    void (async () => {
+      try {
+        await logPageLoad("Calibration.tsx", "Calibration");
 
-      setLoading(true);
-      setError(null);
+        const infoUrl = `${apiEndpoints.app.datasets}/info?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&dataset_id=${encodeURIComponent(datasetId)}`;
+        const infoRes = await getData(infoUrl);
+        if (cancelled) return;
 
-      const infoUrl = `${apiEndpoints.app.datasets}/info?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&dataset_id=${encodeURIComponent(datasetId)}`;
-      const infoRes = await getData(infoUrl);
-      if (!infoRes?.success || !infoRes?.data) {
-        if (timeoutId) clearTimeout(timeoutId);
-        setError("Failed to load dataset info.");
-        setLoading(false);
-        return;
-      }
-      const { date, source_name, timezone } = infoRes.data;
-      setDatasetInfo({ date, source_name, timezone });
+        if (!infoRes?.success || !infoRes?.data) {
+          if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          setError("Failed to load dataset info.");
+          setLoading(false);
+          return;
+        }
 
-      const formattedDateStr = (date as string).replace(/-/g, "");
+        const di = infoRes.data as Record<string, unknown>;
+        const date = di.date;
+        const rawSn = di.source_name ?? di.Source_name;
+        const datasetSourceName =
+          typeof rawSn === "string" && rawSn.trim() ? rawSn.trim() : "";
+        const timezone = di.timezone as string | undefined;
 
-      // Use chartType 'ts' (same as TimeSeries/Explore) so we share the same cache key; the store
-      // then returns in-memory cache when available and allowPartialData applies so we get data.
-      // Use fetchDataWithChannelChecking (not FromFile) so we don't gate on file channel list and
-      // the channel-values API is called with our calibration channels directly.
-      // No global grade/TWA filters: backend writes _cor for all grades; we need every row here.
-      const data = await unifiedDataStore.fetchDataWithChannelChecking(
-        "ts",
-        className,
-        sourceId.toString(),
-        CALIBRATION_CHANNELS,
-        {
-          projectId: projectId.toString(),
+        if (!datasetSourceName) {
+          if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          setError("Dataset has no source; cannot load calibration files.");
+          setLoading(false);
+          return;
+        }
+
+        setDatasetInfo({
+          date: String(date ?? ""),
+          source_name: datasetSourceName,
+          timezone,
+        });
+
+        const formattedDateStr = String(date ?? "").replace(/-/g, "");
+
+        if (!sourcesStore.isReady()) {
+          let w = 0;
+          while (!sourcesStore.isReady() && w < 50 && !cancelled) {
+            await new Promise((r) => setTimeout(r, 100));
+            w++;
+          }
+        }
+        if (cancelled) return;
+
+        let effectiveSourceId = sourcesStore.getSourceId(datasetSourceName);
+        if (effectiveSourceId == null || effectiveSourceId === 0) {
+          const fallback = selectedSourceId();
+          warn("[Calibration] sourcesStore missing source_id for dataset source; falling back to selectedSourceId", {
+            datasetSourceName,
+            fallbackId: fallback,
+          });
+          effectiveSourceId = fallback != null && fallback !== 0 ? fallback : 0;
+        }
+        if (!effectiveSourceId) {
+          if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          setError("Could not resolve source id for this dataset.");
+          setLoading(false);
+          return;
+        }
+
+        debug("[Calibration] Channel-values context (dataset boat + date)", {
+          datasetId,
+          datasetSourceName,
+          effectiveSourceId,
+          formattedDateStr,
+        });
+
+        // Omit resolution: unifiedDataAPI defaults to 1s — fast enough for the 30s UI timeout. RAW (null) can take
+        // minutes on full days and was causing spurious timeouts; violins/tables still get diverse wind sectors at 1 Hz.
+        const data = await unifiedDataStore.fetchDataWithChannelChecking(
+          "ts",
           className,
-          datasetId: datasetId.toString(),
-          sourceName: selectedSourceName() || source_name,
-          date: formattedDateStr,
-          timezone: timezone || undefined,
-          applyGlobalFilters: false,
-          use_v2: true,
-          skipTimeRangeFilter: true,
-        },
-        "timeseries"
-      );
-      const arr = Array.isArray(data) ? data : [];
-      setChannelData(arr);
-      debug("[Calibration] Channel data loaded", { rows: arr.length });
+          String(effectiveSourceId),
+          CALIBRATION_CHANNELS,
+          {
+            projectId: projectId.toString(),
+            className,
+            datasetId: datasetId.toString(),
+            sourceName: datasetSourceName,
+            date: formattedDateStr,
+            timezone: timezone || undefined,
+            applyGlobalFilters: false,
+            use_v2: true,
+            skipTimeRangeFilter: true,
+          },
+          "timeseries"
+        );
+        if (cancelled) return;
 
-      const missing = unifiedDataStore.getLastMissingChannels("ts");
-      if (missing?.length) setMissingChannels(missing);
+        const arr = Array.isArray(data) ? data : [];
+        setError(null);
+        setChannelData(arr);
+        logCalibrationFetchOutput(arr);
+        logCalibrationTableFilterDebug(arr);
+        debug("[Calibration] Channel data loaded", { rows: arr.length });
 
-      const tackUrl = `${apiEndpoints.app.data}/maneuvers-table-data?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&dataset_id=${encodeURIComponent(datasetId)}&event_type=TACK&channels=${encodeURIComponent(JSON.stringify(MANEUVERS_ANGLE_CHANNELS))}`;
-      const gybeUrl = `${apiEndpoints.app.data}/maneuvers-table-data?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&dataset_id=${encodeURIComponent(datasetId)}&event_type=GYBE&channels=${encodeURIComponent(JSON.stringify(MANEUVERS_ANGLE_CHANNELS))}`;
+        const missing = unifiedDataStore.getLastMissingChannels("ts");
+        setMissingChannels(missing?.length ? missing : []);
 
-      const [tackRes, gybeRes] = await Promise.all([getData(tackUrl), getData(gybeUrl)]);
-      if (tackRes?.success && Array.isArray(tackRes.data)) setManeuversTack(tackRes.data);
-      if (gybeRes?.success && Array.isArray(gybeRes.data)) setManeuversGybe(gybeRes.data);
-    } catch (e) {
-      logError("[Calibration] Load error", e);
-      setError(e instanceof Error ? e.message : "Failed to load calibration data.");
-    } finally {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
+        const tackUrl = `${apiEndpoints.app.data}/maneuvers-table-data?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&dataset_id=${encodeURIComponent(datasetId)}&event_type=TACK&channels=${encodeURIComponent(JSON.stringify(MANEUVERS_ANGLE_CHANNELS))}`;
+        const gybeUrl = `${apiEndpoints.app.data}/maneuvers-table-data?class_name=${encodeURIComponent(className)}&project_id=${encodeURIComponent(projectId)}&dataset_id=${encodeURIComponent(datasetId)}&event_type=GYBE&channels=${encodeURIComponent(JSON.stringify(MANEUVERS_ANGLE_CHANNELS))}`;
+
+        const [tackRes, gybeRes] = await Promise.all([getData(tackUrl), getData(gybeUrl)]);
+        if (cancelled) return;
+
+        if (tackRes?.success && Array.isArray(tackRes.data)) setManeuversTack(tackRes.data);
+        else setManeuversTack([]);
+        if (gybeRes?.success && Array.isArray(gybeRes.data)) setManeuversGybe(gybeRes.data);
+        else setManeuversGybe([]);
+      } catch (e) {
+        if (!cancelled) {
+          logError("[Calibration] Load error", e);
+          setError(e instanceof Error ? e.message : "Failed to load calibration data.");
+        }
+      } finally {
+        if (!cancelled) {
+          if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          setLoading(false);
+          debug("[Calibration] Loading complete");
+        }
       }
-      setLoading(false);
-      debug("[Calibration] Loading complete");
-    }
+    })();
   });
 
   return (
@@ -1527,7 +1733,7 @@ export default function CalibrationPage() {
             </div>
           </div>
           <p class="calibration-legend calibration-legend-right">
-            <strong>Port–stbd:</strong> {CAL_LEGEND_SECTOR}. Tack via <code>{twaFieldForFilter()}</code>. Aligns with tack violins, not the aggregated before→after table.
+            <strong>Port–stbd:</strong> {CAL_LEGEND_SECTOR}. Tack from signed TWA: <code>Twa_cor_deg</code> when present, else <code>Twa_deg</code>. Aligns with tack violins, not the aggregated before→after table.
           </p>
         </section>
 
@@ -1595,7 +1801,7 @@ export default function CalibrationPage() {
             {CAL_LEGEND_SECTOR}. Upwind left, downwind right; before vs after × tack half.
           </p>
           <div class="calibration-violin-metric-row">
-            <h4 class="calibration-violin-metric-title">AWA · fused → corrected</h4>
+            <h4 class="calibration-violin-metric-title">AWA · before → corrected</h4>
             <div class="calibration-violin-split">
               <div class="calibration-violin-cell">
                 <h5 class="calibration-violin-wind-label">Upwind</h5>
@@ -1634,13 +1840,31 @@ export default function CalibrationPage() {
               <div class="calibration-violin-cell">
                 <h5 class="calibration-violin-wind-label">Upwind</h5>
                 <div class="violin-container">
-                  <Violin chart={violinChartPhase} data={violinTwaUpwind()} twaField="Twa_signed" portColor="#c00" stbdColor="#2ca02c" />
+                  <Violin
+                    chart={violinChartPhase}
+                    data={violinTwaUpwind()}
+                    twaField="Twa_signed"
+                    portColor="#c00"
+                    stbdColor="#2ca02c"
+                    yPaddingFraction={CAL_VIOLIN_TWA_CWA_YPAD}
+                    yNice={false}
+                    yClampMinZero
+                  />
                 </div>
               </div>
               <div class="calibration-violin-cell">
                 <h5 class="calibration-violin-wind-label">Downwind</h5>
                 <div class="violin-container">
-                  <Violin chart={violinChartPhase} data={violinTwaDownwind()} twaField="Twa_signed" portColor="#c00" stbdColor="#2ca02c" />
+                  <Violin
+                    chart={violinChartPhase}
+                    data={violinTwaDownwind()}
+                    twaField="Twa_signed"
+                    portColor="#c00"
+                    stbdColor="#2ca02c"
+                    yPaddingFraction={CAL_VIOLIN_TWA_CWA_YPAD}
+                    yNice={false}
+                    yClampMinZero
+                  />
                 </div>
               </div>
             </div>
@@ -1651,13 +1875,31 @@ export default function CalibrationPage() {
               <div class="calibration-violin-cell">
                 <h5 class="calibration-violin-wind-label">Upwind</h5>
                 <div class="violin-container">
-                  <Violin chart={violinChartPhase} data={violinCwaUpwind()} twaField="Twa_signed" portColor="#c00" stbdColor="#2ca02c" />
+                  <Violin
+                    chart={violinChartPhase}
+                    data={violinCwaUpwind()}
+                    twaField="Twa_signed"
+                    portColor="#c00"
+                    stbdColor="#2ca02c"
+                    yPaddingFraction={CAL_VIOLIN_TWA_CWA_YPAD}
+                    yNice={false}
+                    yClampMinZero
+                  />
                 </div>
               </div>
               <div class="calibration-violin-cell">
                 <h5 class="calibration-violin-wind-label">Downwind</h5>
                 <div class="violin-container">
-                  <Violin chart={violinChartPhase} data={violinCwaDownwind()} twaField="Twa_signed" portColor="#c00" stbdColor="#2ca02c" />
+                  <Violin
+                    chart={violinChartPhase}
+                    data={violinCwaDownwind()}
+                    twaField="Twa_signed"
+                    portColor="#c00"
+                    stbdColor="#2ca02c"
+                    yPaddingFraction={CAL_VIOLIN_TWA_CWA_YPAD}
+                    yNice={false}
+                    yClampMinZero
+                  />
                 </div>
               </div>
             </div>

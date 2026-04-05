@@ -13,6 +13,12 @@ corrected columns added (``Awa_cor``, ``Aws_cor``, ``Twa_cor``, etc.).
 ``Awa_cor_deg``, ``Tws_cor`` → ``Tws_cor_kts``, etc.) before
 ``_finalize_corrections_geometry`` derives course and normalized-angle columns.
 
+``fusion_corrections_racesight.parquet`` is **narrow**: join keys, offset columns,
+fused ``*_cor*`` outputs, geometry derived from corrected wind, and per-sensor
+``Awa{n}_*`` / ``Aws{n}_*`` when multi-sensor. Raw instrument columns (``Awa_deg``,
+``Bsp_kts``, etc.) are **not** written here; UIs that need before/after should use
+``get_channel_values`` (or equivalent), which merges this file with other parquets.
+
 Multi-sensor usage: set ``multi_sensor=True`` in ``calibrate_pipeline`` call and
 supply ``awa_sensors`` / ``aws_sensors`` lists — see
 ``utilities.cal_utils.calibrate_pipeline`` docstring for details.
@@ -25,7 +31,7 @@ import sys
 import json
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -33,6 +39,7 @@ if sys.stderr.encoding != 'utf-8':
     sys.stderr.reconfigure(encoding='utf-8')
 
 import utilities as u
+from utilities.cal_utils import MAX_AWA_CALIBRATION_OFFSET_DEG
 
 from dotenv import load_dotenv
 
@@ -61,19 +68,22 @@ TARGET_FETCH_CHANNELS = [
 FETCH_CHANNELS = [
     {'name': 'ts', 'type': 'float'},
     {'name': 'Grade', 'type': 'int'},
-    {'name': 'Hdg_deg', 'type': 'angle360'},
-    {'name': 'Cog_deg', 'type': 'angle360'},
-    {'name': 'Tws_kts', 'type': 'float'},
-    {'name': 'Bsp_kts', 'type': 'float'},
-    {'name': 'Awa_deg', 'type': 'angle180'},
-    {'name': 'Aws_kts', 'type': 'float'},
-    {'name': 'Twd_deg', 'type': 'angle360'},
-    {'name': 'Twa_deg', 'type': 'angle180'},
-    {'name': 'Cwa_deg', 'type': 'angle180'},
+    {'name': 'AC40_HDG', 'type': 'angle360'},
+    {'name': 'AC40_COG', 'type': 'angle360'},
+    {'name': 'AC40_BowWand_TWS_kts', 'type': 'float'},
+    {'name': 'AC40_BowWand_TWD', 'type': 'angle360'},
+    {'name': 'AC40_Speed_kts', 'type': 'float'},
+    {'name': 'AC40_BowWand_AWA', 'type': 'angle180'},
+    {'name': 'AC40_BowWand_AWA_n', 'type': 'angle180'},
+    {'name': 'AC40_BowWand_AWS', 'type': 'float'},
+    {'name': 'AC40_TWA', 'type': 'angle180'},
+    {'name': 'AC40_CWA', 'type': 'angle180'},
     {'name': 'AC40_VMG_kts', 'type': 'float'},
     {'name': 'AC40_Heel', 'type': 'float'},
+    {'name': 'AC40_Heel_n', 'type': 'float'},
     {'name': 'AC40_Trim', 'type': 'float'},
-    {'name': 'Lwy_deg', 'type': 'float'},
+    {'name': 'AC40_Leeway', 'type': 'float'},
+    {'name': 'AC40_Leeway_n', 'type': 'float'},
     {'name': 'AC40_HullAltitude', 'type': 'int'},
     {'name': 'AC40_Loads_MainSheetLoad', 'type': 'float'},
     {'name': 'AC40_FoilPort_Cant', 'type': 'float'},
@@ -85,18 +95,21 @@ FETCH_CHANNELS = [
 
 # Rename BowWand ``AC40_*`` and suffixed names → simple unit-free names
 SIMPLE_RENAME = {
-    'Hdg_deg': 'Hdg',
-    'Cog_deg': 'Cog',
-    'Tws_kts': 'Tws',
-    'Bsp_kts': 'Bsp',
-    'Awa_deg': 'Awa',
-    'Aws_kts': 'Aws',
-    'Twd_deg': 'Twd',
-    'Twa_deg': 'Twa',
-    'Cwa_deg': 'Cwa',
-    'Lwy_deg': 'Lwy',
-    'AC40_VMG_kts': 'Vmg',
+    'AC40_HDG': 'Hdg',
+    'AC40_COG': 'Cog',
+    'AC40_BowWand_TWS_kts': 'Tws',
+    'AC40_Speed_kts': 'Bsp',
+    'AC40_BowWand_AWA': 'Awa',
+    'AC40_BowWand_AWA_n': 'Awa_n',
+    'AC40_BowWand_AWS': 'Aws',
+    'AC40_BowWand_TWD': 'Twd',
+    'AC40_TWA': 'Twa',
+    'AC40_CWA': 'Cwa',
+    'AC40_Leeway': 'Lwy',
+    'AC40_Leeway_n': 'Lwy_n',
+    'AC40_VMG_n_kts': 'Vmg_n',
     'AC40_Heel': 'Heel',
+    'AC40_Heel_n': 'Heel_n',
     'AC40_Trim': 'Trim',
     'AC40_HullAltitude': 'Altitude',
     'AC40_Loads_MainSheetLoad': 'Main_sheet_load',
@@ -111,12 +124,12 @@ SIMPLE_RENAME = {
 # Foil-derived columns are computed by _compute_foil_features before calibration.
 AWA_FEATURES = [
     'Bsp', 'Tws', 'Altitude', 'Foil_lwd_sink', 'Foil_lwd_cant_eff',
-    'Main_sheet_load', 'Swh',
+    'Main_sheet_load', 'Swh', 'Lwy_n',
 ]
 
 LWY_FEATURES = [
-    'Bsp', 'Tws', 'Heel', 'Altitude', 'Foil_lwd_sink', 'Foil_lwd_cant_eff',
-    'Main_sheet_load', 'Swh',
+    'Bsp', 'Tws', 'Heel_n', 'Altitude', 'Foil_lwd_sink', 'Foil_lwd_cant_eff',
+    'Main_sheet_load', 'Swh', 'Awa_n',
 ]
 
 # ---------------------------------------------------------------------------
@@ -126,6 +139,10 @@ LWY_FEATURES = [
 SMOOTH_SECONDS = 10
 RS_PERIOD_SEC = 0.1
 EMA_ALPHA = 0.001
+# AWA offset columns only: lower α than ``EMA_ALPHA`` (legacy) → smoother, less jumpy corrections.
+EMA_ALPHA_AWA_OFFSET = 0.0008
+# Corrected TWS/TWD only: higher α than ``EMA_ALPHA_AWA_OFFSET`` → less lag on wind vector.
+EMA_ALPHA_TWS_TWD = 0.0015
 
 
 # ---------------------------------------------------------------------------
@@ -146,20 +163,25 @@ def _fetch_raw_data(
         api_token, class_name, project_id, date, source_name,
         FETCH_CHANNELS, '100ms', start_ts, end_ts, 'UTC',
     )
+
     if dfi is None or len(dfi) == 0:
         return pd.DataFrame()
+
     dfi = dfi.rename(columns=SIMPLE_RENAME)
+
     if dfi['ts'].dtype == 'Float64':
         dfi['ts'] = dfi['ts'].astype('float64')
+
     ts_sample = dfi['ts'].dropna()
     if len(ts_sample) > 0 and ts_sample.max() > 1e12:
         dfi['ts'] = (dfi['ts'] / 1000.0).round(3)
     else:
         dfi['ts'] = dfi['ts'].round(3)
+
     if 'Bsp' in dfi.columns:
         dfi = u.remove_gaps(dfi, 'Bsp', 'ts')
-    return dfi
 
+    return dfi
 
 # ---------------------------------------------------------------------------
 # FOIL FEATURES (simple names)
@@ -442,8 +464,8 @@ def add_normalized_pre_leeway_from_offsets(df_out):
     return df_out
 
 
-def apply_exponential_filter_tws_twd(df_out, alpha=EMA_ALPHA):
-    """Apply EMA to ``Tws_*_cor_kts`` and ``Twd_*_cor_deg`` columns."""
+def apply_exponential_filter_tws_twd(df_out, alpha=EMA_ALPHA_TWS_TWD):
+    """Apply EMA to ``Tws_*_cor_kts`` and ``Twd_*_cor_deg`` columns (see ``EMA_ALPHA_TWS_TWD``)."""
     if df_out is None or len(df_out) == 0:
         return df_out
     if alpha is None or alpha <= 0 or alpha > 1:
@@ -461,8 +483,10 @@ def apply_exponential_filter_tws_twd(df_out, alpha=EMA_ALPHA):
     return df_out
 
 
-def apply_exponential_filter_awa_offset(df_out, alpha=EMA_ALPHA):
+def apply_exponential_filter_awa_offset(df_out, alpha=EMA_ALPHA_AWA_OFFSET):
     """Apply EMA to AWA offset columns to smooth recorded offset values.
+
+    Clips to ``MAX_AWA_CALIBRATION_OFFSET_DEG`` after smoothing (same cap as ``cal_utils``).
 
     Handles ``Awa_offset_deg`` (single-sensor) and any ``Awa{n}_offset_deg``
     columns (multi-sensor, e.g. ``Awa1_offset_deg``, ``Awa2_offset_deg``).
@@ -477,10 +501,12 @@ def apply_exponential_filter_awa_offset(df_out, alpha=EMA_ALPHA):
     ]
     if not offset_cols:
         return df_out
+    lim = float(MAX_AWA_CALIBRATION_OFFSET_DEG)
     for col in offset_cols:
         vals = df_out[col].values.astype(float)
         if np.any(~np.isnan(vals)):
-            df_out[col] = pd.Series(vals, dtype=float).ewm(alpha=alpha, adjust=False).mean().values
+            smoothed = pd.Series(vals, dtype=float).ewm(alpha=alpha, adjust=False).mean().values
+            df_out[col] = np.clip(smoothed, -lim, lim)
     return df_out
 
 
@@ -519,6 +545,7 @@ def run_corrections_pipeline(
     from utilities.cal_utils import calibrate_pipeline
 
     df_raw = _fetch_raw_data(class_name, project_id, date, source_name, start_ts, end_ts)
+
     if df_raw is None or len(df_raw) == 0:
         u.log(api_token, '3_corrections.py', 'error', 'pipeline',
               'get_channel_values returned no rows')
@@ -637,37 +664,65 @@ def add_vmg_bsp_perc_columns(df):
 
 
 # ---------------------------------------------------------------------------
-# PARQUET OUTPUT
+# PARQUET OUTPUT (narrow schema for fusion_corrections_racesight.parquet)
 # ---------------------------------------------------------------------------
 
-PARQUET_EXCLUDE_COLUMNS = [
-    'Bsp_tgt_kts',
-]
-
+# Canonical column order for documentation; actual output is built by
+# ``_columns_for_fusion_corrections_parquet`` (includes dynamic Awa{n}_*/Aws{n}_*).
 PARQUET_DATA_ORDER = [
     'ts', 'Datetime', 'Grade', 'Race_number', 'Leg_number',
-    'Awa_deg', 'Awa_n_deg', 'Twa_deg', 'Twa_n_deg', 'Cwa_deg', 'Cwa_n_deg', 'Twd_deg',
-    'Aws_kts', 'Tws_kts', 'Bsp_kts',
-    'Awa_cor_deg', 'Awa_n_cor_deg', 'Awa_offset_deg',
-    'Aws_cor_kts', 'Tws_cor_kts', 'Twa_cor_deg', 'Twa_n_cor_deg', 'Twd_cor_deg',
-    'Lwy_cor_deg', 'Lwy_n_cor_deg', 'Lwy_offset_deg', 'Lwy_offset_norm_deg', 'Lwy_n_deg',
+    'Awa_offset_deg', 'Lwy_offset_deg', 'Lwy_offset_norm_deg',
+    'Awa_cor_deg', 'Aws_cor_kts', 'Tws_cor_kts', 'Twa_cor_deg', 'Twd_cor_deg', 'Lwy_cor_deg',
+    'Awa_n_cor_deg', 'Twa_n_cor_deg', 'Lwy_n_cor_deg',
     'Cse_cor_deg', 'Cwa_cor_deg', 'Cwa_n_cor_deg',
-    'Bsp_tgt_cor_kts', 'Vmg_tgt_cor_kts',
-    'Vmg_cor_kts', 'Vmg_cor_perc', 'Bsp_cor_perc',
 ]
 
 
-def _reorder_parquet_columns(df_out):
-    if df_out is None or len(df_out.columns) == 0:
-        return df_out
-    ordered = [c for c in PARQUET_DATA_ORDER if c in df_out.columns]
-    ordered += [c for c in df_out.columns if c not in ordered]
-    return df_out[ordered]
+def _columns_for_fusion_corrections_parquet(df: pd.DataFrame) -> List[str]:
+    """
+    Columns allowed in ``fusion_corrections_racesight.parquet``: join keys, offsets,
+    fused corrected wind/navigation, geometry derived from ``_cor`` columns, and
+    per-sensor ``Awa{n}_*`` / ``Aws{n}_*`` when present. Excludes raw inputs and targets.
+    """
+    if df is None or len(df.columns) == 0:
+        return []
+
+    key_cols = ['ts', 'Datetime', 'Grade', 'Race_number', 'Leg_number']
+    offset_fixed = ['Awa_offset_deg', 'Lwy_offset_deg', 'Lwy_offset_norm_deg']
+    fused_cor = [
+        'Awa_cor_deg', 'Aws_cor_kts', 'Tws_cor_kts', 'Twa_cor_deg', 'Twd_cor_deg', 'Lwy_cor_deg',
+    ]
+    derived_cor = [
+        'Awa_n_cor_deg', 'Twa_n_cor_deg', 'Lwy_n_cor_deg',
+        'Cse_cor_deg', 'Cwa_cor_deg', 'Cwa_n_cor_deg',
+    ]
+
+    awa_n_offset = sorted(c for c in df.columns if re.match(r'^Awa\d+_offset_deg$', c))
+    awa_n_cor = sorted(c for c in df.columns if re.match(r'^Awa\d+_cor_deg$', c))
+    aws_n_cor = sorted(c for c in df.columns if re.match(r'^Aws\d+_cor_kts$', c))
+
+    ordered: List[str] = []
+    for group in (
+        key_cols,
+        offset_fixed,
+        awa_n_offset,
+        fused_cor,
+        derived_cor,
+        awa_n_cor,
+        aws_n_cor,
+    ):
+        ordered.extend(c for c in group if c in df.columns)
+
+    return ordered
 
 
 def save_corrections_parquet(df_out, class_name, project_id, date, source_name):
     """
     Write ``fusion_corrections_racesight.parquet`` via temp file + ``os.replace``.
+
+    Persists only offsets, corrected values, and derived ``*_cor`` geometry (see
+    ``_columns_for_fusion_corrections_parquet``). Raw channels and targets are not
+    stored here; merge via ``get_channel_values`` with other parquets for full context.
 
     Atomic replace ensures readers see either the previous or the complete new file.
     """
@@ -676,13 +731,12 @@ def save_corrections_parquet(df_out, class_name, project_id, date, source_name):
     dir_path = os.path.join(
         data_dir, 'system', str(project_id), class_name, date_str, source_name
     )
+
     os.makedirs(dir_path, exist_ok=True)
     path = os.path.join(dir_path, 'fusion_corrections_racesight.parquet')
     tmp_path = path + '.tmp'
 
-    df_out = df_out.drop(
-        columns=[c for c in PARQUET_EXCLUDE_COLUMNS if c in df_out.columns], errors='ignore'
-    )
+    df_out = df_out.copy()
     if 'ts' in df_out.columns:
         ts = df_out['ts'].values
         ts_valid = ts[~np.isnan(ts)]
@@ -690,7 +744,10 @@ def save_corrections_parquet(df_out, class_name, project_id, date, source_name):
             df_out['Datetime'] = pd.to_datetime(ts, unit='ms', utc=True, errors='coerce')
         else:
             df_out['Datetime'] = pd.to_datetime(ts, unit='s', utc=True, errors='coerce')
-    df_out = _reorder_parquet_columns(df_out)
+
+    cols = _columns_for_fusion_corrections_parquet(df_out)
+    if cols:
+        df_out = df_out.loc[:, cols]
 
     if os.path.exists(tmp_path):
         try:
@@ -808,14 +865,6 @@ if __name__ == "__main__":
             u.log(api_token, LOG_SCRIPT, "error", "pipeline", "Pipeline returned no rows")
             print("Script Failed: No data from corrections pipeline", flush=True)
             sys.exit(1)
-
-        t_min = float(df_out['ts'].min()) if 'ts' in df_out.columns and len(df_out) > 0 else start_ts
-        t_max = float(df_out['ts'].max()) if 'ts' in df_out.columns and len(df_out) > 0 else end_ts
-        df_out = load_and_merge_target_channels(
-            df_out, class_name, project_id, date, source_name, t_min, t_max
-        )
-        df_out = add_target_corrections(df_out, update_tgt=False)
-        df_out = add_vmg_bsp_perc_columns(df_out)
 
         path = save_corrections_parquet(df_out, class_name, project_id, date, source_name)
         print(

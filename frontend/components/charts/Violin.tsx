@@ -25,6 +25,15 @@ interface ViolinProps {
   portColor?: string;
   /** Optional fill for starboard (right) half. When set, overrides group color so starboard is always this color. */
   stbdColor?: string;
+  /**
+   * Vertical padding as a fraction of (max − min) data span; default 0.1.
+   * Use a smaller value (e.g. 0.02–0.04) for a tighter y-axis.
+   */
+  yPaddingFraction?: number;
+  /** When false, skip d3’s domain “nice” expansion (tighter axis to the data). Default true. */
+  yNice?: boolean;
+  /** Clamp the scale minimum at 0 (e.g. |°| magnitude violins). */
+  yClampMinZero?: boolean;
 }
 
 type Tack = "port" | "stbd";
@@ -334,8 +343,18 @@ export default function Violin(props: ViolinProps) {
     const allVals = groups.flatMap((gr) => [...gr.portVals, ...gr.stbdVals]).filter((v) => !Number.isNaN(v));
     const rawMin = allVals.length ? (d3.min(allVals) ?? 0) : 0;
     const rawMax = allVals.length ? (d3.max(allVals) ?? 1) : 1;
-    const pad = (rawMax - rawMin) * 0.1 || 0.1;
-    const y = d3.scaleLinear().domain([rawMin - pad, rawMax + pad]).nice().range([chartHeight, 0]);
+    const padFrac = props.yPaddingFraction ?? 0.1;
+    let span = rawMax - rawMin;
+    if (span <= 0) span = Math.abs(rawMax) > 1e-9 ? Math.abs(rawMax) * 0.05 : 1;
+    const pad = span * padFrac;
+    let yMin = rawMin - pad;
+    let yMax = rawMax + pad;
+    if (props.yClampMinZero) yMin = Math.max(0, yMin);
+    const useNice = props.yNice !== false;
+    const y = useNice
+      ? d3.scaleLinear().domain([yMin, yMax]).nice().range([chartHeight, 0])
+      : d3.scaleLinear().domain([yMin, yMax]).range([chartHeight, 0]);
+    const [yDom0, yDom1] = y.domain() as [number, number];
 
     g.append("g")
       .attr("class", "x-axis")
@@ -399,8 +418,8 @@ export default function Violin(props: ViolinProps) {
         .append("line")
         .attr("x1", xCenter)
         .attr("x2", xCenter)
-        .attr("y1", y(rawMin - pad))
-        .attr("y2", y(rawMax + pad))
+        .attr("y1", y(yDom0))
+        .attr("y2", y(yDom1))
         .attr("stroke", textColor)
         .attr("stroke-width", 1)
         .attr("opacity", 0.5)
@@ -520,6 +539,9 @@ export default function Violin(props: ViolinProps) {
     void series.xaxis?.name;
     void series.yaxis?.name;
     void data?.length;
+    void props.yPaddingFraction;
+    void props.yNice;
+    void props.yClampMinZero;
     draw();
   });
 

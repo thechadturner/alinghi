@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 
+from utilities.math_utils import angle_subtract
 from utilities.cal_utils import (
     add_twa_mode_classification_column,
     compute_initial_true_wind,
@@ -19,6 +20,7 @@ from utilities.cal_utils import (
     optimize_leeway_offsets,
     apply_leeway_calibration,
     recompute_true_wind,
+    signed_twa_from_twd_hdg_deg,
     _propagate_offset_columns,
 )
 
@@ -274,8 +276,125 @@ def test_apply_leeway_calibration_modifies_lwy_col():
 
 
 # ---------------------------------------------------------------------------
+# signed_twa_from_twd_hdg_deg vs math_utils.angle_subtract
+# ---------------------------------------------------------------------------
+
+def test_signed_twa_from_twd_hdg_deg_matches_angle_subtract():
+    """Vectorized TWA-from-TWD-HDG must match scalar angle_subtract(twd, hdg)."""
+    pairs = [
+        (0.0, 180.0),
+        (350.0, 10.0),
+        (10.0, 350.0),
+        (90.0, 45.0),
+        (0.0, 0.0),
+        (180.0, 0.0),
+    ]
+    for hdg, twd in pairs:
+        exp = angle_subtract(twd, hdg)
+        got = float(signed_twa_from_twd_hdg_deg(np.array([hdg]), np.array([twd]))[0])
+        assert got == exp, (hdg, twd, got, exp)
+
+    hdgs = np.array([p[0] for p in pairs], dtype=np.float64)
+    twds = np.array([p[1] for p in pairs], dtype=np.float64)
+    vec = signed_twa_from_twd_hdg_deg(hdgs, twds)
+    for i, (hdg, twd) in enumerate(pairs):
+        assert vec[i] == angle_subtract(twd, hdg)
+
+
+# ---------------------------------------------------------------------------
 # recompute_true_wind
 # ---------------------------------------------------------------------------
+
+def test_recompute_true_wind_foiling_offset_signed_magnitude_rule():
+    """
+    Stream TW + Awa_offset path must narrow |TWA| like signed AWA:
+    Twa_cor = Twa - sign(Twa) * offset (not Twa + offset).
+    """
+    # Stream Twd consistent with Hdg+Twa (instrument closure); propagation uses Twd+delta(TWA).
+    df = pd.DataFrame({
+        'Hdg': [0.0, 0.0, 90.0],
+        'Twa': [30.0, -30.0, 10.0],
+        'Twd': [30.0, 330.0, 100.0],
+        'Tws': [12.0, 12.0, 12.0],
+        'Awa_offset': [2.0, 2.0, -1.0],
+        'Awa': [25.0, -20.0, 5.0],
+        'Aws': [15.0, 15.0, 15.0],
+        'Bsp': [10.0, 10.0, 10.0],
+        'Lwy': [0.0, 0.0, 0.0],
+    })
+    out = recompute_true_wind(
+        df,
+        awa_col='Awa',
+        aws_col='Aws',
+        bsp_col='Bsp',
+        lwy_col='Lwy',
+        hdg_col='Hdg',
+        twa_col='Twa',
+        twd_col='Twd',
+        tws_col='Tws',
+        awa_offset_col='Awa_offset',
+    )
+    assert np.allclose(out['Twa_cor'].astype(float), [28.0, -28.0, 11.0], rtol=0, atol=1e-9)
+    assert np.allclose(out['Twd_cor'].astype(float), [28.0, 332.0, 101.0], rtol=0, atol=1e-9)
+
+
+def test_recompute_true_wind_stream_twd_propagation_when_not_hdg_plus_twa():
+    """Rotate stream Twd by wrap(Twa_cor−Twa); do not force Twd=(Hdg+Twa_cor) when stream differs."""
+    df = pd.DataFrame({
+        'Hdg': [0.0],
+        'Twa': [30.0],
+        'Twd': [40.0],
+        'Tws': [12.0],
+        'Awa_offset': [2.0],
+        'Awa': [25.0],
+        'Aws': [15.0],
+        'Bsp': [10.0],
+        'Lwy': [0.0],
+    })
+    out = recompute_true_wind(
+        df,
+        awa_col='Awa',
+        aws_col='Aws',
+        bsp_col='Bsp',
+        lwy_col='Lwy',
+        hdg_col='Hdg',
+        twa_col='Twa',
+        twd_col='Twd',
+        tws_col='Tws',
+        awa_offset_col='Awa_offset',
+    )
+    assert float(out['Twa_cor'].iloc[0]) == 28.0
+    assert float(out['Twd_cor'].iloc[0]) == 38.0
+
+
+def test_recompute_true_wind_reconciles_twa_to_twd_hdg_when_gap_large():
+    """Large mismatch vs compass closure → Twa_cor follows signed_twa(Twd_cor, Hdg)."""
+    df = pd.DataFrame({
+        'Hdg': [0.0],
+        'Twa': [100.0],
+        'Twd': [30.0],
+        'Tws': [12.0],
+        'Awa_offset': [0.0],
+        'Awa': [25.0],
+        'Aws': [15.0],
+        'Bsp': [10.0],
+        'Lwy': [0.0],
+    })
+    out = recompute_true_wind(
+        df,
+        awa_col='Awa',
+        aws_col='Aws',
+        bsp_col='Bsp',
+        lwy_col='Lwy',
+        hdg_col='Hdg',
+        twa_col='Twa',
+        twd_col='Twd',
+        tws_col='Tws',
+        awa_offset_col='Awa_offset',
+    )
+    assert float(out['Twd_cor'].iloc[0]) == 30.0
+    assert float(out['Twa_cor'].iloc[0]) == 30.0
+
 
 def test_recompute_true_wind_writes_cor_columns():
     df = generate_synthetic_sailing_data(n_samples=50)

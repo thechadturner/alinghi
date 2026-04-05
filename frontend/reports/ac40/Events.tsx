@@ -3345,7 +3345,7 @@ const hotKey = (key: string) => {
                 return (
                   <WindArrow
                     map={mapInstance}
-                    maptype="DEFAULT"
+                    maptype="GRADE"
                     trackData={visibleData}
                     tws={wind.tws}
                     twd={wind.twd}

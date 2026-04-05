@@ -26,6 +26,7 @@ import numpy as np
 from xgboost import XGBRegressor
 
 from .wind_utils import computeTrueWind_vectorized
+from .math_utils import angle_add, angle_subtract, wrap180
 from .ai_utils import train_XGBoost
 from .logging_utils import log_info
 
@@ -33,6 +34,39 @@ from .logging_utils import log_info
 # ---------------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------------
+
+def _wrap180_deg_vectorized(a: np.ndarray) -> np.ndarray:
+    """Element-wise same formula as :func:`math_utils.wrap180`."""
+    x = np.asarray(a, dtype=np.float64)
+    return np.mod(x + 180.0, 360.0) - 180.0
+
+
+def _angle_add_deg_vectorized(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Element-wise same formula as :func:`math_utils.angle_add`."""
+    aa = np.asarray(a, dtype=np.float64)
+    bb = np.asarray(b, dtype=np.float64)
+    return np.mod(aa + bb, 360.0)
+
+
+def _apply_signed_wind_angle_offset_deg(
+    signed_deg: np.ndarray, offset_deg: np.ndarray
+) -> np.ndarray:
+    """
+    Apply a perf-model offset to a **signed** boat wind angle (AWA or TWA, −180..180°).
+
+    Port tack angles are negative, starboard positive. The rolling offset is inferred
+    from models trained on ``abs(AWA)`` on each tack; it corrects **magnitude** the same
+    way on both tacks: ``|V|_cor ≈ |V| - offset`` (for offset meaning “narrow”). That is::
+
+        V_cor = V - sign(V) * offset
+
+    Using ``V + offset`` would move port and starboard in opposite magnitude directions
+    and **widens** starboard AWA when offset > 0.
+    """
+    v = np.asarray(signed_deg, dtype=np.float64)
+    o = np.asarray(offset_deg, dtype=np.float64)
+    return v - np.sign(v) * o
+
 
 def _prefer_stream_or_computed(
     stream: Optional[np.ndarray],
@@ -124,10 +158,22 @@ def compute_initial_true_wind(
 
 
 def signed_twa_from_twd_hdg_deg(hdg: np.ndarray, twd: np.ndarray) -> np.ndarray:
-    """Signed true wind angle (-180..180°) from compass TWD and heading."""
+    """
+    Signed true wind angle (-180..180°) from compass TWD and heading.
+
+    Same semantics as :func:`math_utils.angle_subtract` with ``first=twd``,
+    ``second=hdg`` (i.e. ``twd - hdg`` wrapped). ``twd`` is meteorological wind
+    **from** (degrees).
+    """
     h = np.asarray(hdg, dtype=np.float64)
     w = np.asarray(twd, dtype=np.float64)
-    return ((w - h + 540.0) % 360.0) - 180.0
+    out = np.mod(w - h + 180.0, 360.0) - 180.0
+    return np.where(out == -180.0, 180.0, out)
+
+
+# If offset-derived Twa_cor disagrees this much (°) from ``signed_twa(Twd_cor, Hdg)``, trust the
+# compass closure (catches wrap/sign bugs, bad rows, post-hoc filter glitches like Twa≈180 vs Twa_stream≈20°).
+RECOMPUTE_TWA_TWD_HDG_RECONCILE_DEG = 60.0
 
 
 def recompute_true_wind(
@@ -137,14 +183,99 @@ def recompute_true_wind(
     bsp_col: str,
     lwy_col: str,
     hdg_col: str,
+    *,
+    twa_col: str = 'Twa',
+    twd_col: str = 'Twd',
+    tws_col: str = 'Tws',
+    awa_offset_col: str = 'Awa_offset',
 ) -> pd.DataFrame:
     """
-    Recompute true wind using calibrated AWA, AWS, and leeway values.
+    Derive corrected true wind from the calibrated AWA offset.
 
-    Writes ``Twa_cor``, ``Tws_cor``, ``Twd_cor`` onto a copy of ``df``.
-    ``hdg_col`` is required for accurate TWD.
+    **Why offset-propagation, not the apparent-wind triangle:**
+    The AC40 is a foiling boat where BSP >> TWS (boat speed consistently exceeds
+    true wind speed). The classical wind-vector triangle ``Vw = Va - Vb`` is
+    geometrically valid on paper but produces ``|TWA| > 90°`` for every upwind
+    row because the boat is literally moving faster than the wind — the resolved
+    true-wind vector points nearly astern in the boat frame, even though the
+    compass TWA (``TWD - HDG``) is 50°.  The onboard instruments compute
+    ``Twa_deg`` and ``Twd_deg`` using a proprietary model that handles foiling;
+    our job is to *shift* those values by the AWA calibration offset.
+
+    **Approach:**
+        1. Provisional ``Twa_cor = Twa - sign(Twa) * Awa_offset`` (same magnitude rule as signed AWA).
+        2. ``Twd_cor``: when stream ``Twd`` is finite, ``angle_add(Twd, wrap180(Twa_cor - Twa))``.
+           If ``Twd`` is missing, ``angle_add(Hdg, Twa_cor)``.
+        3. **Reconcile:** when ``Hdg`` and ``Twd_cor`` are finite, compare provisional ``Twa_cor``
+           to ``signed_twa_from_twd_hdg_deg(Hdg, Twd_cor)``. If the gap is ≥
+           ``RECOMPUTE_TWA_TWD_HDG_RECONCILE_DEG`` (60°), replace ``Twa_cor`` with the
+           closure value so ``Twd_cor``/``Hdg`` tell a consistent story (filters or rare wrap
+           bugs should not leave ``Twa_cor≈±180°`` while the compass triangle is upwind).
+        4. ``Tws_cor = Tws``
+
+    Falls back to the apparent-wind triangle (``computeTrueWind_vectorized``) when
+    stream Twa/Twd/Tws or Awa_offset are absent, so non-foiling use is unaffected.
     """
     df = df.copy()
+
+    has_stream = (
+        twa_col in df.columns
+        and twd_col in df.columns
+        and awa_offset_col in df.columns
+    )
+
+    if has_stream:
+        # --- Offset-propagation path (correct for foiling boats) ---
+        twa_stream = pd.to_numeric(df[twa_col], errors='coerce').to_numpy(dtype=np.float64)
+        offset = pd.to_numeric(df[awa_offset_col], errors='coerce').to_numpy(dtype=np.float64)
+        offset = np.nan_to_num(offset, nan=0.0)
+
+        twa_cor = _apply_signed_wind_angle_offset_deg(twa_stream, offset)
+        twa_cor = _wrap180_deg_vectorized(twa_cor)
+
+        twd_stream = pd.to_numeric(df[twd_col], errors='coerce').to_numpy(dtype=np.float64)
+        delta_twa = _wrap180_deg_vectorized(twa_cor - twa_stream)
+        twd_from_stream = _angle_add_deg_vectorized(twd_stream, delta_twa)
+
+        hdg = (
+            pd.to_numeric(df[hdg_col], errors='coerce').to_numpy(dtype=np.float64)
+            if hdg_col in df.columns
+            else None
+        )
+
+        if hdg is not None:
+            twd_from_hdg = _angle_add_deg_vectorized(hdg, twa_cor)
+            use_stream_twd = (
+                np.isfinite(twd_stream)
+                & np.isfinite(twa_stream)
+                & np.isfinite(delta_twa)
+            )
+            twd_cor = np.where(use_stream_twd, twd_from_stream, twd_from_hdg)
+        else:
+            twd_cor = twd_from_stream
+
+        tws_cor = (
+            pd.to_numeric(df[tws_col], errors='coerce').to_numpy(dtype=np.float64)
+            if tws_col in df.columns
+            else np.full(len(df), np.nan)
+        )
+
+        if hdg is not None:
+            twa_closure = signed_twa_from_twd_hdg_deg(hdg, twd_cor)
+            gap = np.abs(_wrap180_deg_vectorized(twa_cor - twa_closure))
+            reconcile = (
+                np.isfinite(hdg)
+                & np.isfinite(twd_cor)
+                & (gap >= RECOMPUTE_TWA_TWD_HDG_RECONCILE_DEG)
+            )
+            twa_cor = np.where(reconcile, twa_closure, twa_cor)
+
+        df['Twa_cor'] = twa_cor
+        df['Twd_cor'] = twd_cor
+        df['Tws_cor'] = tws_cor
+        return df
+
+    # --- Apparent-wind triangle fallback (non-foiling / missing stream columns) ---
     if hdg_col not in df.columns:
         raise ValueError(
             f"recompute_true_wind requires {hdg_col!r} for accurate TWD computation."
@@ -310,17 +441,20 @@ def _dataframe_for_leeway_calibration(
 # AWA CALIBRATION — PERFORMANCE MODEL
 # ---------------------------------------------------------------------------
 
-MAX_AWA_LWY_CALIBRATION_OFFSET_DEG = 5.0
+MAX_AWA_CALIBRATION_OFFSET_DEG = 3.0
+MAX_LWY_CALIBRATION_OFFSET_DEG = 5.0
+# Legacy name: leeway still uses ±5°; AWA perf-model path uses ``MAX_AWA_CALIBRATION_OFFSET_DEG``.
+MAX_AWA_LWY_CALIBRATION_OFFSET_DEG = MAX_LWY_CALIBRATION_OFFSET_DEG
 
 
 def _clip_offset_deg_scalar(
-    value: float, limit: float = MAX_AWA_LWY_CALIBRATION_OFFSET_DEG
+    value: float, limit: float = MAX_LWY_CALIBRATION_OFFSET_DEG,
 ) -> float:
     return float(np.clip(value, -limit, limit))
 
 
 def _clip_offset_deg_array(
-    arr: np.ndarray, limit: float = MAX_AWA_LWY_CALIBRATION_OFFSET_DEG
+    arr: np.ndarray, limit: float = MAX_LWY_CALIBRATION_OFFSET_DEG,
 ) -> np.ndarray:
     return np.clip(np.asarray(arr, dtype=np.float64), -limit, limit)
 
@@ -383,6 +517,10 @@ def compute_perf_model_awa_offset(
     """
     Compute AWA offset by interrogating port and starboard models at matched conditions.
     Returns scalar offset (degrees), or None if either model is missing.
+
+    Applied to signed AWA/TWA via :func:`_apply_signed_wind_angle_offset_deg` so both
+    tacks correct **magnitude** consistently (not ``signed + offset``, which widens
+    starboard when offset > 0).
     """
     if port_model is None or stbd_model is None:
         return None
@@ -392,7 +530,7 @@ def compute_perf_model_awa_offset(
     if X.ndim == 1:
         X = X.reshape(1, -1)
     offset = float(np.mean(port_model.predict(X) - stbd_model.predict(X)) / 2.0)
-    return _clip_offset_deg_scalar(offset)
+    return _clip_offset_deg_scalar(offset, MAX_AWA_CALIBRATION_OFFSET_DEG)
 
 
 def compute_rolling_perf_model_awa_offsets(
@@ -521,11 +659,11 @@ def compute_rolling_perf_model_awa_offsets(
         if np.isnan(dw_offsets_filled[i]):
             dw_offsets_filled[i] = uw_offsets[i]
 
-    lim = MAX_AWA_LWY_CALIBRATION_OFFSET_DEG
-    uw_offsets = _clip_offset_deg_array(uw_offsets, lim)
-    dw_offsets_filled = _clip_offset_deg_array(dw_offsets_filled, lim)
+    lim_awa = MAX_AWA_CALIBRATION_OFFSET_DEG
+    uw_offsets = _clip_offset_deg_array(uw_offsets, lim_awa)
+    dw_offsets_filled = _clip_offset_deg_array(dw_offsets_filled, lim_awa)
     if first_valid_offset is not None:
-        first_valid_offset = _clip_offset_deg_scalar(float(first_valid_offset), lim)
+        first_valid_offset = _clip_offset_deg_scalar(float(first_valid_offset), lim_awa)
 
     if verbose:
         uw_v = uw_offsets[~np.isnan(uw_offsets)]
@@ -585,8 +723,8 @@ def filter_offset_dict_exponential(
         return offset_dict
     offset_series = pd.Series(values, index=half_hours, dtype=float)
     filtered = filter_offset_series_exponential(offset_series, alpha=alpha)
-    lim = MAX_AWA_LWY_CALIBRATION_OFFSET_DEG
-    return {hh: _clip_offset_deg_scalar(float(filtered[hh]), lim) for hh in half_hours}
+    lim_lwy = MAX_LWY_CALIBRATION_OFFSET_DEG
+    return {hh: _clip_offset_deg_scalar(float(filtered[hh]), lim_lwy) for hh in half_hours}
 
 
 def compute_awa_perf_model_offset_array(
@@ -668,7 +806,7 @@ def compute_awa_perf_model_offset_array(
             + dw_offset_per_row[is_reaching] * blend
         )
 
-    return _clip_offset_deg_array(offset_per_row)
+    return _clip_offset_deg_array(offset_per_row, MAX_AWA_CALIBRATION_OFFSET_DEG)
 
 
 def apply_awa_perf_model_calibration(
@@ -693,11 +831,10 @@ def apply_awa_perf_model_calibration(
     ts = df['ts'].values
     offset_per_row = _time_order_ffill_bfill_1d(offset_per_row, ts)
     offset_per_row = np.nan_to_num(offset_per_row, nan=0.0)
-    offset_per_row = _clip_offset_deg_array(offset_per_row)
+    offset_per_row = _clip_offset_deg_array(offset_per_row, MAX_AWA_CALIBRATION_OFFSET_DEG)
 
-    df[awa_channel_name] = pd.to_numeric(df[awa_channel_name], errors='coerce').to_numpy(
-        dtype=np.float64
-    ) + offset_per_row
+    awa_arr = pd.to_numeric(df[awa_channel_name], errors='coerce').to_numpy(dtype=np.float64)
+    df[awa_channel_name] = _apply_signed_wind_angle_offset_deg(awa_arr, offset_per_row)
     if output_applied_column:
         df[output_applied_column] = offset_per_row
     return df
@@ -915,9 +1052,9 @@ def optimize_leeway_offsets(
             port_offsets[window_center] = 0.0
             stbd_offsets[window_center] = 0.0
 
-    lim = MAX_AWA_LWY_CALIBRATION_OFFSET_DEG
-    port_offsets = {k: _clip_offset_deg_scalar(float(v), lim) for k, v in port_offsets.items()}
-    stbd_offsets = {k: _clip_offset_deg_scalar(float(v), lim) for k, v in stbd_offsets.items()}
+    lim_lwy = MAX_LWY_CALIBRATION_OFFSET_DEG
+    port_offsets = {k: _clip_offset_deg_scalar(float(v), lim_lwy) for k, v in port_offsets.items()}
+    stbd_offsets = {k: _clip_offset_deg_scalar(float(v), lim_lwy) for k, v in stbd_offsets.items()}
     return port_offsets, stbd_offsets
 
 
@@ -944,7 +1081,7 @@ def apply_leeway_calibration(
     raw = compute_lwy_offset_norm_raw_array(df, port_offsets, stbd_offsets, twa_ff)
     offset_norm = _time_order_ffill_bfill_1d(raw, ts)
     offset_norm = np.nan_to_num(offset_norm, nan=0.0)
-    offset_norm = _clip_offset_deg_array(offset_norm)
+    offset_norm = _clip_offset_deg_array(offset_norm, MAX_LWY_CALIBRATION_OFFSET_DEG)
     lwy = pd.to_numeric(df[lwy_col], errors='coerce').to_numpy(dtype=np.float64, copy=True)
     apply_lwy_calibration_using_offsets(df, lwy_col, lwy, offset_norm, twa_ff)
     return df
@@ -1023,13 +1160,13 @@ def _calibrate_one_sensor(
         verbose=verbose,
     )
 
-    # Step 4: EMA smooth offsets
-    filter_alpha = 0.001
-    lim = MAX_AWA_LWY_CALIBRATION_OFFSET_DEG
-    uw_offsets = filter_offset_series_exponential(uw_offsets, alpha=filter_alpha).clip(-lim, lim)
-    dw_offsets = filter_offset_series_exponential(dw_offsets, alpha=filter_alpha).clip(-lim, lim)
+    # Step 4: EMA smooth offsets (slightly heavier smooth + lower cap → less aggressive AWA correction)
+    filter_alpha = 0.0008
+    lim_awa = MAX_AWA_CALIBRATION_OFFSET_DEG
+    uw_offsets = filter_offset_series_exponential(uw_offsets, alpha=filter_alpha).clip(-lim_awa, lim_awa)
+    dw_offsets = filter_offset_series_exponential(dw_offsets, alpha=filter_alpha).clip(-lim_awa, lim_awa)
     if first_off is not None:
-        first_off = _clip_offset_deg_scalar(float(first_off), lim)
+        first_off = _clip_offset_deg_scalar(float(first_off), lim_awa)
 
     # Step 5: Compute per-row offset array and write corrected columns
     offset_arr = compute_awa_perf_model_offset_array(
@@ -1038,10 +1175,10 @@ def _calibrate_one_sensor(
     ts_arr = df['ts'].values
     offset_arr = _time_order_ffill_bfill_1d(offset_arr, ts_arr)
     offset_arr = np.nan_to_num(offset_arr, nan=0.0)
-    offset_arr = _clip_offset_deg_array(offset_arr)
+    offset_arr = _clip_offset_deg_array(offset_arr, MAX_AWA_CALIBRATION_OFFSET_DEG)
 
     awa_raw = pd.to_numeric(df[awa_col], errors='coerce').to_numpy(dtype=np.float64)
-    df[f'{awa_col}_cor'] = awa_raw + offset_arr
+    df[f'{awa_col}_cor'] = _apply_signed_wind_angle_offset_deg(awa_raw, offset_arr)
     df[f'{awa_col}_offset'] = offset_arr
     # AWS: identity copy (no offset layer for AWS)
     df[f'{aws_col}_cor'] = pd.to_numeric(df[aws_col], errors='coerce').to_numpy(dtype=np.float64)
@@ -1201,6 +1338,11 @@ def calibrate_pipeline(
         dtype=np.float64
     ) - lwy_raw
 
+    # Alias Awa_offset to canonical name before recompute so offset-propagation path can find it.
+    if not multi_sensor and awa_col != 'Awa':
+        if f'{awa_col}_offset' in df.columns and 'Awa_offset' not in df.columns:
+            df['Awa_offset'] = df[f'{awa_col}_offset'].values
+
     # --- Recompute true wind from calibrated channels ---
     df = recompute_true_wind(
         df,
@@ -1209,14 +1351,10 @@ def calibrate_pipeline(
         bsp_col=bsp_col,
         lwy_col='Lwy_cor',
         hdg_col=hdg_col,
+        twa_col=twa_col,
+        twd_col=twd_col,
+        tws_col=tws_col,
+        awa_offset_col='Awa_offset',
     )
-
-    # Rename Awa_offset (from single sensor) to canonical name when awa_col != 'Awa'
-    if not multi_sensor and awa_col != 'Awa':
-        if f'{awa_col}_offset' in df.columns and 'Awa_offset' not in df.columns:
-            df['Awa_offset'] = df[f'{awa_col}_offset'].values
-    elif not multi_sensor:
-        # awa_col == 'Awa': offset column is already 'Awa_offset'
-        pass
 
     return df

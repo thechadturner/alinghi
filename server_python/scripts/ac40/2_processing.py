@@ -156,14 +156,13 @@ def get_data(class_name, project_id, date, source_name, start_ts, end_ts):
 
             dfo['Race_number'] = -1
             dfo['Leg_number'] = -1
-            dfo['Lwy2_deg'] = dfo['Hdg_deg'] - dfo['Cog_deg']
-            dfo['Lwy_n_deg'] = dfo['Lwy_deg'] * np.sign(dfo['Twa_deg'])
+            dfo['AC40_Leeway_n'] = dfo['Lwy_deg'] * np.sign(dfo['Twa_deg'])
             _low_bsp = dfo['Bsp_kts'].to_numpy(dtype=np.float64, copy=False) < 3
             dfo.loc[_low_bsp, 'Lwy_deg'] = 0
-            dfo.loc[_low_bsp, 'Lwy_n_deg'] = 0
-            dfo.loc[_low_bsp, 'Lwy2_deg'] = 0
-            dfo['Awa_n_deg'] = abs(dfo['Awa_deg']) 
-
+            dfo.loc[_low_bsp, 'AC40_Leeway_n'] = 0
+            dfo['AC40_BowWand_AWA_n'] = abs(dfo['Awa_deg']) 
+            dfo['AC40_VMG_n_kts'] = abs(dfo['Vmg_kts']) 
+            
             return dfo
         else:
             return df
@@ -1285,7 +1284,7 @@ def apply_race_status_channel(df):
 if __name__ == "__main__":
     parameters_json = {}
     # Set True to run from IDE / CLI without argv JSON (edit values in the branch below). Same pattern as 3_systems.py / 3_corrections.py.
-    USE_MANUAL_TEST_INPUTS = False
+    USE_MANUAL_TEST_INPUTS = True
 
     try:
         if USE_MANUAL_TEST_INPUTS:
@@ -1504,7 +1503,7 @@ if __name__ == "__main__":
                     u.log(api_token, LOG_SCRIPT, "info", "processing data", str(len(df))+ " records processed...")
 
                     if len(df2) > 0:
-                        chosen_columns = ['Datetime', 'ts', 'Grade', 'Race_number', 'Leg_number', 'Headsail_code', 'Crew_count', 'Wing_code', 'Rudder_code', 'Daggerboard_code', 'Config_code', 'Maneuver_type', 'Phase_id', 'Period_id', 'Race_status', 'Foiling_state', 'Bsp_kts', 'Twd_deg', 'Tws_kts', 'Awa_deg', 'Awa_n_deg', 'Aws_kts', 'Twa_deg', 'Twa_n_deg', 'Cwa_deg', 'Cwa_n_deg', 'Lwy2_deg', 'Lwy_deg', 'Lwy_n_deg', 'Hdg_deg', 'Cog_deg', 'Accel_rate_mps2', 'Yaw_rate_dps']
+                        chosen_columns = ['Datetime', 'ts', 'Grade', 'Race_number', 'Leg_number', 'Headsail_code', 'Crew_count', 'Wing_code', 'Rudder_code', 'Daggerboard_code', 'Config_code', 'Maneuver_type', 'Phase_id', 'Period_id', 'Race_status', 'Foiling_state', 'AC40_Leeway_n', 'AC40_VMG_n_kts', 'AC40_BowWand_AWA_n', 'Accel_rate_mps2', 'Yaw_rate_dps']
                         
                         # Filter to only include columns that actually exist in df3
                         chosen_columns = [col for col in chosen_columns if col in df2.columns]
