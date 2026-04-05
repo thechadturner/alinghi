@@ -3481,7 +3481,7 @@ export default function MapContainer(props: MapContainerProps) {
           style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%;"
         />
         {/* Overlay: not cleared by Mapbox; stays on top for loading. PlayPause is in the bar above the timeline. */}
-        <div class="map-controls-overlay" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; z-index: 100000;">
+        <div class="map-controls-overlay">
           <Show when={unifiedDataStore.getLoading('map') && !liveMode}>
             <Loading message="Loading map data..." />
           </Show>

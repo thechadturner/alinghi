@@ -50,6 +50,7 @@ import {
   vmgValueFromRow,
 } from "../../../utils/speedUnits";
 import { defaultChannelsStore } from "../../../store/defaultChannelsStore";
+import { VMG_PERC_COLOR_DOMAIN, VMG_PERC_COLOR_RANGE } from "./utils/vmgPercColorScale";
 import { sourcesStore } from "../../../store/sourcesStore";
 import { selectedDate as selectionSelectedDate } from "../../../store/selectionStore";
 import { themeStore } from "../../../store/themeStore";
@@ -419,7 +420,8 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
       green: getThemeColor('#22c55e', '#10b981'),
       yellow: getThemeColor('#eab308', '#fbbf24'),
       blue: getThemeColor('#3b82f6', '#60a5fa'),
-      lightBlue: getThemeColor('#93c5fd', '#93c5fd')
+      lightBlue: getThemeColor('#93c5fd', '#93c5fd'),
+      orange: getThemeColor('#f97316', '#fb923c')
     };
   };
   
@@ -976,14 +978,10 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
           myLinearThickness.domain([minTWS, maxTWS]);
           myLinearThickness.range(["0.1", "3"]);
         } else if (maptype() === "VMG%") {
-          // Fixed scale for VMG%: 25% (min) to 150% (max)
-          const minVMG = 25;
-          const maxVMG = 125;
-          myLinearColor.domain([minVMG,
-            minVMG + (maxVMG - minVMG) * 0.50,
-            minVMG + (maxVMG - minVMG) * 0.95,
-            maxVMG]);
-          myLinearColor.range([colors.blue, colors.lightBlue, colors.yellow, colors.red]);
+          myLinearColor
+            .domain([...VMG_PERC_COLOR_DOMAIN])
+            .range([...VMG_PERC_COLOR_RANGE])
+            .clamp(true);
 
           const bspField = bspName();
           const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => bspValueFromRow(p as Record<string, unknown>, bspField, 0));
@@ -1037,15 +1035,10 @@ export default function MapTimeSeries(props: MapTimeSeriesProps) {
         myLinearThickness.domain([minTWS, maxTWS]);
         myLinearThickness.range(["0.1", "3"]);
       } else if (maptype() === "VMG%") {
-        // Fixed scale for VMG%: 25% (min) to 125% (max)
-        const minVMG = 25;
-        const maxVMG = 125;
-        myLinearColor.domain([minVMG,
-          minVMG + (maxVMG - minVMG) * 0.50,
-          minVMG + (maxVMG - minVMG) * 0.95,
-          maxVMG]);
-        myLinearColor.range(["blue", "lightblue", "yellow", "red"]);
-        myLinearColor.clamp(true);
+        myLinearColor
+          .domain([...VMG_PERC_COLOR_DOMAIN])
+          .range([...VMG_PERC_COLOR_RANGE])
+          .clamp(true);
 
         const bspField = bspName();
         const [minBSP, maxBSP] = getOneSigmaRange(data, (p) => bspValueFromRow(p as Record<string, unknown>, bspField, 0));

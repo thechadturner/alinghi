@@ -3916,7 +3916,7 @@ html::-webkit-scrollbar-corner {
   transition: opacity 0.2s ease;
 }
 
-/* Map: settings icon must sit above map-controls-overlay (z-index 100000) so it stays visible in split view and single view */
+/* Map: settings icon must sit above map-controls-overlay (z-index 5000) so it stays visible in split view and single view */
 .map-container .settings-icon {
   z-index: 100001;
 }
@@ -16397,6 +16397,15 @@ html[data-theme="dark"] {
   min-height: 300px !important;
   /* Reduced from 400px for better mobile experience */
   overflow: hidden !important;
+}
+
+/* Full-bleed layer for map loading UI. Must stay below .overlay-container (6000) so fixed data overlays
+   (e.g. Sparkline) remain visible; above D3 map layers (tracks ~100, boats ~1000). */
+.map-container .map-controls-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5000;
 }
 
 .map-container .chart-container {

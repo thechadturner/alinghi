@@ -21,7 +21,7 @@ import { getInterpolatedPointAtTime } from "../../../../utils/trackInterpolation
 export interface MultiTrackLayerProps {
   data: any[];
   map: mapboxgl.Map;
-  maptype: 'DEFAULT' | 'GRADE' | 'WIND' | 'VMG' | 'MANEUVERS';
+  maptype: 'DEFAULT' | 'GRADE' | 'WIND' | 'VMG%' | 'VMG' | 'MANEUVERS';
   samplingFrequency: number;
   tilesAvailable?: boolean;
   selectedSourceIds: Set<number>;

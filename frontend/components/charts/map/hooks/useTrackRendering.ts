@@ -11,6 +11,7 @@ import { apiEndpoints } from "../../../../config/env";
 import { getData } from "../../../../utils/global";
 import { debug } from "../../../../utils/console";
 import { bspValueFromRow, twsValueFromRow, vmgPercValueFromRow, vmgValueFromRow } from "../../../../utils/speedUnits";
+import { VMG_PERC_COLOR_DOMAIN, VMG_PERC_COLOR_RANGE } from "../utils/vmgPercColorScale";
 
 // Helper function to filter data for map - only applies selectedRange (brush) and cutEvents, not selectedRanges (events)
 const applyMapDataFilter = (data: any[]): any[] => {
@@ -77,7 +78,7 @@ export interface TrackPoint {
 }
 
 export interface TrackConfig {
-  maptype: 'DEFAULT' | 'GRADE' | 'WIND' | 'VMG' | 'MANEUVERS' | 'PHASE';
+  maptype: 'DEFAULT' | 'GRADE' | 'WIND' | 'VMG%' | 'VMG' | 'MANEUVERS' | 'PHASE';
   samplingFrequency: number;
   showGaps: boolean;
   gapThreshold?: number;
@@ -257,15 +258,10 @@ export function useTrackRendering(config: TrackConfig) {
           myLinearThickness.domain([minTWS, maxTWS]);
           myLinearThickness.range(["0.1", "3"]);
         } else if (maptype() === "VMG%") {
-          // Fixed scale for VMG%: 25% (min) to 125% (max)
-          const minVMG = 25;
-          const maxVMG = 125;
-          myLinearColor.domain([minVMG,
-            minVMG + (maxVMG - minVMG) * 0.50,
-            minVMG + (maxVMG - minVMG) * 0.95,
-            maxVMG]);
-          myLinearColor.range(["blue", "lightblue", "yellow", "red"]);
-          myLinearColor.clamp(true);
+          myLinearColor
+            .domain([...VMG_PERC_COLOR_DOMAIN])
+            .range([...VMG_PERC_COLOR_RANGE])
+            .clamp(true);
 
           const bspField = bspName();
           const [minBSP, maxBSP] = getOneSigmaRange(data, (p) =>
@@ -334,15 +330,10 @@ export function useTrackRendering(config: TrackConfig) {
         myLinearThickness.domain([validMinTWS, validMaxTWS]);
         myLinearThickness.range(["0.1", "3"]);
       } else if (maptype() === "VMG%") {
-        // Fixed scale for VMG%: 25% (min) to 150% (max)
-        const minVMG = 25;
-        const maxVMG = 125;
-        myLinearColor.domain([minVMG,
-          minVMG + (maxVMG - minVMG) * 0.50,
-          minVMG + (maxVMG - minVMG) * 0.95,
-          maxVMG]);
-        myLinearColor.range(["blue", "lightblue", "yellow", "red"]);
-        myLinearColor.clamp(true);
+        myLinearColor
+          .domain([...VMG_PERC_COLOR_DOMAIN])
+          .range([...VMG_PERC_COLOR_RANGE])
+          .clamp(true);
 
         const bspField = bspName();
         const [minBSP, maxBSP] = getOneSigmaRange(data, (p) =>

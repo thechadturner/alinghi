@@ -3,7 +3,14 @@ import * as d3 from "d3";
 import { round } from "../../../../utils/global";
 import { defaultChannelsStore } from "../../../../store/defaultChannelsStore";
 import { persistantStore } from "../../../../store/persistantStore";
-import { speedUnitShortLabel } from "../../../../utils/speedUnits";
+import { speedUnitShortLabel, vmgValueFromRow } from "../../../../utils/speedUnits";
+import {
+  VMG_PERC_COLOR_DOMAIN,
+  VMG_PERC_COLOR_RANGE,
+  VMG_PERC_MAX,
+  VMG_PERC_MIN,
+  vmgPercStopOffsetPct,
+} from "../utils/vmgPercColorScale";
 import { debug as logDebug } from "../../../../utils/console";
 
 interface WindArrowProps {
@@ -105,13 +112,14 @@ export default function WindArrow(props: WindArrowProps) {
     
     // Update color bar position (to the left of wind arrow)
     if (colorBarGroup) {
-      const colorBarX = x - 50; // Position to the left of wind arrow
+      const colorBarX = x - 50;
       colorBarGroup.attr("transform", `translate(${colorBarX}, ${y})`);
     }
   };
   
   const updateColorBar = () => {
     if (!colorBarGroup) return;
+    updatePosition();
 
     // Same source as TrackLayer / timeline (avoids stale props). Uppercase so branches match API/persisted casing.
     const raw = persistantStore.colorType?.() ?? props.maptype;
@@ -148,6 +156,59 @@ export default function WindArrow(props: WindArrowProps) {
     const barHeight = 60;
     const barX = 0;
     const barY = -30; // Center vertically with compass
+
+    // Fixed TWD scale (red → grey → green) — WIND maptype only
+    const drawWindTwdLegend = (offsetX: number) => {
+      const gradientId = `wind-gradient-${Date.now()}-${offsetX}`;
+      const gradient = colorBarGroup
+        .append("defs")
+        .append("linearGradient")
+        .attr("id", gradientId)
+        .attr("x1", "0%")
+        .attr("x2", "0%")
+        .attr("y1", "100%")
+        .attr("y2", "0%");
+
+      gradient.append("stop").attr("offset", "0%").attr("stop-color", "red");
+      gradient.append("stop").attr("offset", "50%").attr("stop-color", "lightgrey");
+      gradient.append("stop").attr("offset", "100%").attr("stop-color", "green");
+
+      colorBarGroup
+        .append("rect")
+        .attr("x", offsetX)
+        .attr("y", barY)
+        .attr("width", barWidth)
+        .attr("height", barHeight)
+        .style("fill", `url(#${gradientId})`)
+        .style("stroke", "white")
+        .style("stroke-width", 0.5);
+
+      const wLabelSize = "8px";
+      const wLabelX = offsetX - 5;
+      const sectionHeight = barHeight / 3;
+      colorBarGroup
+        .append("text")
+        .attr("class", "value-label")
+        .attr("x", wLabelX)
+        .attr("y", barY + sectionHeight * 0.7)
+        .attr("text-anchor", "end")
+        .style("font-size", wLabelSize)
+        .style("font-weight", "200")
+        .style("fill", "white")
+        .style("stroke", "none")
+        .text("right");
+      colorBarGroup
+        .append("text")
+        .attr("class", "value-label")
+        .attr("x", wLabelX)
+        .attr("y", barY + sectionHeight * 2.7)
+        .attr("text-anchor", "end")
+        .style("font-size", wLabelSize)
+        .style("font-weight", "200")
+        .style("fill", "white")
+        .style("stroke", "none")
+        .text("left");
+    };
     
     // Helper function to find closest data point to selectedTime
     const getValueAtSelectedTime = (): number | null => {
@@ -185,10 +246,9 @@ export default function WindArrow(props: WindArrowProps) {
         const val = closestPoint[vmgPercField] ?? closestPoint[vmgPercField.toLowerCase()] ?? closestPoint[vmgPercField.toUpperCase()] ?? closestPoint.Vmg_perc ?? closestPoint.vmg_perc;
         return val !== undefined && val !== null && !isNaN(Number(val)) ? Number(val) : null;
       } else if (mt === 'VMG') {
-        // Use vmg_name channel
         const vmgField = vmgName();
-        const val = closestPoint[vmgField] ?? closestPoint[vmgField.toLowerCase()] ?? closestPoint[vmgField.toUpperCase()] ?? closestPoint.Vmg ?? closestPoint.vmg;
-        return val !== undefined && val !== null && !isNaN(Number(val)) ? Number(val) : null;
+        const n = vmgValueFromRow(closestPoint as Record<string, unknown>, vmgField, Number.NaN);
+        return Number.isFinite(n) ? n : null;
       } else if (mt === 'WIND') {
         return getTwd(closestPoint);
       }
@@ -207,29 +267,25 @@ export default function WindArrow(props: WindArrowProps) {
         const normalized = value / 4; // 0 to 1
         return barY + (barHeight * (1 - normalized)); // Invert so 0 is at bottom
       } else if (mt === 'VMG%') {
-        // VMG%: Fixed scale 25% (min) to 125% (max)
-        const minVMG = 25;
-        const maxVMG = 125;
-        const normalized = Math.max(0, Math.min(1, (value - minVMG) / (maxVMG - minVMG)));
+        const normalized = Math.max(
+          0,
+          Math.min(1, (value - VMG_PERC_MIN) / (VMG_PERC_MAX - VMG_PERC_MIN))
+        );
         return barY + (barHeight * (1 - normalized)); // Invert so min is at bottom
       } else if (mt === 'VMG') {
-        // VMG: Dynamic scale based on data
+        // VMG: Dynamic scale based on data (same column coalescing as TrackLayer / useTrackRendering)
         if (!props.trackData || props.trackData.length === 0) return null;
         
         const vmgField = vmgName();
         const vmgValues = props.trackData
-          .map((p: any) => {
-            const val = p[vmgField] ?? p[vmgField.toLowerCase()] ?? p[vmgField.toUpperCase()] ?? p.Vmg ?? p.vmg;
-            return val !== undefined && val !== null ? Number(val) : null;
-          })
-          .filter((v: number | null): v is number => v !== null && !isNaN(v));
+          .map((p: any) => vmgValueFromRow(p as Record<string, unknown>, vmgField, Number.NaN))
+          .filter((v: number): v is number => Number.isFinite(v));
         
         if (vmgValues.length === 0) return null;
         
-        const [minVMG, maxVMG] = getOneSigmaRange(props.trackData, (p: any) => {
-          const val = p[vmgField] ?? p[vmgField.toLowerCase()] ?? p[vmgField.toUpperCase()] ?? p.Vmg ?? p.vmg;
-          return val !== undefined && val !== null ? Number(val) : 0;
-        });
+        const [minVMG, maxVMG] = getOneSigmaRange(props.trackData, (p: any) =>
+          vmgValueFromRow(p as Record<string, unknown>, vmgField, 0)
+        );
         
         // Handle division by zero case
         if (maxVMG === minVMG) {
@@ -339,10 +395,7 @@ export default function WindArrow(props: WindArrowProps) {
         .style("stroke", "none")
         .text("high");
     } else if (mt === 'VMG%') {
-      // VMG%: Fixed scale 25% (min) to 125% (max)
-      // Gradient: blue -> lightblue -> yellow -> red
-      const minVMG = 25;
-      const maxVMG = 125;
+      // VMG%: 25–125% (blue→60, yellow→90, green→105, orange→115, red); matches track scale
       const gradientId = `vmg-perc-gradient-${Date.now()}`;
       const gradient = colorBarGroup
         .append("defs")
@@ -352,108 +405,13 @@ export default function WindArrow(props: WindArrowProps) {
         .attr("x2", "0%")
         .attr("y1", "100%")
         .attr("y2", "0%");
-      
-      gradient.append("stop")
-        .attr("offset", "0%")
-        .attr("stop-color", "blue");
-      
-      gradient.append("stop")
-        .attr("offset", "50%") // 50% of range (75% VMG)
-        .attr("stop-color", "lightblue");
-      
-      gradient.append("stop")
-        .attr("offset", "95%") // 95% of range (120% VMG)
-        .attr("stop-color", "yellow");
-      
-      gradient.append("stop")
-        .attr("offset", "100%")
-        .attr("stop-color", "red");
-      
-      colorBarGroup
-        .append("rect")
-        .attr("x", barX)
-        .attr("y", barY)
-        .attr("width", barWidth)
-        .attr("height", barHeight)
-        .style("fill", `url(#${gradientId})`)
-        .style("stroke", "white")
-        .style("stroke-width", 0.5);
-      
-      // Add labels
-      const labelFontSize = "8px";
-      const labelX = barX - 5;
-      colorBarGroup.selectAll("text.value-label").remove();
-      
-      colorBarGroup
-        .append("text")
-        .attr("class", "value-label")
-        .attr("x", labelX)
-        .attr("y", barY + 5)
-        .attr("text-anchor", "end")
-        .style("font-size", labelFontSize)
-        .style("font-weight", "200")
-        .style("fill", "white")
-        .style("stroke", "none")
-        .text("125%");
-      
-      colorBarGroup
-        .append("text")
-        .attr("class", "value-label")
-        .attr("x", labelX)
-        .attr("y", barY + barHeight - 5)
-        .attr("text-anchor", "end")
-        .style("font-size", labelFontSize)
-        .style("font-weight", "200")
-        .style("fill", "white")
-        .style("stroke", "none")
-        .text("25%");
-    } else if (mt === 'VMG') {
-      // VMG: Dynamic scale based on data
-      if (!props.trackData || props.trackData.length === 0) {
-        colorBarGroup.style("opacity", "0");
-        colorBarGroup.style("display", "none");
-        colorBarGroup.style("visibility", "hidden");
-        return;
-      }
 
-      const vmgField = vmgName();
-      const [minVMG, maxVMG] = getOneSigmaRange(props.trackData, (p: any) => {
-        const val = p[vmgField] ?? p[vmgField.toLowerCase()] ?? p[vmgField.toUpperCase()] ?? p.Vmg ?? p.vmg;
-        return val !== undefined && val !== null ? Number(val) : 0;
+      VMG_PERC_COLOR_DOMAIN.forEach((pct, i) => {
+        gradient
+          .append("stop")
+          .attr("offset", vmgPercStopOffsetPct(pct))
+          .attr("stop-color", VMG_PERC_COLOR_RANGE[i] ?? VMG_PERC_COLOR_RANGE[VMG_PERC_COLOR_RANGE.length - 1]);
       });
-
-      if (maxVMG === minVMG || !isFinite(minVMG) || !isFinite(maxVMG)) {
-        colorBarGroup.style("opacity", "0");
-        colorBarGroup.style("display", "none");
-        colorBarGroup.style("visibility", "hidden");
-        return;
-      }
-      
-      const gradientId = `vmg-gradient-${Date.now()}`;
-      const gradient = colorBarGroup
-        .append("defs")
-        .append("linearGradient")
-        .attr("id", gradientId)
-        .attr("x1", "0%")
-        .attr("x2", "0%")
-        .attr("y1", "100%")
-        .attr("y2", "0%");
-      
-      gradient.append("stop")
-        .attr("offset", "0%")
-        .attr("stop-color", "blue");
-      
-      gradient.append("stop")
-        .attr("offset", "50%")
-        .attr("stop-color", "lightblue");
-      
-      gradient.append("stop")
-        .attr("offset", "95%")
-        .attr("stop-color", "yellow");
-      
-      gradient.append("stop")
-        .attr("offset", "100%")
-        .attr("stop-color", "red");
       
       colorBarGroup
         .append("rect")
@@ -465,11 +423,8 @@ export default function WindArrow(props: WindArrowProps) {
         .style("stroke", "white")
         .style("stroke-width", 0.5);
       
-      // Add labels with actual min/max values
       const labelFontSize = "8px";
       const labelX = barX - 5;
-      colorBarGroup.selectAll("text.value-label").remove();
-      
       colorBarGroup
         .append("text")
         .attr("class", "value-label")
@@ -480,7 +435,7 @@ export default function WindArrow(props: WindArrowProps) {
         .style("font-weight", "200")
         .style("fill", "white")
         .style("stroke", "none")
-        .text(round(maxVMG, 1).toString());
+        .text(`${VMG_PERC_MAX}%`);
       
       colorBarGroup
         .append("text")
@@ -492,72 +447,114 @@ export default function WindArrow(props: WindArrowProps) {
         .style("font-weight", "200")
         .style("fill", "white")
         .style("stroke", "none")
-        .text(round(minVMG, 1).toString());
-    } else if (mt === 'WIND') {
-      // Gradient: red -> lightgrey -> green (for TWD)
-      const gradientId = `wind-gradient-${Date.now()}`;
-      const gradient = colorBarGroup
-        .append("defs")
-        .append("linearGradient")
-        .attr("id", gradientId)
-        .attr("x1", "0%")
-        .attr("x2", "0%")
-        .attr("y1", "100%")
-        .attr("y2", "0%");
-      
-      gradient.append("stop")
-        .attr("offset", "0%")
-        .attr("stop-color", "red");
-      
-      gradient.append("stop")
-        .attr("offset", "50%")
-        .attr("stop-color", "lightgrey");
-      
-      gradient.append("stop")
-        .attr("offset", "100%")
-        .attr("stop-color", "green");
-      
-      colorBarGroup
-        .append("rect")
-        .attr("x", barX)
-        .attr("y", barY)
-        .attr("width", barWidth)
-        .attr("height", barHeight)
-        .style("fill", `url(#${gradientId})`)
-        .style("stroke", "white")
-        .style("stroke-width", 0.5);
-      
-      // Add labels to the left (same positions as GRADE labels) - remove existing first
+        .text(`${VMG_PERC_MIN}%`);
+    } else if (mt === 'VMG') {
+      // Absolute VMG: speed scale only (same column coalescing as track renderer)
+      const vmgField = vmgName();
+      const finiteVmg: number[] = [];
+      if (props.trackData?.length) {
+        props.trackData.forEach((p: any) => {
+          const n = vmgValueFromRow(p as Record<string, unknown>, vmgField, Number.NaN);
+          if (Number.isFinite(n)) finiteVmg.push(n);
+        });
+      }
+
+      let minVMG = 0;
+      let maxVMG = 1;
+      let hasVmgScale = false;
+      if (finiteVmg.length > 0 && props.trackData?.length) {
+        hasVmgScale = true;
+        [minVMG, maxVMG] = getOneSigmaRange(props.trackData, (p: any) =>
+          vmgValueFromRow(p as Record<string, unknown>, vmgField, 0)
+        );
+        if (!isFinite(minVMG) || !isFinite(maxVMG) || maxVMG === minVMG) {
+          const ext = d3.extent(finiteVmg);
+          minVMG = ext[0] ?? 0;
+          maxVMG = ext[1] ?? 1;
+          if (maxVMG === minVMG) {
+            const pad = (Math.abs(minVMG) || 1) * 0.05 + 0.1;
+            minVMG -= pad;
+            maxVMG += pad;
+          }
+        }
+      }
+
       const labelFontSize = "8px";
       const labelX = barX - 5;
-      const sectionHeight = barHeight / 3;
-      colorBarGroup.selectAll("text.value-label").remove();
-      
-      // Top label - "right" (same position as "high")
-      colorBarGroup
-        .append("text")
-        .attr("class", "value-label")
-        .attr("x", labelX)
-        .attr("y", barY + (sectionHeight * 0.7))
-        .attr("text-anchor", "end")
-        .style("font-size", labelFontSize)
-        .style("font-weight", "200")
-        .style("fill", "white")
-        .style("stroke", "none")
-        .text("right");
-      
-      // Bottom label - "left" (same position as "low")
-      colorBarGroup
-        .append("text")
-        .attr("class", "value-label")
-        .attr("x", labelX)
-        .attr("y", barY + (sectionHeight * 2.7))
-        .attr("text-anchor", "end")
-        .style("font-size", labelFontSize)
-        .style("font-weight", "200")
-        .style("fill", "white")
-        .style("stroke", "none")
-        .text("left");
+
+      if (hasVmgScale) {
+        const gradientId = `vmg-gradient-${Date.now()}`;
+        const gradient = colorBarGroup
+          .append("defs")
+          .append("linearGradient")
+          .attr("id", gradientId)
+          .attr("x1", "0%")
+          .attr("x2", "0%")
+          .attr("y1", "100%")
+          .attr("y2", "0%");
+
+        gradient.append("stop").attr("offset", "0%").attr("stop-color", "blue");
+        gradient.append("stop").attr("offset", "50%").attr("stop-color", "lightblue");
+        gradient.append("stop").attr("offset", "95%").attr("stop-color", "yellow");
+        gradient.append("stop").attr("offset", "100%").attr("stop-color", "red");
+
+        colorBarGroup
+          .append("rect")
+          .attr("x", barX)
+          .attr("y", barY)
+          .attr("width", barWidth)
+          .attr("height", barHeight)
+          .style("fill", `url(#${gradientId})`)
+          .style("stroke", "white")
+          .style("stroke-width", 0.5);
+
+        colorBarGroup
+          .append("text")
+          .attr("class", "value-label")
+          .attr("x", labelX)
+          .attr("y", barY + 5)
+          .attr("text-anchor", "end")
+          .style("font-size", labelFontSize)
+          .style("font-weight", "200")
+          .style("fill", "white")
+          .style("stroke", "none")
+          .text(round(maxVMG, 1).toString());
+
+        colorBarGroup
+          .append("text")
+          .attr("class", "value-label")
+          .attr("x", labelX)
+          .attr("y", barY + barHeight - 5)
+          .attr("text-anchor", "end")
+          .style("font-size", labelFontSize)
+          .style("font-weight", "200")
+          .style("fill", "white")
+          .style("stroke", "none")
+          .text(round(minVMG, 1).toString());
+      } else {
+        colorBarGroup
+          .append("rect")
+          .attr("x", barX)
+          .attr("y", barY)
+          .attr("width", barWidth)
+          .attr("height", barHeight)
+          .style("fill", "#64748b")
+          .style("stroke", "white")
+          .style("stroke-width", 0.5);
+        colorBarGroup
+          .append("text")
+          .attr("class", "value-label")
+          .attr("x", labelX)
+          .attr("y", barY + barHeight / 2)
+          .attr("text-anchor", "end")
+          .style("font-size", labelFontSize)
+          .style("font-weight", "200")
+          .style("fill", "white")
+          .style("stroke", "none")
+          .text("—");
+      }
+    } else if (mt === 'WIND') {
+      drawWindTwdLegend(0);
     } else if (mt === "STATE") {
       const rowH = barHeight / 3;
       const stLabelSize = "8px";
@@ -645,15 +642,14 @@ export default function WindArrow(props: WindArrowProps) {
       .style("stroke", "none")
       .text(mt);
 
-    // Add indicator line for selectedTime
+    const indicatorBarLeft = barX;
     const indicatorY = calculateIndicatorPosition();
     if (indicatorY !== null) {
-      // Draw horizontal line across the bar
       colorBarGroup
         .append("line")
         .attr("class", "time-indicator")
-        .attr("x1", barX - 2) // Extend slightly left of bar
-        .attr("x2", barX + barWidth + 2) // Extend slightly right of bar
+        .attr("x1", indicatorBarLeft - 2)
+        .attr("x2", indicatorBarLeft + barWidth + 2)
         .attr("y1", indicatorY)
         .attr("y2", indicatorY)
         .style("stroke", "black")

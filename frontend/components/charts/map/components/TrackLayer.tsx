@@ -36,7 +36,7 @@ declare global {
 export interface TrackLayerProps {
   data: TrackPoint[];
   map: any;
-  maptype: 'DEFAULT' | 'GRADE' | 'WIND' | 'VMG' | 'MANEUVERS';
+  maptype: 'DEFAULT' | 'GRADE' | 'WIND' | 'VMG%' | 'VMG' | 'MANEUVERS';
   samplingFrequency: number;
   onPointClick?: (point: TrackPoint) => void;
   onRangeSelect?: (start: TrackPoint, end: TrackPoint) => void;
